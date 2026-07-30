@@ -1,8 +1,11 @@
 [project]
-name = "virtualizarr-data-pipelines"
+name = "tempo-virtual-zarr-pipeline"
 version = "0.1.0"
-description = "Virtualizarr/Icechunk ingestion infrastructure"
-authors = [{name = "Sean Harkins", email = "sean@developmentseed.org"}]
+description = "Virtual Zarr / Icechunk ingestion pipeline for TEMPO L3 gridded products (HCHO and NO2)"
+authors = [
+    {name = "Max Jones", email = "max@developmentseed.org"},
+    {name = "Sean Harkins", email = "sean@developmentseed.org"},
+]
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
