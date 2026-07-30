@@ -20,6 +20,101 @@ This repository was instantiated from the [virtualizarr-data-pipelines](https://
 
 Findings so far: both collections share the same 2950×7750 grid, the same group layout (`product`, `geolocation`, `support_data`, `qa_statistics`), and the same shuffle + deflate(level 1) filter pipeline, with chunk shape (1, 738, 1938) for float64 variables and (1, 984, 2584) for float32/int16 variables. ASDC's CloudFront distribution rate-limits bursts of HTTPS range requests (403 "Request blocked"), so bulk virtualization should use in-region S3 access, or low concurrency with retries over HTTPS.
 
+#### Virtual view of each collection
+
+The trees below (derived from `inspect_granule_metadata.py`) show each collection as the virtual store a reader would see after concatenating granules along `time` — one tree per collection because the two time axes are independent (see considerations below). Shared facts, stated once: every 3-D variable has per-granule dims `(time, latitude, longitude)` = (1, 2950, 7750) with the shuffle + deflate(1) pipeline, chunked (1, 738, 1938) for float64 and (1, 984, 2584) for float32/int16/int32; the 1-D coordinates are contiguous and uncompressed in the source netCDF-4, so VirtualiZarr loads them and they are written as native chunks (marked `[native]`), while everything else stays virtual.
+
+**`TEMPO_HCHO_L3` V04** — 13,611 scans as of 2026-07-30:
+
+```
+/                                       dims: time (append dim), latitude=2950, longitude=7750
+├── time         (time)                 float64, seconds since 1980-01-06T00:00:00Z  [native]
+├── latitude     (latitude)             float32  [native]
+├── longitude    (longitude)            float32  [native]
+├── weight       (time, latitude, longitude)  float32  # promoted; stored per scan without a time dim
+├── product/                            # all group variables: (time, latitude, longitude)
+│   ├── vertical_column                          float64
+│   ├── vertical_column_uncertainty              float64
+│   └── main_data_quality_flag                   int16
+├── geolocation/
+│   ├── solar_zenith_angle                       float32
+│   ├── viewing_zenith_angle                     float32
+│   └── relative_azimuth_angle                   float32
+├── qa_statistics/
+│   ├── num_vertical_column_samples              int32
+│   ├── min_vertical_column_sample               float64
+│   └── max_vertical_column_sample               float64
+└── support_data/
+    ├── fitted_slant_column                      float64
+    ├── fitted_slant_column_uncertainty          float64
+    ├── albedo                                   float32
+    ├── amf                                      float32
+    ├── eff_cloud_fraction                       float32
+    ├── amf_cloud_fraction                       float32
+    ├── amf_cloud_pressure                       float32
+    ├── surface_pressure                         float32
+    ├── terrain_height                           int16
+    ├── snow_ice_fraction                        float32
+    └── pbl_height                               int16
+```
+
+**`TEMPO_NO2_L3` V04** — 13,618 scans as of 2026-07-30:
+
+```
+/                                       dims: time (append dim), latitude=2950, longitude=7750
+├── time         (time)                 float64, seconds since 1980-01-06T00:00:00Z  [native]
+├── latitude     (latitude)             float32  [native]
+├── longitude    (longitude)            float32  [native]
+├── weight       (time, latitude, longitude)  float32  # promoted; stored per scan without a time dim
+├── product/                            # all group variables: (time, latitude, longitude)
+│   ├── vertical_column_troposphere              float64
+│   ├── vertical_column_troposphere_uncertainty  float64
+│   ├── vertical_column_stratosphere             float64
+│   └── main_data_quality_flag                   int16
+├── geolocation/
+│   ├── solar_zenith_angle                       float32
+│   ├── viewing_zenith_angle                     float32
+│   └── relative_azimuth_angle                   float32
+├── qa_statistics/
+│   ├── num_vertical_column_troposphere_samples              int32
+│   ├── min_vertical_column_troposphere_sample               float64
+│   ├── max_vertical_column_troposphere_sample               float64
+│   ├── num_vertical_column_troposphere_uncertainty_samples  int32
+│   ├── min_vertical_column_troposphere_uncertainty_sample   float64
+│   ├── max_vertical_column_troposphere_uncertainty_sample   float64
+│   ├── num_vertical_column_stratosphere_samples             int32
+│   ├── min_vertical_column_stratosphere_sample              float64
+│   ├── max_vertical_column_stratosphere_sample              float64
+│   ├── num_vertical_column_total_samples                    int32
+│   ├── min_vertical_column_total_sample                     float64
+│   └── max_vertical_column_total_sample                     float64
+└── support_data/
+    ├── vertical_column_total                    float64
+    ├── vertical_column_total_uncertainty        float64
+    ├── fitted_slant_column                      float64
+    ├── fitted_slant_column_uncertainty          float64
+    ├── albedo                                   float32
+    ├── amf_total                                float32
+    ├── amf_troposphere                          float32
+    ├── amf_stratosphere                         float32
+    ├── tropopause_pressure                      float32
+    ├── eff_cloud_fraction                       float32
+    ├── amf_cloud_fraction                       float32
+    ├── amf_cloud_pressure                       float32
+    ├── surface_pressure                         float32
+    ├── terrain_height                           int16
+    ├── snow_ice_fraction                        float32
+    └── pbl_height                               int16
+```
+
+#### Virtual view considerations
+
+- **One Icechunk repository per collection.** The time axes are independent: 13,610 scans are shared, 1 is HCHO-only, 8 are NO2-only (as of 2026-07-30), and both sets grow independently as new scans are published. Neither store should assume the other's axis; joint NO2+HCHO analysis aligns at read time (intersection, or union with fill).
+- **Spatial alignment is free.** `latitude`/`longitude` are bit-identical between the two products (and fixed across scans), written once as native chunks per store.
+- **Concatenation along `time` is clean.** Chunk grids, dtypes, and codecs are uniform across granules and across both collections, so every 3-D variable appends without rechunking: ~220 virtual chunk references per granule, on the order of 3M references per collection at full backfill (referencing several TB of source netCDF).
+- **`weight` is promoted to `(time, latitude, longitude)`.** The regridding weight varies per scan (verified empirically) but has no `time` dimension in the source files, so a concat that trusts the file's data model silently keeps only the first scan's values. The combine scripts therefore `expand_dims` each granule's virtual `weight` before concatenating — zero-copy, since `ManifestArray` implements `expand_dims` — and any future append path must do the same for `append_dim="time"` to pick it up.
+- **Reference URLs should be `s3://` for production.** The exploration stores reference EDL-authed HTTPS (subject to CloudFront rate limiting and token expiry); production stores should reference `s3://asdc-prod-protected/...` in us-west-2 with reader-supplied temporary credentials from <https://data.asdc.earthdata.nasa.gov/s3credentials>.
+
 ### Backfill vs Forward Processing
 
 Virtualizarr Data Pipelines supports two complementary paths for getting files virtualized and into an Icechunk store:
