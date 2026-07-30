@@ -1,10 +1,24 @@
-## virtualizarr-data-pipelines
+## tempo-virtual-zarr-pipeline
 
-Virtualizarr Data Pipelines is a [github template repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/creating-a-repository-from-a-template) intended to help users create and manage Virtualizarr/Icechunk stores on AWS in a consistent, scalable way.
+Virtual Zarr / Icechunk ingestion pipeline for TEMPO Level 3 gridded products, supporting optimized data delivery for the AIR4US portal ([NASA-IMPACT/veda-odd#438](https://github.com/NASA-IMPACT/veda-odd/issues/438)). It targets two collections hosted at NASA ASDC:
 
-The goal is to let users leverage their expertise to focus on how to parse and
-concatenate archival files without having to think too much about
-building infrastructure code.
+| Collection | Concept ID | DOI |
+|---|---|---|
+| `TEMPO_HCHO_L3` V04 — gridded formaldehyde total column | `C3685897141-LARC_CLOUD` | [10.5067/IS-40e/TEMPO/HCHO_L3.004](https://doi.org/10.5067/IS-40e/TEMPO/HCHO_L3.004) |
+| `TEMPO_NO2_L3` V04 — gridded NO2 tropospheric and stratospheric columns | `C3685896708-LARC_CLOUD` | [10.5067/IS-40E/TEMPO/NO2_L3.004](https://doi.org/10.5067/IS-40E/TEMPO/NO2_L3.004) |
+
+This repository was instantiated from the [virtualizarr-data-pipelines](https://github.com/developmentseed/virtualizarr-data-pipelines) template, which provides the AWS CDK infrastructure documented below. The intended layout is one Icechunk repository per collection, deployed as separate instances of the same stack; improvements that generalize beyond TEMPO belong in the template.
+
+### Exploration :mag:
+
+`exploration/` holds standalone [PEP 723](https://peps.python.org/pep-0723/) scripts used to characterize the source data before building the processor. Run them with `uv run exploration/<script>.py` — each declares its own dependencies, so no project install is needed. All of them take `--collection {hcho,no2}` (default `hcho`; the mapping lives in `exploration/tempo_collections.py`) plus `--concept-id` to target any other collection, and need Earthdata Login credentials in `~/.netrc`.
+
+- [`tempo_dataset_info.py`](./exploration/tempo_dataset_info.py) — full CMR/UMM-C collection report: description, citation, spatial/temporal extents, granule count, direct-S3 distribution information, and the most recent granule.
+- [`inspect_granule_metadata.py`](./exploration/inspect_granule_metadata.py) — native HDF5 dump of one granule via h5py: groups, datasets, chunk layouts, filter pipelines (codecs), fill values, storage vs. logical sizes, and all attributes.
+- [`combine_first_three_virtual.py`](./exploration/combine_first_three_virtual.py) — virtualizes the collection's first three granules with VirtualiZarr's `HDFParser`, concatenates them along `time`, writes the virtual references into an in-memory Icechunk repository, and reads real data back through its virtual chunk container.
+- [`combine_twenty_spread_virtual.py`](./exploration/combine_twenty_spread_virtual.py) — the same end-to-end flow for N granules (default 20) spread evenly across the collection's temporal extent, with throttle-aware retries.
+
+Findings so far: both collections share the same 2950×7750 grid, the same group layout (`product`, `geolocation`, `support_data`, `qa_statistics`), and the same shuffle + deflate(level 1) filter pipeline, with chunk shape (1, 738, 1938) for float64 variables and (1, 984, 2584) for float32/int16 variables. ASDC's CloudFront distribution rate-limits bursts of HTTPS range requests (403 "Request blocked"), so bulk virtualization should use in-region S3 access, or low concurrency with retries over HTTPS.
 
 ### Backfill vs Forward Processing
 
@@ -22,14 +36,12 @@ Virtualizarr Data Pipelines supports two complementary paths for getting files v
 A typical project uses both: run **backfill** once to load the historical archive, then
 rely on **forward processing** to keep the store current as new files land.
 
-### Getting started :rocket:
-First [create your own repository from the
-template](https://docs.github.com/en/repositories/creating-and-managing-repositories/creating-a-repository-from-a-template).
-You'll use this repository to build and configure your own dataset specific
-pipeline. We recommend the naming convention `datasetname-virtualizarr-data-pipelines`.
+### Pipeline status :rocket:
+
+The TEMPO-specific processor has not been written yet — the template's sample processor is still in place, and the exploration scripts above are informing its design. The sections below are the template's documentation for building the processor and deploying the infrastructure.
 
 ### Creating a processor :package:
-Once you have your own repo, the first step is building your own dataset specific processor module. There is a sample
+The first step is building your own dataset specific processor module. There is a sample
 [processor.py](./lambda/virtualizarr-processor/virtualizarr_processor/processor.py) in the repo that uses an in-memory Icechunk store and a fake virtual dataset to
 demonstrate how a processor works.  Replace this with your own `processor.py`
 file.  Your class should follow the [VirtualizarrProcessor protocol](./lambda/virtualizarr-processor/virtualizarr_processor/typing.py).
