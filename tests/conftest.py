@@ -1,0 +1,122 @@
+import os
+import pathlib
+import tempfile
+
+import icechunk
+import numpy as np
+import obstore
+import pytest
+import xarray as xr
+import zarr
+from virtualizarr.manifests import ChunkManifest, ManifestArray
+from zarr.codecs import BytesCodec
+from zarr.core.dtype import parse_data_type
+from zarr.core.metadata import ArrayV3Metadata
+
+CHUNK_DIR = os.path.realpath(tempfile.gettempdir())
+CHUNK_DIRECTORY_URL_PREFIX = f"file://{CHUNK_DIR}/"
+
+
+def fake_vds(date: str) -> xr.Dataset:
+    filepath = f"{CHUNK_DIR}/data_chunk"
+    store = obstore.store.LocalStore()
+    arr = np.repeat([[1, 2]], 3, axis=1)
+    shape = arr.shape
+    dtype = arr.dtype
+    buf = arr.tobytes()
+    obstore.put(
+        store,
+        filepath,
+        buf,
+    )
+    manifest = ChunkManifest(
+        {"0.0": {"path": filepath, "offset": 0, "length": len(buf)}}
+    )
+    zdtype = parse_data_type(dtype, zarr_format=3)
+    metadata = ArrayV3Metadata(
+        shape=shape,
+        data_type=zdtype,
+        chunk_grid={
+            "name": "regular",
+            "configuration": {"chunk_shape": shape},
+        },
+        chunk_key_encoding={"name": "default"},
+        fill_value=zdtype.default_scalar(),
+        codecs=[BytesCodec()],
+        attributes={},
+        dimension_names=("y", "x"),
+        storage_transformers=None,
+    )
+    ma = ManifestArray(
+        chunkmanifest=manifest,
+        metadata=metadata,
+    )
+    foo = xr.Variable(data=ma, dims=["y", "x"], encoding={"scale_factor": 2})
+    vds = xr.Dataset(
+        {"foo": foo},
+        coords={
+            "time": ("time", [np.datetime64(date)])  # Single time point
+        },
+    )
+    return vds
+
+
+def create_repo() -> icechunk.Repository:
+    chunk_store = icechunk.local_filesystem_store(CHUNK_DIR)
+    storage = icechunk.in_memory_storage()
+    config = icechunk.RepositoryConfig.default()
+    config.set_virtual_chunk_container(
+        icechunk.VirtualChunkContainer(CHUNK_DIRECTORY_URL_PREFIX, chunk_store)
+    )
+    repo = icechunk.Repository.open_or_create(
+        storage=storage,
+        config=config,
+        authorize_virtual_chunk_access={
+            CHUNK_DIRECTORY_URL_PREFIX: icechunk.credentials.LocalFileSystemAccess
+        },
+    )
+    return repo
+
+
+def create_session() -> icechunk.Session:
+    repo = create_repo()
+    session = repo.writable_session("main")
+    vds = fake_vds("2024-01-01")
+    vds.vz.to_icechunk(session.store, validate_containers=False)
+    return session
+
+
+@pytest.fixture(scope="function")
+def icechunk_repo() -> icechunk.Repository:
+    return create_repo()
+
+
+@pytest.fixture(scope="function")
+def icechunk_session() -> icechunk.Session:
+    return create_session()
+
+
+@pytest.fixture(scope="function")
+def backfill_repo(tmp_path: pathlib.Path) -> icechunk.Repository:
+    """A filesystem-backed repo with a committed `main` branch.
+
+    Backfill uses durable storage (not in_memory_storage) because a pickled
+    ForkSession cannot resolve its base snapshot from an in-memory backing.
+    """
+    chunk_store = icechunk.local_filesystem_store(CHUNK_DIR)
+    storage = icechunk.local_filesystem_storage(str(tmp_path / "repo"))
+    config = icechunk.RepositoryConfig.default()
+    config.set_virtual_chunk_container(
+        icechunk.VirtualChunkContainer(CHUNK_DIRECTORY_URL_PREFIX, chunk_store)
+    )
+    repo = icechunk.Repository.open_or_create(
+        storage=storage,
+        config=config,
+        authorize_virtual_chunk_access={
+            CHUNK_DIRECTORY_URL_PREFIX: icechunk.credentials.LocalFileSystemAccess
+        },
+    )
+    session = repo.writable_session("main")
+    zarr.open_group(session.store, mode="a").create_group("placeholder")
+    session.commit("init main")
+    return repo
