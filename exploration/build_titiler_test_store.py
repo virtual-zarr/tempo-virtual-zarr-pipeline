@@ -36,7 +36,6 @@ from pathlib import Path
 import earthaccess
 import icechunk
 import xarray as xr
-
 from tempo_collections import add_collection_argument, resolve_concept_id
 from tempo_virtual import (
     CONTAINER_PREFIX,
@@ -57,19 +56,25 @@ DEFAULT_N_GRANULES = 12
 
 def recent_granule_urls(n: int, concept_id: str) -> list[str]:
     """The n most recent granules of the collection, in chronological order."""
-    granules = earthaccess.search_data(concept_id=concept_id, count=n, sort_key="-start_date")
+    granules = earthaccess.search_data(
+        concept_id=concept_id, count=n, sort_key="-start_date"
+    )
     urls = []
     for granule in granules:
         links = [u for u in granule.data_links(access="external") if u.endswith(".nc")]
         if not links:
-            raise RuntimeError(f"No .nc data link for granule {granule['meta']['concept-id']}")
+            raise RuntimeError(
+                f"No .nc data link for granule {granule['meta']['concept-id']}"
+            )
         urls.append(links[0])
     return list(reversed(urls))
 
 
 def flatten_product_subset(tree: xr.DataTree, variables: list[str]) -> xr.Dataset:
-    """Root-group dataset holding the selected product variables with inherited coords."""
-    product = tree["product"].to_dataset()  # inherit=True pulls root time/lat/lon coords
+    """Root-group dataset of the selected product variables with inherited coords."""
+    product = tree[
+        "product"
+    ].to_dataset()  # inherit=True pulls root time/lat/lon coords
     missing = [name for name in variables if name not in product]
     if missing:
         raise RuntimeError(f"Variables missing from product group: {missing}")
@@ -103,10 +108,15 @@ def open_readonly_with_token(store_dir: Path, token: str) -> xr.Dataset:
     repo = icechunk.Repository.open(
         storage=icechunk.local_filesystem_storage(str(store_dir)),
         config=config,
-        authorize_virtual_chunk_access={CONTAINER_PREFIX: icechunk.credentials.HttpAccess},
+        authorize_virtual_chunk_access={
+            CONTAINER_PREFIX: icechunk.credentials.HttpAccess
+        },
     )
     return xr.open_dataset(
-        repo.readonly_session("main").store, engine="zarr", consolidated=False, zarr_format=3
+        repo.readonly_session("main").store,
+        engine="zarr",
+        consolidated=False,
+        zarr_format=3,
     )
 
 
@@ -145,8 +155,10 @@ def main() -> int:
     flat = flatten_product_subset(combined, variables)
     flat_tree = xr.DataTree(dataset=flat)
     chunks, total_bytes = manifest_totals(flat_tree)
-    print(f"Flat dataset: {list(flat.data_vars)} referencing {chunks} chunks, "
-          f"{total_bytes / 1e9:.2f} GB of source data")
+    print(
+        f"Flat dataset: {list(flat.data_vars)} referencing {chunks} chunks, "
+        f"{total_bytes / 1e9:.2f} GB of source data"
+    )
 
     print(f"\nWriting virtual references to {store_dir}...")
     repo = create_repo(store_dir)
@@ -159,7 +171,10 @@ def main() -> int:
 
     print("\nReading back with token-authorized runtime config (titiler open pattern):")
     ds = open_readonly_with_token(store_dir, token)
-    print(f"  time steps ({ds.sizes['time']}): {ds['time'].values.min()} .. {ds['time'].values.max()}")
+    print(
+        f"  time steps ({ds.sizes['time']}): "
+        f"{ds['time'].values.min()} .. {ds['time'].values.max()}"
+    )
     center = {"latitude": slice(1474, 1476), "longitude": slice(3874, 3876)}
     for name in variables:
         sample = ds[name].isel(time=[0, -1], **center).load()

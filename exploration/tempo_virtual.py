@@ -27,15 +27,20 @@ BACKOFF_SECONDS = (10, 30, 60)
 
 def earthdata_token() -> str:
     earthaccess.login(strategy="netrc")
-    token = (getattr(earthaccess.__auth__, "token", None) or {}).get("access_token")
+    token: str | None = (getattr(earthaccess.__auth__, "token", None) or {}).get(
+        "access_token"
+    )
     if not token:
-        raise RuntimeError("earthaccess.login() produced no bearer token; check ~/.netrc")
+        raise RuntimeError(
+            "earthaccess.login() produced no bearer token; check ~/.netrc"
+        )
     return token
 
 
 def make_registry(token: str) -> ObjectStoreRegistry:
     store = HTTPStore.from_url(
-        DATA_HOST, client_options={"default_headers": {"Authorization": f"Bearer {token}"}}
+        DATA_HOST,
+        client_options={"default_headers": {"Authorization": f"Bearer {token}"}},
     )
     return ObjectStoreRegistry({DATA_HOST: store})
 
@@ -43,7 +48,7 @@ def make_registry(token: str) -> ObjectStoreRegistry:
 def virtualize_urls(
     urls: list[str], registry: ObjectStoreRegistry, workers: int = PARSE_WORKERS
 ) -> list[xr.DataTree]:
-    """Virtualize granule URLs with HDFParser, in parallel, with throttle-aware retries."""
+    """Virtualize granule URLs in parallel with HDFParser, retrying on throttling."""
     parser = HDFParser()
 
     def virtualize(url: str) -> xr.DataTree:
@@ -57,7 +62,10 @@ def virtualize_urls(
                 if attempt == PARSE_ATTEMPTS - 1:
                     raise
                 delay = BACKOFF_SECONDS[min(attempt, len(BACKOFF_SECONDS) - 1)]
-                print(f"  {name}: {type(error).__name__} (attempt {attempt + 1}), retrying in {delay}s")
+                print(
+                    f"  {name}: {type(error).__name__} (attempt {attempt + 1}), "
+                    f"retrying in {delay}s"
+                )
                 time.sleep(delay)
         raise AssertionError("unreachable")
 
@@ -86,11 +94,12 @@ def promote_time_invariant(ds: xr.Dataset) -> xr.Dataset:
 
 
 def combine_trees(trees: list[xr.DataTree]) -> xr.DataTree:
-    """Concatenate matching groups along time; copy time-invariant groups from the first."""
+    """Concatenate groups along time; copy time-invariant groups from the first."""
     combined: dict[str, xr.Dataset] = {}
     for node in trees[0].subtree:
         datasets = [
-            promote_time_invariant(t[node.path].to_dataset(inherit=False)) for t in trees
+            promote_time_invariant(t[node.path].to_dataset(inherit=False))
+            for t in trees
         ]
         if "time" in datasets[0].dims:
             combined[node.path] = xr.concat(
@@ -130,5 +139,7 @@ def make_in_memory_repo(token: str) -> icechunk.Repository:
     return icechunk.Repository.open_or_create(
         storage=icechunk.in_memory_storage(),
         config=config,
-        authorize_virtual_chunk_access={CONTAINER_PREFIX: icechunk.credentials.HttpAccess},
+        authorize_virtual_chunk_access={
+            CONTAINER_PREFIX: icechunk.credentials.HttpAccess
+        },
     )

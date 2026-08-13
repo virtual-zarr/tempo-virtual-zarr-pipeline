@@ -176,7 +176,7 @@ Virtualizarr Data Pipelines uses a strongly-typed [settings module](./cdk/settin
 
 Backfill processes a large set of existing files in a single, highly
 parallel run. Instead of appending each file to `main`, where many concurrent workers
-would contend for the branch tip. It declares the store at its **full shape** up front on a dedicated `backfill` branch and then uses Icechunk's **fork and merge** model.  
+would contend for the branch tip. It declares the store at its **full shape** up front on a dedicated `backfill` branch and then uses Icechunk's **fork and merge** model.
 
 1. The coordinator creates an Icechunk store with the dataset's full dimension extent for the files included in the input file inventory.
 2. A coordinator splits the file inventory into partitions.  Each
@@ -184,13 +184,13 @@ would contend for the branch tip. It declares the store at its **full shape** up
    store as a single commit.  You'll want to balance your partitioning size so you're
    making a reasonably small number of commits but not losing too much work if
    one of the jobs in your partition fails (which means all the files in that
-   partition will not be committed). 
-3. For the first partition, the coordinator forks a clean, committed base snapshot.  
+   partition will not be committed).
+3. For the first partition, the coordinator forks a clean, committed base snapshot.
 4. For the partition the coordinator spawns a number of Lambda workers.  Each worker copies the fork and writes its set of files to a **disjoint** region of the array via
 `vds.vz.to_icechunk(fork.store, region="auto")` without committing.
 Region distjointness is the operator's responsibility, trying to write to the same region will result in merge failures.
 5. After it has written it's files to the fork the worker copies the pickled
-   fork to S3. 
+   fork to S3.
 6. When all the partition workers have completed, a reducer function merges all the pickled forks into **one commit for the partition** and finally `main` is fast-forwarded to the backfill tip. Because every worker writes to an independent fork and only the reducer commits, there is no tip contention and the writes-per-commit ratio is maximized.
 7. Each partition is processed serially so after the first partition is
    committed a new fork is created and used by the next partition.

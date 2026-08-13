@@ -9,7 +9,7 @@
 #     "xarray",
 # ]
 # ///
-"""Combine the first three granules of a TEMPO L3 collection into an in-memory virtual Icechunk store.
+"""Combine the first three TEMPO L3 granules into an in-memory virtual Icechunk store.
 
 Finds the three earliest granules of the selected collection (HCHO by default,
 ``--collection no2`` for NO2) via earthaccess, virtualizes each with VirtualiZarr's
@@ -32,8 +32,6 @@ import sys
 
 import earthaccess
 import xarray as xr
-from virtualizarr.manifests import ManifestArray
-
 from tempo_collections import add_collection_argument, resolve_concept_id
 from tempo_plot import save_map_png
 from tempo_virtual import (
@@ -44,17 +42,22 @@ from tempo_virtual import (
     manifest_totals,
     virtualize_urls,
 )
+from virtualizarr.manifests import ManifestArray
 
 N_FILES = 3
 
 
 def first_granule_urls(n: int, concept_id: str) -> list[str]:
-    granules = earthaccess.search_data(concept_id=concept_id, count=n, sort_key="start_date")
+    granules = earthaccess.search_data(
+        concept_id=concept_id, count=n, sort_key="start_date"
+    )
     urls = []
     for granule in granules:
         links = [u for u in granule.data_links(access="external") if u.endswith(".nc")]
         if not links:
-            raise RuntimeError(f"No .nc data link for granule {granule['meta']['concept-id']}")
+            raise RuntimeError(
+                f"No .nc data link for granule {granule['meta']['concept-id']}"
+            )
         urls.append(links[0])
     return urls
 
@@ -96,13 +99,18 @@ def main() -> int:
     print("\nCombining virtual datatrees along time...")
     combined = combine_trees(trees)
     chunks, total_bytes = manifest_totals(combined)
-    print(f"Combined tree references {chunks} chunks, {total_bytes / 1e9:.2f} GB of source data")
+    print(
+        f"Combined tree references {chunks} chunks, "
+        f"{total_bytes / 1e9:.2f} GB of source data"
+    )
 
     print("\nWriting virtual references to in-memory Icechunk repository...")
     repo = make_in_memory_repo(token)
     session = repo.writable_session("main")
     combined.vz.to_icechunk(session.store)
-    snapshot = session.commit(f"Combine first {N_FILES} TEMPO_HCHO_L3 granules (virtual refs)")
+    snapshot = session.commit(
+        f"Combine first {N_FILES} TEMPO_HCHO_L3 granules (virtual refs)"
+    )
     print(f"Committed snapshot {snapshot}")
 
     print("\nReading back through Icechunk:")
@@ -115,7 +123,11 @@ def main() -> int:
     times = readback["time"].values
     print(f"  time ({len(times)} steps): {times}")
     product = readback["product"].to_dataset()
-    var_name = "vertical_column" if "vertical_column" in product else next(iter(product.data_vars))
+    var_name = (
+        "vertical_column"
+        if "vertical_column" in product
+        else next(iter(product.data_vars))
+    )
     center = {
         dim: slice(size // 2, size // 2 + 3)
         for dim, size in product[var_name].sizes.items()
@@ -129,7 +141,10 @@ def main() -> int:
     png_path = save_map_png(map_slice, args.plot_path)
     print(f"  wrote {png_path}")
 
-    print("\nSuccess: three granules combined into one virtual Icechunk store, data readable.")
+    print(
+        "\nSuccess: three granules combined into one virtual Icechunk store, "
+        "data readable."
+    )
     return 0
 
 

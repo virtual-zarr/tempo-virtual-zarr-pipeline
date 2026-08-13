@@ -9,7 +9,7 @@
 #     "xarray",
 # ]
 # ///
-"""Combine 20 granules of a TEMPO L3 collection, spread evenly through time, into an in-memory virtual Icechunk store.
+"""Combine 20 time-spread TEMPO L3 granules into an in-memory virtual Icechunk store.
 
 Splits the selected collection's temporal extent (2023-08-02 to now; HCHO by
 default, ``--collection no2`` for NO2) into 20 equal windows, takes the first
@@ -33,7 +33,6 @@ from datetime import UTC, datetime
 
 import earthaccess
 import xarray as xr
-
 from tempo_collections import add_collection_argument, resolve_concept_id
 from tempo_plot import save_map_png
 from tempo_virtual import (
@@ -60,9 +59,14 @@ def spread_granule_urls(n: int, concept_id: str) -> list[str]:
             concept_id=concept_id, temporal=window, count=1, sort_key="start_date"
         )
         if not granules:
-            print(f"  window {i + 1}/{n} ({window[0]:%Y-%m-%d} to {window[1]:%Y-%m-%d}): empty, skipped")
+            print(
+                f"  window {i + 1}/{n} ({window[0]:%Y-%m-%d} to {window[1]:%Y-%m-%d}): "
+                "empty, skipped"
+            )
             continue
-        links = [u for u in granules[0].data_links(access="external") if u.endswith(".nc")]
+        links = [
+            u for u in granules[0].data_links(access="external") if u.endswith(".nc")
+        ]
         if links:
             urls.append(links[0])
             print(f"  window {i + 1}/{n}: {links[0].rsplit('/', 1)[-1]}")
@@ -96,7 +100,10 @@ def main() -> int:
     print("\nCombining virtual datatrees along time...")
     combined = combine_trees(trees)
     chunks, total_bytes = manifest_totals(combined)
-    print(f"Combined tree references {chunks} chunks, {total_bytes / 1e9:.2f} GB of source data")
+    print(
+        f"Combined tree references {chunks} chunks, "
+        f"{total_bytes / 1e9:.2f} GB of source data"
+    )
 
     print("\nWriting virtual references to in-memory Icechunk repository...")
     repo = make_in_memory_repo(token)
@@ -117,13 +124,21 @@ def main() -> int:
         print(f"    {t}")
 
     product = readback["product"].to_dataset()
-    var_name = "vertical_column" if "vertical_column" in product else next(iter(product.data_vars))
+    var_name = (
+        "vertical_column"
+        if "vertical_column" in product
+        else next(iter(product.data_vars))
+    )
     center = {
         dim: slice(size // 2, size // 2 + 2)
         for dim, size in product[var_name].sizes.items()
         if dim != "time"
     }
-    sample = product[var_name].isel(time=[0, len(times) // 2, len(times) - 1], **center).load()
+    sample = (
+        product[var_name]
+        .isel(time=[0, len(times) // 2, len(times) - 1], **center)
+        .load()
+    )
     print(f"\n  {var_name} sample from first/middle/last time steps:\n{sample.values}")
 
     print(f"\nRendering a map of {var_name} at the first time step...")
@@ -131,7 +146,10 @@ def main() -> int:
     png_path = save_map_png(map_slice, args.plot_path)
     print(f"  wrote {png_path}")
 
-    print(f"\nSuccess: {len(urls)} granules combined into one virtual Icechunk store, data readable.")
+    print(
+        f"\nSuccess: {len(urls)} granules combined into one virtual Icechunk store, "
+        "data readable."
+    )
     return 0
 
 

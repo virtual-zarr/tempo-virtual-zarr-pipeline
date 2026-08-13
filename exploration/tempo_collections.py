@@ -7,8 +7,10 @@ script's directory on ``sys.path``.
 import argparse
 
 COLLECTIONS = {
-    "hcho": "C3685897141-LARC_CLOUD",  # TEMPO_HCHO_L3 V04, gridded formaldehyde total column
-    "no2": "C3685896708-LARC_CLOUD",  # TEMPO_NO2_L3 V04, gridded NO2 tropospheric/stratospheric columns
+    # TEMPO_HCHO_L3 V04, gridded formaldehyde total column
+    "hcho": "C3685897141-LARC_CLOUD",
+    # TEMPO_NO2_L3 V04, gridded NO2 tropospheric/stratospheric columns
+    "no2": "C3685896708-LARC_CLOUD",
 }
 DEFAULT_COLLECTION = "hcho"
 

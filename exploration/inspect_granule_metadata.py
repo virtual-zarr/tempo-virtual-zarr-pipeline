@@ -21,16 +21,16 @@ Requires Earthdata Login credentials in ~/.netrc.
 Usage:
     uv run exploration/inspect_granule_metadata.py
     uv run exploration/inspect_granule_metadata.py --collection no2
-    uv run exploration/inspect_granule_metadata.py --index 100   # 101st granule by start date
+    uv run exploration/inspect_granule_metadata.py --index 100   # 101st by start date
     uv run exploration/inspect_granule_metadata.py --url https://data.asdc.earthdata.nasa.gov/...nc
 """
 
 import argparse
 import sys
+from typing import Any
 
 import earthaccess
 import h5py
-
 from tempo_collections import add_collection_argument, resolve_concept_id
 
 INDENT = "    "
@@ -58,7 +58,7 @@ FILTER_NAMES = {
 }
 
 
-def open_remote(url: str | None, index: int, concept_id: str):
+def open_remote(url: str | None, index: int, concept_id: str) -> Any:
     if url:
         return earthaccess.open([url])[0]
     granules = earthaccess.search_data(
@@ -69,14 +69,14 @@ def open_remote(url: str | None, index: int, concept_id: str):
     return earthaccess.open([granule])[0]
 
 
-def format_value(value) -> str:
+def format_value(value: object) -> str:
     text = str(value)
     if len(text) > 500:
         text = text[:500] + f"...[{len(text)} chars total]"
     return text.replace("\n", "\n" + INDENT * 4)
 
 
-def print_attrs(obj, depth: int) -> None:
+def print_attrs(obj: h5py.Group | h5py.Dataset, depth: int) -> None:
     pad = INDENT * depth
     if obj.attrs:
         print(f"{pad}attributes:")
@@ -86,9 +86,13 @@ def print_attrs(obj, depth: int) -> None:
 
 def describe_dtype(ds: h5py.Dataset) -> str:
     type_id = ds.id.get_type()
-    order = {h5py.h5t.ORDER_LE: "little-endian", h5py.h5t.ORDER_BE: "big-endian"}.get(
-        type_id.get_order(), ""
-    ) if isinstance(type_id, (h5py.h5t.TypeIntegerID, h5py.h5t.TypeFloatID)) else ""
+    order = (
+        {h5py.h5t.ORDER_LE: "little-endian", h5py.h5t.ORDER_BE: "big-endian"}.get(
+            type_id.get_order(), ""
+        )
+        if isinstance(type_id, (h5py.h5t.TypeIntegerID, h5py.h5t.TypeFloatID))
+        else ""
+    )
     string_info = h5py.check_string_dtype(ds.dtype)
     if string_info:
         return f"string (encoding={string_info.encoding}, length={string_info.length})"
@@ -155,7 +159,9 @@ def walk(group: h5py.Group, path: str, depth: int) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--url", help="Granule URL to inspect (skips CMR search)")
-    parser.add_argument("--index", type=int, default=0, help="Granule index by start date")
+    parser.add_argument(
+        "--index", type=int, default=0, help="Granule index by start date"
+    )
     add_collection_argument(parser)
     args = parser.parse_args()
 

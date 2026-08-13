@@ -35,8 +35,7 @@ import matplotlib
 matplotlib.use("Agg")
 
 import matplotlib.pyplot as plt
-import numpy as np
-
+from matplotlib.axes import Axes
 from tempo_collections import add_collection_argument, resolve_concept_id
 
 GRID_COLOR = "#4269d0"
@@ -45,17 +44,21 @@ GRID_COLOR = "#4269d0"
 def collect_datasets(h5: h5py.File) -> list[tuple[str, h5py.Dataset]]:
     datasets: list[tuple[str, h5py.Dataset]] = []
     h5.visititems(
-        lambda name, obj: datasets.append((name, obj)) if isinstance(obj, h5py.Dataset) else None
+        lambda name, obj: datasets.append((name, obj))
+        if isinstance(obj, h5py.Dataset)
+        else None
     )
     return datasets
 
 
-def plot_chunk_grid(ax, shape: tuple, chunks: tuple, names: list[str]) -> None:
+def plot_chunk_grid(ax: Axes, shape: tuple, chunks: tuple, names: list[str]) -> None:
     """Draw chunk boundaries of a (time, latitude, longitude) dataset in index space."""
     *_, n_lat, n_lon = shape
     *lead_chunks, c_lat, c_lon = chunks
     ax.add_patch(
-        plt.Rectangle((0, 0), n_lon, n_lat, fill=False, edgecolor="#555555", linewidth=1.2)
+        plt.Rectangle(
+            (0, 0), n_lon, n_lat, fill=False, edgecolor="#555555", linewidth=1.2
+        )
     )
     for x in range(c_lon, n_lon, c_lon):
         ax.axvline(x, color=GRID_COLOR, linewidth=0.7)
@@ -81,7 +84,12 @@ def plot_chunk_grid(ax, shape: tuple, chunks: tuple, names: list[str]) -> None:
         va="top",
         fontsize=8,
         color="#555555",
-        bbox={"boxstyle": "round", "facecolor": "white", "edgecolor": "#cccccc", "alpha": 0.9},
+        bbox={
+            "boxstyle": "round",
+            "facecolor": "white",
+            "edgecolor": "#cccccc",
+            "alpha": 0.9,
+        },
     )
 
 
@@ -99,7 +107,9 @@ def main() -> int:
     earthaccess.login(strategy="netrc")
 
     print(f"Finding the first granule of {concept_id}...")
-    granules = earthaccess.search_data(concept_id=concept_id, count=1, sort_key="start_date")
+    granules = earthaccess.search_data(
+        concept_id=concept_id, count=1, sort_key="start_date"
+    )
     if not granules:
         raise RuntimeError(f"No granules found for {concept_id}")
 
@@ -117,7 +127,10 @@ def main() -> int:
             compression += f"({ds.compression_opts})"
         if ds.shuffle:
             compression += "+shuffle"
-        print(f"{path:<42} {str(ds.shape):<20} {chunk_str:<18} {str(ds.dtype):<10} {compression}")
+        print(
+            f"{path:<42} {str(ds.shape):<20} {chunk_str:<18} "
+            f"{str(ds.dtype):<10} {compression}"
+        )
 
     # Group the gridded (…, latitude, longitude) datasets by their chunking so each
     # distinct chunk grid gets one panel.
@@ -131,11 +144,18 @@ def main() -> int:
 
     chunkings = sorted(by_chunking.items(), key=lambda kv: kv[0])
     fig, axes = plt.subplots(
-        1, len(chunkings), figsize=(7 * len(chunkings), 4.5), constrained_layout=True, squeeze=False
+        1,
+        len(chunkings),
+        figsize=(7 * len(chunkings), 4.5),
+        constrained_layout=True,
+        squeeze=False,
     )
     for ax, ((shape, chunks), names) in zip(axes[0], chunkings):
         uncompressed = prod(chunks) * 8 / 1e6
-        print(f"\nChunking {chunks} for {len(names)} datasets (~{uncompressed:.0f} MB/chunk at 8 bytes)")
+        print(
+            f"\nChunking {chunks} for {len(names)} datasets "
+            f"(~{uncompressed:.0f} MB/chunk at 8 bytes)"
+        )
         plot_chunk_grid(ax, shape, chunks, names)
     fig.suptitle(f"HDF5 chunk structure of {name}")
     fig.savefig(args.plot_path, dpi=150)

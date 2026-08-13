@@ -35,7 +35,6 @@ matplotlib.use("Agg")
 
 import matplotlib.pyplot as plt
 import numpy as np
-
 from tempo_collections import add_collection_argument, resolve_concept_id
 
 LAT_COLOR = "#4269d0"
@@ -49,7 +48,10 @@ def describe_coordinate(name: str, values: np.ndarray) -> None:
         return
     diffs = np.diff(values.astype("float64"))
     print(f"  range: {values.min():.6g} to {values.max():.6g}")
-    print(f"  spacing: min={diffs.min():.10g}, mean={diffs.mean():.10g}, max={diffs.max():.10g}")
+    print(
+        f"  spacing: min={diffs.min():.10g}, mean={diffs.mean():.10g}, "
+        f"max={diffs.max():.10g}"
+    )
     # Coordinates are stored as float32, so adjacent diffs wobble by up to a few
     # ULPs of the coordinate magnitude (~2e-5 deg at 168 deg); treat spacing as
     # uniform if deviations stay within that representation error.
@@ -62,7 +64,9 @@ def describe_coordinate(name: str, values: np.ndarray) -> None:
     )
 
 
-def plot_coordinate(axes_column, name: str, values: np.ndarray, color: str) -> None:
+def plot_coordinate(
+    axes_column: np.ndarray, name: str, values: np.ndarray, color: str
+) -> None:
     ax_values, ax_spacing = axes_column
     index = np.arange(values.size)
     ax_values.plot(index, values, color=color, linewidth=2)
@@ -106,7 +110,9 @@ def main() -> int:
     earthaccess.login(strategy="netrc")
 
     print(f"Finding the first granule of {concept_id}...")
-    granules = earthaccess.search_data(concept_id=concept_id, count=1, sort_key="start_date")
+    granules = earthaccess.search_data(
+        concept_id=concept_id, count=1, sort_key="start_date"
+    )
     if not granules:
         raise RuntimeError(f"No granules found for {concept_id}")
 

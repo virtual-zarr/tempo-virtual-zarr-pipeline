@@ -35,7 +35,6 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import xarray as xr
-
 from tempo_collections import add_collection_argument, resolve_concept_id
 
 
@@ -66,7 +65,9 @@ def main() -> int:
         product = xr.open_dataset(f, engine="h5netcdf", group="product")
         if var_name is None:
             var_name = (
-                "vertical_column" if "vertical_column" in product else next(iter(product.data_vars))
+                "vertical_column"
+                if "vertical_column" in product
+                else next(iter(product.data_vars))
             )
             lat = root["latitude"].values
             lon = root["longitude"].values
@@ -75,6 +76,9 @@ def main() -> int:
         mask = np.isnan(product[var_name].isel(time=0).values)
         masks.append(mask)
         times.append(time_value)
+
+    if lat is None or lon is None:
+        raise RuntimeError(f"No granules opened for {concept_id}")
 
     n = len(masks)
     count = np.sum(masks, axis=0).astype("int16")
@@ -88,7 +92,10 @@ def main() -> int:
     never_nan = int((count == 0).sum())
     varying = total - always_nan - never_nan
     print(f"  masks identical across scans: {identical}")
-    print(f"  always NaN: {always_nan / total:.1%}, never NaN: {never_nan / total:.1%}, varying: {varying / total:.1%}")
+    print(
+        f"  always NaN: {always_nan / total:.1%}, "
+        f"never NaN: {never_nan / total:.1%}, varying: {varying / total:.1%}"
+    )
 
     print("\nRendering NaN-count map...")
     cmap = plt.get_cmap("Blues", n + 1)
