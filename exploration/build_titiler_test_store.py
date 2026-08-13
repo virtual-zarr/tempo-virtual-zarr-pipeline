@@ -33,54 +33,22 @@ import argparse
 import sys
 from pathlib import Path
 
-import earthaccess
 import icechunk
 import xarray as xr
-from tempo_collections import add_collection_argument, resolve_concept_id
+from tempo_collections import VARIABLES, add_collection_argument, resolve_concept_id
 from tempo_virtual import (
     CONTAINER_PREFIX,
     PARSE_WORKERS,
     combine_trees,
     earthdata_token,
+    flatten_product_subset,
     make_registry,
     manifest_totals,
+    recent_granule_urls,
     virtualize_urls,
 )
 
-VARIABLES = {
-    "hcho": ["vertical_column", "main_data_quality_flag"],
-    "no2": ["vertical_column_troposphere", "main_data_quality_flag"],
-}
 DEFAULT_N_GRANULES = 12
-
-
-def recent_granule_urls(n: int, concept_id: str) -> list[str]:
-    """The n most recent granules of the collection, in chronological order."""
-    granules = earthaccess.search_data(
-        concept_id=concept_id, count=n, sort_key="-start_date"
-    )
-    urls = []
-    for granule in granules:
-        links = [u for u in granule.data_links(access="external") if u.endswith(".nc")]
-        if not links:
-            raise RuntimeError(
-                f"No .nc data link for granule {granule['meta']['concept-id']}"
-            )
-        urls.append(links[0])
-    return list(reversed(urls))
-
-
-def flatten_product_subset(tree: xr.DataTree, variables: list[str]) -> xr.Dataset:
-    """Root-group dataset of the selected product variables with inherited coords."""
-    product = tree[
-        "product"
-    ].to_dataset()  # inherit=True pulls root time/lat/lon coords
-    missing = [name for name in variables if name not in product]
-    if missing:
-        raise RuntimeError(f"Variables missing from product group: {missing}")
-    flat = product[variables]
-    flat.attrs = dict(tree.attrs)
-    return flat
 
 
 def create_repo(store_dir: Path) -> icechunk.Repository:

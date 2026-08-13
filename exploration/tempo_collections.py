@@ -14,6 +14,12 @@ COLLECTIONS = {
 }
 DEFAULT_COLLECTION = "hcho"
 
+# Smoke-test variable subset per collection: primary column variable + quality flag.
+VARIABLES = {
+    "hcho": ["vertical_column", "main_data_quality_flag"],
+    "no2": ["vertical_column_troposphere", "main_data_quality_flag"],
+}
+
 
 def add_collection_argument(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(

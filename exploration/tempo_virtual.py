@@ -37,6 +37,39 @@ def earthdata_token() -> str:
     return token
 
 
+def recent_granule_urls(n: int, concept_id: str, access: str = "external") -> list[str]:
+    """The n most recent granules of the collection, in chronological order.
+
+    ``access="external"`` returns EDL-authed HTTPS URLs; ``access="direct"`` returns
+    in-region ``s3://`` URLs.
+    """
+    granules = earthaccess.search_data(
+        concept_id=concept_id, count=n, sort_key="-start_date"
+    )
+    urls = []
+    for granule in granules:
+        links = [u for u in granule.data_links(access=access) if u.endswith(".nc")]
+        if not links:
+            raise RuntimeError(
+                f"No .nc data link for granule {granule['meta']['concept-id']}"
+            )
+        urls.append(links[0])
+    return list(reversed(urls))
+
+
+def flatten_product_subset(tree: xr.DataTree, variables: list[str]) -> xr.Dataset:
+    """Root-group dataset of the selected product variables with inherited coords."""
+    product = tree[
+        "product"
+    ].to_dataset()  # inherit=True pulls root time/lat/lon coords
+    missing = [name for name in variables if name not in product]
+    if missing:
+        raise RuntimeError(f"Variables missing from product group: {missing}")
+    flat = product[variables]
+    flat.attrs = dict(tree.attrs)
+    return flat
+
+
 def make_registry(token: str) -> ObjectStoreRegistry:
     store = HTTPStore.from_url(
         DATA_HOST,
