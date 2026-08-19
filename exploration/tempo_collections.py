@@ -7,10 +7,18 @@ script's directory on ``sys.path``.
 import argparse
 
 COLLECTIONS = {
-    "hcho": "C3685897141-LARC_CLOUD",  # TEMPO_HCHO_L3 V04, gridded formaldehyde total column
-    "no2": "C3685896708-LARC_CLOUD",  # TEMPO_NO2_L3 V04, gridded NO2 tropospheric/stratospheric columns
+    # TEMPO_HCHO_L3 V04, gridded formaldehyde total column
+    "hcho": "C3685897141-LARC_CLOUD",
+    # TEMPO_NO2_L3 V04, gridded NO2 tropospheric/stratospheric columns
+    "no2": "C3685896708-LARC_CLOUD",
 }
 DEFAULT_COLLECTION = "hcho"
+
+# Smoke-test variable subset per collection: primary column variable + quality flag.
+VARIABLES = {
+    "hcho": ["vertical_column", "main_data_quality_flag"],
+    "no2": ["vertical_column_troposphere", "main_data_quality_flag"],
+}
 
 
 def add_collection_argument(parser: argparse.ArgumentParser) -> None:

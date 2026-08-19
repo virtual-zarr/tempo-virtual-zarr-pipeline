@@ -28,13 +28,15 @@ import sys
 import textwrap
 
 import earthaccess
-
 from tempo_collections import add_collection_argument, resolve_concept_id
 
 
 def wrap(text: str, indent: str = "    ") -> str:
     return textwrap.fill(
-        " ".join(text.split()), width=96, initial_indent=indent, subsequent_indent=indent
+        " ".join(text.split()),
+        width=96,
+        initial_indent=indent,
+        subsequent_indent=indent,
     )
 
 
@@ -44,7 +46,14 @@ def section(title: str) -> None:
 
 def format_citation(citation: dict) -> str:
     parts = []
-    for key in ("Creator", "ReleaseDate", "Title", "Version", "Publisher", "OtherCitationDetails"):
+    for key in (
+        "Creator",
+        "ReleaseDate",
+        "Title",
+        "Version",
+        "Publisher",
+        "OtherCitationDetails",
+    ):
         value = citation.get(key)
         if value:
             parts.append(f"{key}: {value}")
@@ -62,21 +71,33 @@ def temporal_extent(umm: dict) -> list[str]:
             lines.append(f"Temporal extent: {begin} to {end or '?'}")
         resolution = extent.get("TemporalResolution")
         if resolution:
-            lines.append(f"Temporal resolution: {resolution.get('Value')} {resolution.get('Unit')}")
+            lines.append(
+                f"Temporal resolution: {resolution.get('Value')} "
+                f"{resolution.get('Unit')}"
+            )
     return lines
 
 
 def science_keywords(umm: dict) -> list[str]:
     paths = []
     for keyword in umm.get("ScienceKeywords", []):
-        levels = ("Category", "Topic", "Term", "VariableLevel1", "VariableLevel2", "VariableLevel3")
+        levels = (
+            "Category",
+            "Topic",
+            "Term",
+            "VariableLevel1",
+            "VariableLevel2",
+            "VariableLevel3",
+        )
         path = " > ".join(keyword[level] for level in levels if keyword.get(level))
         if path not in paths:
             paths.append(path)
     return paths
 
 
-def print_report(collection: dict, granule_count: int | None, sample: dict | None) -> None:
+def print_report(
+    collection: dict, granule_count: int | None, sample: dict | None
+) -> None:
     umm = collection["umm"]
     meta = collection["meta"]
 
@@ -97,8 +118,11 @@ def print_report(collection: dict, granule_count: int | None, sample: dict | Non
     print(f"    Platforms: {', '.join(p.get('ShortName', '?') for p in platforms)}")
     instruments = [i for p in platforms for i in p.get("Instruments", [])]
     print(f"    Instruments: {', '.join(i.get('ShortName', '?') for i in instruments)}")
-    print(f"    Projects: {', '.join(p.get('ShortName', '?') for p in umm.get('Projects', []))}")
-    locations = [k.get("Type") or k.get("Category", "?") for k in umm.get("LocationKeywords", [])]
+    projects = ", ".join(p.get("ShortName", "?") for p in umm.get("Projects", []))
+    print(f"    Projects: {projects}")
+    locations = [
+        k.get("Type") or k.get("Category", "?") for k in umm.get("LocationKeywords", [])
+    ]
     print(f"    Location: {', '.join(locations)}")
     spatial = umm.get("SpatialExtent", {})
     geometry = spatial.get("HorizontalSpatialDomain", {}).get("Geometry", {})
@@ -106,15 +130,22 @@ def print_report(collection: dict, granule_count: int | None, sample: dict | Non
     for rect in geometry.get("BoundingRectangles", []):
         print(
             f"    Bounding rectangle: lon [{rect.get('WestBoundingCoordinate')}, "
-            f"{rect.get('EastBoundingCoordinate')}], lat [{rect.get('SouthBoundingCoordinate')}, "
+            f"{rect.get('EastBoundingCoordinate')}], "
+            f"lat [{rect.get('SouthBoundingCoordinate')}, "
             f"{rect.get('NorthBoundingCoordinate')}]"
         )
-    print(f"    Granule spatial representation: {spatial.get('GranuleSpatialRepresentation')}")
+    print(
+        f"    Granule spatial representation: "
+        f"{spatial.get('GranuleSpatialRepresentation')}"
+    )
     for line in temporal_extent(umm):
         print(f"    {line}")
     for center in umm.get("DataCenters", []):
         roles = ", ".join(center.get("Roles", []))
-        print(f"    Data center ({roles}): {center.get('LongName') or center.get('ShortName')}")
+        print(
+            f"    Data center ({roles}): "
+            f"{center.get('LongName') or center.get('ShortName')}"
+        )
     print(f"    Concept ID: {meta.get('concept-id')}")
     print(f"    Data state: {umm.get('CollectionProgress')}")
     if granule_count is not None:
@@ -149,8 +180,13 @@ def print_report(collection: dict, granule_count: int | None, sample: dict | Non
                 f"    Temporal: {temporal.get('BeginningDateTime')} to "
                 f"{temporal.get('EndingDateTime')}"
             )
-        for granule_size in sample_umm.get("DataGranule", {}).get("ArchiveAndDistributionInformation", []):
-            print(f"    File: {granule_size.get('Name')} ({granule_size.get('Size')} {granule_size.get('SizeUnit')})")
+        for granule_size in sample_umm.get("DataGranule", {}).get(
+            "ArchiveAndDistributionInformation", []
+        ):
+            print(
+                f"    File: {granule_size.get('Name')} "
+                f"({granule_size.get('Size')} {granule_size.get('SizeUnit')})"
+            )
         for url in sample_umm.get("RelatedUrls", []):
             if url.get("Type") == "GET DATA":
                 print(f"    Data URL: {url.get('URL')}")
@@ -159,9 +195,15 @@ def print_report(collection: dict, granule_count: int | None, sample: dict | Non
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     add_collection_argument(parser)
-    parser.add_argument("--short-name", help="Collection short name, e.g. TEMPO_HCHO_L3")
-    parser.add_argument("--version", help="Collection version, e.g. V04 (with --short-name)")
-    parser.add_argument("--json", action="store_true", help="Dump raw UMM-C + meta JSON instead")
+    parser.add_argument(
+        "--short-name", help="Collection short name, e.g. TEMPO_HCHO_L3"
+    )
+    parser.add_argument(
+        "--version", help="Collection version, e.g. V04 (with --short-name)"
+    )
+    parser.add_argument(
+        "--json", action="store_true", help="Dump raw UMM-C + meta JSON instead"
+    )
     args = parser.parse_args()
 
     query: dict = {}
@@ -185,15 +227,25 @@ def main() -> int:
             print(f"Granule count query failed: {error}", file=sys.stderr)
             granule_count = None
         try:
-            granules = earthaccess.search_data(concept_id=concept_id, count=1, sort_key="-start_date")
+            granules = earthaccess.search_data(
+                concept_id=concept_id, count=1, sort_key="-start_date"
+            )
             sample = granules[0] if granules else None
         except Exception as error:
             print(f"Sample granule query failed: {error}", file=sys.stderr)
             sample = None
 
         if args.json:
-            print(json.dumps({"meta": collection["meta"], "umm": collection["umm"],
-                              "granule_count": granule_count}, indent=2))
+            print(
+                json.dumps(
+                    {
+                        "meta": collection["meta"],
+                        "umm": collection["umm"],
+                        "granule_count": granule_count,
+                    },
+                    indent=2,
+                )
+            )
         else:
             print_report(collection, granule_count, sample)
     return 0
