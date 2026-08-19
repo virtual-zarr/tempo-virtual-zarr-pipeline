@@ -294,6 +294,11 @@ class VirtualizarrSqsStack(Stack):
             )
 
         if settings.BACKFILL_ENABLED:
+            if settings.DATA_BUCKET_NAME is None:
+                raise ValueError(
+                    "DATA_BUCKET_NAME must be set when BACKFILL_ENABLED is true; "
+                    "the backfill workers need read access to the source bucket"
+                )
             self.backfill_pipeline = BackfillPipeline(
                 self,
                 "BackfillPipeline",

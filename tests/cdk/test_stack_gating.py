@@ -1,4 +1,5 @@
 import aws_cdk as cdk
+import pytest
 from aws_cdk.assertions import Template
 from settings import StackSettings
 from stack import VirtualizarrSqsStack
@@ -65,3 +66,20 @@ def test_backfill_disabled_creates_initialize_lambda() -> None:
 
 def test_backfill_enabled_skips_initialize_lambda() -> None:
     assert "initializeicechunk" not in _resource_ids(_template(backfill=True))
+
+
+def test_backfill_enabled_requires_data_bucket_name() -> None:
+    settings = StackSettings(
+        STAGE="dev",
+        ACCOUNT_ID="111111111111",
+        ICECHUNK_BUCKET_NAME="ice-test",
+        BACKFILL_ENABLED=True,
+    )
+    app = cdk.App()
+    with pytest.raises(ValueError, match="DATA_BUCKET_NAME"):
+        VirtualizarrSqsStack(
+            app,
+            settings.STACK_NAME,
+            settings=settings,
+            env={"account": settings.ACCOUNT_ID, "region": settings.ACCOUNT_REGION},
+        )

@@ -53,6 +53,7 @@ line-ending = "auto"
 
 [tool.mypy]
 python_version = "3.12"
+mypy_path = ["cdk", "lambda/backfill", "lambda/virtualizarr-processor"]
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true

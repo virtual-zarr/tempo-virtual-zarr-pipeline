@@ -4,7 +4,8 @@ from aws_cdk import App, Tags
 from settings import StackSettings
 from stack import VirtualizarrSqsStack
 
-settings = StackSettings()
+# Required fields (e.g. STAGE) are populated from the environment/.env at runtime.
+settings = StackSettings()  # type: ignore[call-arg]
 
 # Resolve the target environment. Prefer explicit settings; fall back to the CDK
 # CLI's ambient account/region (from the active AWS credentials) so a blank
