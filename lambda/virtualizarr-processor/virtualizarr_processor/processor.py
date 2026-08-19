@@ -12,10 +12,13 @@ import obstore
 import xarray as xr
 import zarr
 from icechunk import ForkSession, Repository, Session
+from pydantic_zarr.v3 import ArraySpec, DefaultChunkKeyEncoding, GroupSpec
 from virtualizarr.manifests import ChunkManifest, ManifestArray
 from zarr.codecs import BytesCodec
 from zarr.core.dtype import parse_data_type
 from zarr.core.metadata import ArrayV3Metadata
+
+from virtualizarr_processor.store_template import create_empty_store, validate_store
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +28,44 @@ CHUNK_DIRECTORY_URL_PREFIX = f"file://{CHUNK_DIR}/"
 # Backfill synthetic dataset: N time steps, each a (Y, X) int32 chunk.
 BACKFILL_N, BACKFILL_Y, BACKFILL_X = 6, 2, 3
 BACKFILL_DTYPE = np.dtype("int32")
+
+
+def _template_array(
+    shape: tuple[int, ...],
+    chunks: tuple[int, ...],
+    dtype: str,
+    dims: tuple[str, ...],
+) -> ArraySpec:
+    """An uncompressed little-endian array spec, matching what the synthetic
+    backfill worker expects when it decodes raw chunk bytes."""
+    return ArraySpec(
+        attributes={},
+        shape=shape,
+        data_type=dtype,
+        chunk_grid={"name": "regular", "configuration": {"chunk_shape": chunks}},
+        chunk_key_encoding=DefaultChunkKeyEncoding(
+            name="default", configuration={"separator": "/"}
+        ),
+        fill_value=0,
+        codecs=({"name": "bytes", "configuration": {"endian": "little"}},),
+        dimension_names=dims,
+    )
+
+
+# The full-shape schema of the synthetic backfill store. Declared once so the
+# store can be created empty (metadata only) and later checked against it.
+BACKFILL_TEMPLATE: GroupSpec = GroupSpec.from_flat(
+    {
+        "": GroupSpec(attributes={}, members=None),
+        "/foo": _template_array(
+            (BACKFILL_N, BACKFILL_Y, BACKFILL_X),
+            (1, BACKFILL_Y, BACKFILL_X),
+            str(BACKFILL_DTYPE),
+            ("time", "y", "x"),
+        ),
+        "/time": _template_array((BACKFILL_N,), (BACKFILL_N,), "int64", ("time",)),
+    }
+)
 
 
 def synthetic_vds(date: str) -> xr.Dataset:
@@ -118,25 +159,15 @@ class Processor:
     def initialize_backfill_store(self, repo: Repository) -> str:
         repo.create_branch("backfill", repo.lookup_branch("main"))
         session = repo.writable_session("backfill")
-        root = zarr.open_group(session.store, mode="a")
-        root.create_array(
-            "foo",
-            shape=(BACKFILL_N, BACKFILL_Y, BACKFILL_X),
-            chunks=(1, BACKFILL_Y, BACKFILL_X),
-            dtype=BACKFILL_DTYPE,
-            serializer=BytesCodec(),
-            compressors=None,
-            filters=None,
-            dimension_names=("time", "y", "x"),
-        )
-        time_coord = root.create_array(
-            "time",
-            shape=(BACKFILL_N,),
-            chunks=(BACKFILL_N,),
-            dtype="int64",
-            dimension_names=("time",),
-        )
+        create_empty_store(BACKFILL_TEMPLATE, session.store)
+        time_coord = zarr.open_array(session.store, path="time")
         time_coord[:] = np.arange(BACKFILL_N)
+        # allow_extra: the branch also carries whatever `main` already held.
+        validate_store(
+            BACKFILL_TEMPLATE,
+            zarr.open_group(session.store, mode="r"),
+            allow_extra=True,
+        )
         return cast(str, session.commit("Initialize backfill shape"))
 
     def open_backfill_repo(self) -> Repository:

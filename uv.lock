@@ -1196,6 +1196,20 @@ wheels = [
 ]
 
 [[package]]
+name = "pydantic-zarr"
+version = "0.10.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+    { name = "packaging" },
+    { name = "pydantic" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/2f/57/aac9e500abe15719b7406d55871fc8787e7d0ebf83de5f98d44471139f70/pydantic_zarr-0.10.0.tar.gz", hash = "sha256:996b5b4225fb05757e7fff831ee7a75c61f54514a4c2493c7b79635bade7b415", size = 80374, upload-time = "2026-04-23T14:23:12.575Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/c7/05/04af0ca9c5747c95591a549509ebbb0a986155015de59f1e4c984e3af9ab/pydantic_zarr-0.10.0-py3-none-any.whl", hash = "sha256:d15769dab43346b070051fdf6e83509d7f55259dd00c6d12be2400935117e230", size = 52809, upload-time = "2026-04-23T14:23:11.011Z" },
+]
+
+[[package]]
 name = "pygments"
 version = "2.19.2"
 source = { registry = "https://pypi.org/simple" }
@@ -1594,6 +1608,7 @@ version = "0.1.0"
 source = { editable = "lambda/virtualizarr-processor" }
 dependencies = [
     { name = "icechunk" },
+    { name = "pydantic-zarr" },
     { name = "virtualizarr" },
     { name = "zarr" },
 ]
@@ -1601,6 +1616,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "icechunk", specifier = ">=2.1" },
+    { name = "pydantic-zarr", specifier = ">=0.10" },
     { name = "virtualizarr", specifier = ">=2.7" },
     { name = "zarr", specifier = ">=3.2.1" },
 ]

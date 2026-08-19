@@ -82,3 +82,18 @@ def test_open_backfill_repo_local_filesystem(
     assert "main" in repo.list_branches()
     # main must have a resolvable tip so initialize_backfill_store can branch off it
     assert repo.lookup_branch("main")
+
+
+def test_backfill_store_matches_declared_template(
+    backfill_repo: icechunk.Repository,
+) -> None:
+    from virtualizarr_processor.processor import BACKFILL_TEMPLATE
+    from virtualizarr_processor.store_template import validate_store
+
+    processor = Processor()
+    processor.initialize_backfill_store(backfill_repo)
+
+    group = zarr.open_group(backfill_repo.readonly_session("backfill").store, mode="r")
+    # main's pre-existing nodes ride along on the backfill branch, so the
+    # template constrains its own nodes without forbidding extras.
+    validate_store(BACKFILL_TEMPLATE, group, allow_extra=True)
