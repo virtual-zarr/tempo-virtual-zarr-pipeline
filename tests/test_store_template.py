@@ -6,13 +6,19 @@ and validate that an existing store conforms to it.
 """
 
 import icechunk
+import numpy as np
 import pytest
+import xarray as xr
 import zarr
 from pydantic_zarr.v3 import ArraySpec, GroupSpec
 from virtualizarr_processor.store_template import (
+    TEMPO_L3_VOLATILE_ATTRIBUTES,
+    GranuleValidationError,
     StoreValidationError,
     create_empty_store,
     resize,
+    strip_attributes,
+    validate_granule,
     validate_store,
 )
 
@@ -25,9 +31,10 @@ def array_spec(
     dtype: str,
     dims: tuple[str, ...],
     fill_value: object = 0,
+    attributes: dict | None = None,
 ) -> ArraySpec:
     return ArraySpec(
-        attributes={},
+        attributes=attributes or {},
         shape=shape,
         data_type=dtype,
         chunk_grid={"name": "regular", "configuration": {"chunk_shape": chunks}},
@@ -197,3 +204,297 @@ class TestResize:
         time_spec = spec.to_flat()["/time"]
         assert isinstance(time_spec, ArraySpec)
         assert time_spec.shape == (TIME,)
+
+
+def granule_template() -> GroupSpec:
+    """A flat template carrying shared attributes, as a real one would after
+    strip_attributes() on a reference-granule spec."""
+    return GroupSpec.from_flat(
+        {
+            "": GroupSpec(
+                attributes={"title": "TEMPO test", "platform": "TEMPO"},
+                members=None,
+            ),
+            "/latitude": array_spec((Y,), (Y,), "float32", ("latitude",)),
+            "/vertical_column": array_spec(
+                (TIME, Y, X),
+                (1, Y, X),
+                "float64",
+                ("time", "latitude", "longitude"),
+                attributes={"units": "molecules/cm^2"},
+            ),
+        }
+    )
+
+
+LATITUDE = np.arange(Y, dtype="float32")
+
+
+def granule(
+    *,
+    root_attrs: dict | None = None,
+    var_attrs: dict | None = None,
+    latitude: np.ndarray = LATITUDE,
+) -> xr.Dataset:
+    return xr.Dataset(
+        {
+            "vertical_column": (
+                ("time", "latitude", "longitude"),
+                np.zeros((1, Y, X)),
+                {"units": "molecules/cm^2"} if var_attrs is None else var_attrs,
+            )
+        },
+        coords={"latitude": ("latitude", latitude)},
+        attrs=(
+            {"title": "TEMPO test", "platform": "TEMPO"}
+            if root_attrs is None
+            else root_attrs
+        ),
+    )
+
+
+class TestStripAttributes:
+    def test_removes_named_attributes_everywhere(self) -> None:
+        flat = granule_template().to_flat()
+        root = flat[""]
+        var = flat["/vertical_column"]
+        flat[""] = root.model_copy(
+            update={"attributes": {**root.attributes, "history": "run 42"}}
+        )
+        flat["/vertical_column"] = var.model_copy(
+            update={"attributes": {**var.attributes, "history": "run 42"}}
+        )
+        spec = GroupSpec.from_flat(flat)
+
+        stripped = strip_attributes(spec, {"history"})
+
+        flat_out = stripped.to_flat()
+        assert flat_out[""].attributes == {
+            "title": "TEMPO test",
+            "platform": "TEMPO",
+        }
+        assert flat_out["/vertical_column"].attributes == {"units": "molecules/cm^2"}
+
+    def test_original_spec_is_unchanged(self) -> None:
+        spec = granule_template()
+
+        strip_attributes(spec, {"title"})
+
+        assert spec.to_flat()[""].attributes["title"] == "TEMPO test"
+
+    def test_tempo_volatile_list_covers_profiled_attrs(self) -> None:
+        assert "history" in TEMPO_L3_VOLATILE_ATTRIBUTES
+        assert "time_coverage_start" in TEMPO_L3_VOLATILE_ATTRIBUTES
+
+
+class TestValidateGranule:
+    def test_conforming_granule_passes(self) -> None:
+        validate_granule(
+            granule_template(), granule(), coordinates={"latitude": LATITUDE}
+        )
+
+    def test_differing_spatial_coordinates_raise(self) -> None:
+        shifted = granule(latitude=LATITUDE + np.float32(0.1))
+
+        with pytest.raises(GranuleValidationError, match="latitude"):
+            validate_granule(
+                granule_template(), shifted, coordinates={"latitude": LATITUDE}
+            )
+
+    def test_missing_spatial_coordinate_raises(self) -> None:
+        no_coord = granule().drop_vars("latitude")
+
+        with pytest.raises(GranuleValidationError, match="latitude"):
+            validate_granule(
+                granule_template(), no_coord, coordinates={"latitude": LATITUDE}
+            )
+
+    def test_differing_expected_attribute_raises(self) -> None:
+        wrong_units = granule(var_attrs={"units": "DU"})
+
+        with pytest.raises(GranuleValidationError) as excinfo:
+            validate_granule(granule_template(), wrong_units)
+
+        message = str(excinfo.value)
+        assert "/vertical_column" in message
+        assert "units" in message
+
+    def test_missing_expected_attribute_raises(self) -> None:
+        missing = granule(root_attrs={"title": "TEMPO test"})
+
+        with pytest.raises(GranuleValidationError, match="platform"):
+            validate_granule(granule_template(), missing)
+
+    def test_volatile_attribute_differences_are_ignored(self) -> None:
+        noisy = granule(
+            root_attrs={
+                "title": "TEMPO test",
+                "platform": "TEMPO",
+                "history": "produced 2026-08-19",
+            }
+        )
+
+        validate_granule(granule_template(), noisy, volatile={"history"})
+
+    def test_ndarray_attribute_values_compare_by_content(self) -> None:
+        flat = granule_template().to_flat()
+        root = flat[""]
+        flat[""] = root.model_copy(
+            update={"attributes": {**root.attributes, "bounds": [-90.0, 90.0]}}
+        )
+        spec = GroupSpec.from_flat(flat)
+        ok = granule(
+            root_attrs={
+                "title": "TEMPO test",
+                "platform": "TEMPO",
+                "bounds": np.array([-90.0, 90.0]),
+            }
+        )
+
+        validate_granule(spec, ok)
+
+        bad = granule(
+            root_attrs={
+                "title": "TEMPO test",
+                "platform": "TEMPO",
+                "bounds": np.array([-89.0, 90.0]),
+            }
+        )
+        with pytest.raises(GranuleValidationError, match="bounds"):
+            validate_granule(spec, bad)
+
+    def test_unexpected_attribute_warns_and_passes(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        extra = granule(
+            var_attrs={"units": "molecules/cm^2", "made_up_attr": "surprise"}
+        )
+
+        with caplog.at_level("WARNING", logger="virtualizarr_processor.store_template"):
+            validate_granule(granule_template(), extra)
+
+        assert any(
+            "made_up_attr" in record.message and "/vertical_column" in record.message
+            for record in caplog.records
+        )
+
+    def test_unexpected_attribute_records_otel_span_event(self) -> None:
+        from opentelemetry.sdk.trace import TracerProvider
+        from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+        from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+            InMemorySpanExporter,
+        )
+
+        exporter = InMemorySpanExporter()
+        provider = TracerProvider()
+        provider.add_span_processor(SimpleSpanProcessor(exporter))
+        tracer = provider.get_tracer("test")
+        extra = granule(
+            var_attrs={"units": "molecules/cm^2", "made_up_attr": "surprise"}
+        )
+
+        with tracer.start_as_current_span("validate"):
+            validate_granule(granule_template(), extra)
+
+        (span,) = exporter.get_finished_spans()
+        (event,) = span.events
+        assert "unexpected" in event.name
+        assert "made_up_attr" in event.attributes["attributes"]
+
+    def test_datatree_group_attributes_are_checked(self) -> None:
+        spec = GroupSpec.from_flat(
+            {
+                "": GroupSpec(attributes={}, members=None),
+                "/product": GroupSpec(attributes={}, members=None),
+                "/product/vertical_column": array_spec(
+                    (TIME, Y, X),
+                    (1, Y, X),
+                    "float64",
+                    ("time", "latitude", "longitude"),
+                    attributes={"units": "molecules/cm^2"},
+                ),
+            }
+        )
+        tree = xr.DataTree.from_dict(
+            {
+                "/": xr.Dataset(),
+                "/product": xr.Dataset(
+                    {
+                        "vertical_column": (
+                            ("time", "latitude", "longitude"),
+                            np.zeros((1, Y, X)),
+                            {"units": "DU"},
+                        )
+                    }
+                ),
+            }
+        )
+
+        with pytest.raises(GranuleValidationError) as excinfo:
+            validate_granule(spec, tree)
+
+        assert "/product/vertical_column" in str(excinfo.value)
+
+    def test_conforming_datatree_passes(self) -> None:
+        spec = GroupSpec.from_flat(
+            {
+                "": GroupSpec(attributes={"title": "t"}, members=None),
+                "/product": GroupSpec(attributes={}, members=None),
+                "/product/vertical_column": array_spec(
+                    (TIME, Y, X),
+                    (1, Y, X),
+                    "float64",
+                    ("time", "latitude", "longitude"),
+                    attributes={"units": "molecules/cm^2"},
+                ),
+            }
+        )
+        tree = xr.DataTree.from_dict(
+            {
+                "/": xr.Dataset(attrs={"title": "t"}),
+                "/product": xr.Dataset(
+                    {
+                        "vertical_column": (
+                            ("time", "latitude", "longitude"),
+                            np.zeros((1, Y, X)),
+                            {"units": "molecules/cm^2"},
+                        )
+                    }
+                ),
+            }
+        )
+
+        validate_granule(spec, tree)
+
+
+class TestValidateStoreAttributePolicy:
+    def test_extra_store_attribute_warns_instead_of_raising(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        store = zarr.storage.MemoryStore()
+        create_empty_store(template(), store)
+        group = zarr.open_group(store)
+        group.attrs["made_up_attr"] = "surprise"
+
+        with caplog.at_level("WARNING", logger="virtualizarr_processor.store_template"):
+            validate_store(template(), zarr.open_group(store, mode="r"))
+
+        assert any("made_up_attr" in record.message for record in caplog.records)
+
+    def test_differing_expected_store_attribute_raises(self) -> None:
+        store = zarr.storage.MemoryStore()
+        create_empty_store(template(), store)
+        group = zarr.open_group(store)
+        group.attrs["title"] = "renamed"
+
+        with pytest.raises(StoreValidationError, match="title"):
+            validate_store(template(), zarr.open_group(store, mode="r"))
+
+    def test_missing_expected_store_attribute_raises(self) -> None:
+        store = zarr.storage.MemoryStore()
+        create_empty_store(template(), store)
+        group = zarr.open_group(store)
+        del group.attrs["title"]
+
+        with pytest.raises(StoreValidationError, match="title"):
+            validate_store(template(), zarr.open_group(store, mode="r"))

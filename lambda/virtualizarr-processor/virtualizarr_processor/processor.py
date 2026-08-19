@@ -18,7 +18,11 @@ from zarr.codecs import BytesCodec
 from zarr.core.dtype import parse_data_type
 from zarr.core.metadata import ArrayV3Metadata
 
-from virtualizarr_processor.store_template import create_empty_store, validate_store
+from virtualizarr_processor.store_template import (
+    create_empty_store,
+    validate_granule,
+    validate_store,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -144,6 +148,11 @@ class Processor:
         result = False
         try:
             vds = synthetic_vds(file_key)
+            # Reject granules whose expected shared attributes differ from
+            # the template (raises); merely-unexpected attributes only warn.
+            # A real processor also passes coordinates= with the reference
+            # spatial grid so mis-gridded granules are rejected.
+            validate_granule(BACKFILL_TEMPLATE, vds)
             vds.vz.to_icechunk(
                 session.store, append_dim="time", validate_containers=False
             )
@@ -239,9 +248,13 @@ class Processor:
             # Synthetic keys are the integer time index as a string ("0".."5").
             # A real processor parses the source file for its own coordinate.
             t = int(file_key)
-            self._backfill_slice_vds(t).vz.to_icechunk(
-                fork.store, region="auto", validate_containers=False
-            )
+            vds = self._backfill_slice_vds(t)
+            # Reject granules whose expected shared attributes differ from
+            # the template; the except below turns the raise into a logged
+            # rejection (False). A real processor also passes coordinates=
+            # with the reference spatial grid.
+            validate_granule(BACKFILL_TEMPLATE, vds)
+            vds.vz.to_icechunk(fork.store, region="auto", validate_containers=False)
             return True
         except Exception:
             # Catch parse/region errors and I/O failures from to_icechunk, but log

@@ -97,3 +97,30 @@ def test_backfill_store_matches_declared_template(
     # main's pre-existing nodes ride along on the backfill branch, so the
     # template constrains its own nodes without forbidding extras.
     validate_store(BACKFILL_TEMPLATE, group, allow_extra=True)
+
+
+def test_process_backfill_file_warns_on_unexpected_granule_attrs(
+    backfill_repo: icechunk.Repository,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    import pickle
+
+    import xarray as xr
+
+    processor = Processor()
+    processor.initialize_backfill_store(backfill_repo)
+    original = Processor._backfill_slice_vds
+
+    def noisy(self: Processor, t: int) -> xr.Dataset:
+        vds = original(self, t)
+        vds["foo"].attrs["made_up_attr"] = "surprise"
+        return vds
+
+    monkeypatch.setattr(Processor, "_backfill_slice_vds", noisy)
+    child = pickle.loads(backfill.create_fork(backfill_repo)).fork()
+
+    with caplog.at_level("WARNING", logger="virtualizarr_processor.store_template"):
+        processor.process_backfill_file("0", child)
+
+    assert any("made_up_attr" in record.message for record in caplog.records)
