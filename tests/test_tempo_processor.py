@@ -30,8 +30,6 @@ def tiny(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> TinyCollect
     monkeypatch.setenv("ICECHUNK_LOCAL_PATH", str(tmp_path / "repo"))
     monkeypatch.setenv("VIRTUAL_CHUNK_PREFIX", f"file://{tmp_path}/")
     monkeypatch.setenv("TEMPO_COLLECTION", str(collection.config_path))
-    monkeypatch.setenv("STORE_MANIFEST_URI", str(tmp_path / "store-manifest.json"))
-    monkeypatch.setenv("PENDING_LEDGER_URI", str(tmp_path / "pending-ledger.json"))
     return collection
 
 
@@ -74,6 +72,14 @@ def test_backfill_end_to_end(tiny: TinyCollection) -> None:
         "time_coverage_start_since_epoch",
     ):
         assert volatile not in group.attrs, volatile
+
+    from virtualizarr_processor.manifest import PendingLedger, StoreManifest
+
+    repo = processor.open_backfill_repo()
+    manifest = StoreManifest.read(repo.readonly_session("main").store)
+    assert manifest is not None
+    assert manifest.granules == tiny.inventory.granules
+    assert PendingLedger.read(repo.readonly_session("main").store) == ()
 
 
 def test_rejects_granule_on_wrong_grid(tiny: TinyCollection) -> None:
@@ -139,6 +145,19 @@ def test_promote_gate_rejects_axis_inventory_mismatch(tiny: TinyCollection) -> N
     )
     with pytest.raises(StoreValidationError):
         processor.validate_backfill_store(repo, extra, branch="backfill")
+
+
+def test_promote_gate_rejects_manifest_array_mismatch(tiny: TinyCollection) -> None:
+    import zarr
+
+    processor = Processor()
+    repo = processor.open_backfill_repo()
+    processor.initialize_backfill_store(repo, tiny.inventory)
+    session = repo.writable_session("backfill")
+    zarr.open_array(session.store, path="granule_ur")[0] = "someone-else"
+    session.commit("corrupt a manifest slot")
+    with pytest.raises(StoreValidationError, match="granule_ur"):
+        processor.validate_backfill_store(repo, tiny.inventory, branch="backfill")
 
 
 # --- Real-granule integration (skipped when the context data is absent) ---

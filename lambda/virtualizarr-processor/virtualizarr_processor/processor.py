@@ -53,7 +53,12 @@ from virtualizarr_processor.granule import (
     source_last_modified,
 )
 from virtualizarr_processor.inventory import BackfillInventory, GranuleEntry
-from virtualizarr_processor.manifest import PendingLedger, StoreManifest
+from virtualizarr_processor.manifest import (
+    MANIFEST_ARRAYS,
+    PIPELINE_STATE_ATTRIBUTES,
+    PendingLedger,
+    StoreManifest,
+)
 from virtualizarr_processor.resort import first_shifted_index
 from virtualizarr_processor.store_template import (
     GranuleValidationError,
@@ -183,9 +188,17 @@ class Processor:
         for axis, values in self.coordinates.items():
             zarr.open_array(session.store, path=axis)[:] = values
 
+        # The manifest and an empty ledger ride the same branch, so the
+        # promote lands data and state in one atomic reset.
+        StoreManifest.write(session.store, inventory)
+        PendingLedger.write(session.store, ())
+
         # allow_extra: the branch also carries whatever `main` already held.
         validate_store(
-            template, zarr.open_group(session.store, mode="r"), allow_extra=True
+            template,
+            zarr.open_group(session.store, mode="r"),
+            allow_extra=True,
+            volatile=PIPELINE_STATE_ATTRIBUTES,
         )
         snapshot = session.commit(
             f"Initialize backfill store: {len(inventory.granules)} granules "
@@ -242,7 +255,10 @@ class Processor:
                 array.resize(node.shape)
         zarr.open_array(session.store, path="time")[:] = merged.times()
         validate_store(
-            template, zarr.open_group(session.store, mode="r"), allow_extra=True
+            template,
+            zarr.open_group(session.store, mode="r"),
+            allow_extra=True,
+            volatile=PIPELINE_STATE_ATTRIBUTES,
         )
         snapshot = session.commit(f"Resort: axis of {len(merged.granules)} granules")
         return BranchInit(snapshot=snapshot, branched_from=tip)
@@ -336,7 +352,9 @@ class Processor:
         template = resize(
             self.template, {self.config.append_dim: len(inventory.granules)}
         )
-        validate_store(template, group, allow_extra=True)
+        validate_store(
+            template, group, allow_extra=True, volatile=PIPELINE_STATE_ATTRIBUTES
+        )
         differences = []
         axis = np.asarray(zarr.open_array(session.store, path="time")[:])
         if not np.array_equal(axis, inventory.times()):
@@ -349,6 +367,12 @@ class Processor:
                 differences.append(
                     f"store {name} differs from the reference coordinates"
                 )
+        urs = np.asarray(zarr.open_array(session.store, path=MANIFEST_ARRAYS[0])[:])
+        if [str(v) for v in urs] != [e.granule_ur for e in inventory.granules]:
+            differences.append("store granule_ur array differs from the inventory")
+        urls = np.asarray(zarr.open_array(session.store, path=MANIFEST_ARRAYS[1])[:])
+        if [str(v) for v in urls] != [e.url for e in inventory.granules]:
+            differences.append("store granule_url array differs from the inventory")
         if differences:
             raise StoreValidationError(differences)
 
@@ -472,7 +496,10 @@ class Processor:
             for axis, values in self.coordinates.items():
                 zarr.open_array(session.store, path=axis)[:] = values
             validate_store(
-                template, zarr.open_group(session.store, mode="r"), allow_extra=True
+                template,
+                zarr.open_group(session.store, mode="r"),
+                allow_extra=True,
+                volatile=PIPELINE_STATE_ATTRIBUTES,
             )
             session.commit("Initialize empty templated store")
         return repo
