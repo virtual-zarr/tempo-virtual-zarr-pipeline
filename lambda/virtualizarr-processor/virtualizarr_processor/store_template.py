@@ -71,6 +71,16 @@ TEMPO_L3_VOLATILE_ATTRIBUTES: frozenset[str] = frozenset(
 )
 
 
+# Attributes xarray's write path synthesizes on the store side (a root
+# "coordinates" listing; _FillValue re-emitted from decode encoding on
+# loadable variables) or that granules carry in .attrs while the store
+# expresses them structurally. Templates generated through the write path
+# strip these, and granule validation treats them as expected extras so
+# every granule does not warn about them. Array-level fill values remain
+# checked via the zarr metadata ``fill_value`` field.
+WRITE_ARTIFACT_ATTRIBUTES: frozenset[str] = frozenset({"coordinates", "_FillValue"})
+
+
 class StoreValidationError(Exception):
     """A store does not conform to its template.
 
