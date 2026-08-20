@@ -7,11 +7,13 @@ chunks must equal the committed reference grid. A gate failure raises and
 leaves `main` untouched.
 """
 
+import os
 from typing import Any
 
 from aws_lambda_powertools import Logger, Tracer
 from aws_lambda_powertools.utilities.typing import LambdaContext
 from virtualizarr_processor import backfill
+from virtualizarr_processor.manifest import StoreManifest
 from virtualizarr_processor.processor import Processor
 
 from backfill_handlers import inventory
@@ -29,4 +31,12 @@ def handler(event: dict[str, Any], context: LambdaContext) -> dict[str, Any]:
     processor.validate_backfill_store(repo, backfill_inventory, branch="backfill")
     backfill.promote(repo)
     logger.info("Promoted main to backfill tip")
+    manifest_uri = os.environ.get("STORE_MANIFEST_URI")
+    if manifest_uri:
+        # The backfill inventory becomes the store's living manifest, which
+        # forward processing and the re-sort job maintain from here on.
+        StoreManifest.write(manifest_uri, backfill_inventory)
+        logger.info("Wrote store manifest", extra={"uri": manifest_uri})
+    else:
+        logger.warning("STORE_MANIFEST_URI not set; store manifest not written")
     return {"promoted": True}

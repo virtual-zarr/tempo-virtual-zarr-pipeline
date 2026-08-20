@@ -237,8 +237,8 @@ def build_tiny_collection(
         time_units=TIME_UNITS,
         built_at="2026-08-20T00:00:00Z",
         granules=tuple(
-            GranuleEntry(url=f"file://{path}", granule_ur=f"tiny_granule_{i}", time=t)
-            for i, (path, t) in enumerate(zip(paths, times))
+            GranuleEntry(url=f"file://{path}", granule_ur=path.stem, time=t)
+            for path, t in zip(paths, times)
         ),
     )
     return TinyCollection(

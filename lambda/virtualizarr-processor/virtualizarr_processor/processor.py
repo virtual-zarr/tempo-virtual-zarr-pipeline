@@ -30,7 +30,7 @@ from __future__ import annotations
 import logging
 import os
 import time as time_module
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import cast
 
 import icechunk
@@ -50,7 +50,8 @@ from virtualizarr_processor.granule import (
     open_flat_granule,
     source_last_modified,
 )
-from virtualizarr_processor.inventory import BackfillInventory
+from virtualizarr_processor.inventory import BackfillInventory, GranuleEntry
+from virtualizarr_processor.manifest import PendingLedger, StoreManifest
 from virtualizarr_processor.store_template import (
     WRITE_ARTIFACT_ATTRIBUTES,
     GranuleValidationError,
@@ -60,6 +61,7 @@ from virtualizarr_processor.store_template import (
     validate_granule,
     validate_store,
 )
+from virtualizarr_processor.typing import ProcessOutcome
 
 logger = logging.getLogger(__name__)
 
@@ -68,11 +70,28 @@ PARSE_ATTEMPTS = 3
 PARSE_BACKOFF_SECONDS = (5, 15)
 
 
+def _store_manifest_uri() -> str:
+    return os.environ["STORE_MANIFEST_URI"]
+
+
+def _pending_ledger_uri() -> str:
+    return os.environ["PENDING_LEDGER_URI"]
+
+
+def _granule_ur(file_key: str) -> str:
+    """The granule UR as derived from the file key (TEMPO filenames are the
+    granule UR plus ``.nc``; the inventory builder keeps this consistent)."""
+    return file_key.rsplit("/", 1)[-1].removesuffix(".nc")
+
+
 class Processor:
     def __init__(self, config: CollectionConfig | None = None) -> None:
         self.config = config or load_collection()
         self.template = load_template(self.config)
         self.coordinates = load_coordinates(self.config)
+        # Forward-processing batch state (spec §5); reset per session.
+        self._appended: list[GranuleEntry] = []
+        self._replaced: dict[int, GranuleEntry] = {}
 
     # -- repository ---------------------------------------------------------
 
@@ -163,22 +182,7 @@ class Processor:
         try:
             vds, stamp = self._parse_and_validate(file_key)
             index = self._axis_index(fork.store, float(vds["time"].values[0]))
-            # The axis slot is located by exact raw-float match and the region
-            # passed explicitly; region="auto" would CF-decode the store axis
-            # and compare in datetime64 space — a precision seam this pipeline
-            # forbids — and rewrite the shared native time chunk from every
-            # worker. Dropping `time` leaves the init-written axis untouched.
-            vds = vds.drop_vars("time")
-            # Root attrs come solely from the template at init; per-granule
-            # attrs must not land in the store, and differing group-attr
-            # updates from parallel forks make the merge conflict.
-            vds.attrs = {}
-            vds.vz.to_icechunk(
-                fork.store,
-                region={self.config.append_dim: slice(index, index + 1)},
-                validate_containers=False,
-                last_updated_at=stamp,
-            )
+            self._write_region(vds, fork.store, index, stamp)
             return True
         except Exception:
             # Log the real cause; the worker handler turns False into a raise
@@ -210,6 +214,29 @@ class Processor:
                 )
         if differences:
             raise StoreValidationError(differences)
+
+    def _write_region(
+        self, vds: xr.Dataset, store: object, index: int, stamp: datetime
+    ) -> None:
+        """Write one validated granule's refs into axis slot ``index``.
+
+        The slot was located by exact raw-float match and the region is
+        passed explicitly; region="auto" would CF-decode the store axis and
+        compare in datetime64 space — a precision seam this pipeline forbids
+        — and rewrite the shared native time chunk from every worker.
+        Dropping `time` leaves the init-written axis untouched. Root attrs
+        come solely from the template at init; per-granule attrs must not
+        land in the store, and differing group-attr updates from parallel
+        forks make the merge conflict.
+        """
+        vds = vds.drop_vars("time")
+        vds.attrs = {}
+        vds.vz.to_icechunk(
+            store,  # type: ignore[arg-type]
+            region={self.config.append_dim: slice(index, index + 1)},
+            validate_containers=False,
+            last_updated_at=stamp,
+        )
 
     def _axis_index(self, store: object, time_value: float) -> int:
         """The unique axis slot whose value equals ``time_value`` bit-exactly."""
@@ -290,40 +317,129 @@ class Processor:
         return repo
 
     def initialize_session(self, repo: Repository) -> Session:
+        self._appended = []
+        self._replaced = {}
         return repo.writable_session("main")
 
-    def process_file(self, file_key: str, session: Session) -> bool:
-        """Append one granule to `main` (must be strictly after the axis end).
-
-        Routing beyond in-order appends (in-place republication overwrite,
-        deferral to the pending ledger) lands with the forward-processing
-        task; until then any non-append case is a rejection.
-        """
+    def process_file(self, file_key: str, session: Session) -> ProcessOutcome:
+        """Route one granule per the design spec §5 table."""
         try:
             vds, stamp = self._parse_and_validate(file_key)
-            axis = np.asarray(zarr.open_array(session.store, path="time")[:])
+        except Exception:
+            logger.exception("process_file: validation failed for %s", file_key)
+            return ProcessOutcome.REJECTED
+        try:
             time_value = float(np.asarray(vds["time"].values)[0])
-            if axis.size and time_value <= float(axis[-1]):
-                raise GranuleValidationError(
-                    [
-                        f"granule time {time_value!r} is not after the store "
-                        f"axis end {float(axis[-1])!r}; out-of-order arrivals "
-                        "are not appendable"
-                    ]
-                )
-            vds.vz.to_icechunk(
-                session.store,
-                append_dim=self.config.append_dim,
-                validate_containers=False,
-                last_updated_at=stamp,
+            entry = GranuleEntry(
+                url=file_key, granule_ur=_granule_ur(file_key), time=time_value
             )
-            return True
+            axis = np.asarray(zarr.open_array(session.store, path="time")[:])
+            occupied = np.nonzero(axis == time_value)[0]
+
+            if occupied.size == 1:
+                index = int(occupied[0])
+                known = self._manifest_entry_at(index, axis)
+                if known.granule_ur != entry.granule_ur:
+                    # Two distinct granules claiming one time step is a data
+                    # inconsistency to investigate, never to write.
+                    logger.error(
+                        "process_file: slot %d (time %r) belongs to %s, "
+                        "refusing to overwrite it with %s",
+                        index,
+                        time_value,
+                        known.granule_ur,
+                        entry.granule_ur,
+                    )
+                    return ProcessOutcome.REJECTED
+                # Republication of a known scan, or an at-least-once
+                # redelivery: refresh the slot's refs and stamps in place.
+                self._write_region(vds, session.store, index, stamp)
+                self._replaced[index] = entry
+                return ProcessOutcome.WRITTEN
+
+            if not axis.size or time_value > float(axis[-1]):
+                vds.attrs = {}  # store attrs come solely from the template
+                vds.vz.to_icechunk(
+                    session.store,
+                    append_dim=self.config.append_dim,
+                    validate_containers=False,
+                    last_updated_at=stamp,
+                )
+                self._appended.append(entry)
+                return ProcessOutcome.WRITTEN
+
+            # Out of order (historical drip-feed or an adjacent-scan swap):
+            # not appendable without breaking axis monotonicity. Record it
+            # for the scheduled re-sort job and consume the message.
+            PendingLedger.append(_pending_ledger_uri(), [entry])
+            logger.info(
+                "process_file: deferred out-of-order granule %s (time %r) "
+                "to the pending ledger",
+                entry.granule_ur,
+                time_value,
+            )
+            return ProcessOutcome.DEFERRED
         except Exception:
             logger.exception("process_file failed for %s", file_key)
-            return False
+            return ProcessOutcome.REJECTED
 
     def commit_processed_files(self, session: Session) -> str:
-        return cast(str, session.commit(f"Append to {session.snapshot_id}"))
+        """Commit the batch, then update the store manifest to match.
+
+        The updated manifest is validated bit-exactly against the session's
+        (about-to-be-committed) axis *before* committing, so a manifest/axis
+        divergence fails the whole batch loudly instead of committing state
+        the manifest cannot describe.
+        """
+        entries = list(self._manifest_entries())
+        for index, entry in self._replaced.items():
+            entries[index] = entry
+        entries += self._appended
+        axis = np.asarray(zarr.open_array(session.store, path="time")[:])
+        manifest = None
+        if entries:
+            manifest = BackfillInventory(
+                schema="tempo-backfill-inventory/1",  # type: ignore[call-arg]
+                collection=self.config.collection_shortname,
+                concept_id=self.config.concept_id,
+                time_units=self.config.time_units,
+                built_at=datetime.now(timezone.utc).isoformat(),
+                granules=tuple(entries),
+            )
+            StoreManifest.validate_against_axis(manifest, axis)
+        snapshot = cast(str, session.commit(f"Append to {session.snapshot_id}"))
+        if manifest is not None and (self._appended or self._replaced):
+            StoreManifest.write(_store_manifest_uri(), manifest)
+        self._appended = []
+        self._replaced = {}
+        return snapshot
+
+    def _manifest_entries(self) -> tuple[GranuleEntry, ...]:
+        """The store manifest's granules; absent manifest = empty store only."""
+        try:
+            manifest = StoreManifest.read(_store_manifest_uri())
+        except FileNotFoundError:
+            return ()
+        if manifest.collection != self.config.collection_shortname:
+            raise StoreValidationError(
+                [
+                    f"store manifest is for {manifest.collection!r}, this "
+                    f"deployment processes {self.config.collection_shortname!r}"
+                ]
+            )
+        return manifest.granules
+
+    def _manifest_entry_at(self, index: int, axis: np.ndarray) -> GranuleEntry:
+        """The manifest entry owning axis slot ``index``, trust-checked."""
+        entries = self._manifest_entries()
+        if len(entries) != axis.size or entries[index].time != float(axis[index]):
+            raise StoreValidationError(
+                [
+                    "store manifest does not describe the store axis "
+                    f"(slot {index}); refusing to route against it"
+                ]
+            )
+        return entries[index]
 
     def garbage_collect(self, expiry_time: datetime) -> icechunk.GCSummary:
         repo = self.open_backfill_repo()

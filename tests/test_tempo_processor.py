@@ -20,6 +20,7 @@ from virtualizarr_processor import backfill
 from virtualizarr_processor.inventory import BackfillInventory, GranuleEntry
 from virtualizarr_processor.processor import Processor
 from virtualizarr_processor.store_template import StoreValidationError
+from virtualizarr_processor.typing import ProcessOutcome
 
 
 @pytest.fixture()
@@ -29,6 +30,8 @@ def tiny(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> TinyCollect
     monkeypatch.setenv("ICECHUNK_LOCAL_PATH", str(tmp_path / "repo"))
     monkeypatch.setenv("VIRTUAL_CHUNK_PREFIX", f"file://{tmp_path}/")
     monkeypatch.setenv("TEMPO_COLLECTION", str(collection.config_path))
+    monkeypatch.setenv("STORE_MANIFEST_URI", str(tmp_path / "store-manifest.json"))
+    monkeypatch.setenv("PENDING_LEDGER_URI", str(tmp_path / "pending-ledger.json"))
     return collection
 
 
@@ -191,3 +194,119 @@ def test_real_backfill_two_granules(
         np.testing.assert_array_equal(
             np.asarray(group["vertical_column"][i][window]), expected
         )
+
+
+# --- Forward processing (spec §5 routing) ---
+
+
+def backfilled(tiny: TinyCollection) -> Processor:
+    """A promoted store with its manifest, ready for forward processing."""
+    import os
+
+    from virtualizarr_processor.manifest import StoreManifest
+
+    processor = Processor()
+    run_backfill(processor, tiny)
+    StoreManifest.write(os.environ["STORE_MANIFEST_URI"], tiny.inventory)
+    return processor
+
+
+def forward(processor: Processor, urls: list[str]) -> list[ProcessOutcome]:
+    repo = processor.open_backfill_repo()
+    session = processor.initialize_session(repo)
+    outcomes = [processor.process_file(url, session) for url in urls]
+    if any(o is ProcessOutcome.WRITTEN for o in outcomes):
+        processor.commit_processed_files(session)
+    return outcomes
+
+
+def test_forward_appends_in_order(tiny: TinyCollection) -> None:
+    import os
+
+    from virtualizarr_processor.manifest import StoreManifest
+
+    processor = backfilled(tiny)
+    new_time = tiny.times[-1] + 3600.0
+    new = write_tempo_granule(
+        tiny.granule_paths[0].parent / "granule_new.nc",
+        time_value=new_time,
+        weight_scale=9.0,
+    )
+    assert forward(processor, [f"file://{new}"]) == [ProcessOutcome.WRITTEN]
+
+    repo = processor.open_backfill_repo()
+    group = zarr.open_group(repo.readonly_session("main").store, mode="r")
+    axis = np.asarray(group["time"][:])
+    np.testing.assert_array_equal(axis, tiny.times + [new_time])
+    np.testing.assert_array_equal(
+        np.asarray(group["vertical_column"][-1]),
+        expected_vertical_column(new_time)[0],
+    )
+    manifest = StoreManifest.read(os.environ["STORE_MANIFEST_URI"])
+    assert manifest.urls()[-1] == f"file://{new}"
+    StoreManifest.validate_against_axis(manifest, axis)
+
+
+def test_forward_redelivery_is_idempotent(tiny: TinyCollection) -> None:
+    processor = backfilled(tiny)
+    # The already-backfilled granule 1 is redelivered: same UR, same time.
+    assert forward(processor, [tiny.urls[1]]) == [ProcessOutcome.WRITTEN]
+
+    repo = processor.open_backfill_repo()
+    group = zarr.open_group(repo.readonly_session("main").store, mode="r")
+    assert np.asarray(group["time"][:]).size == len(tiny.times)  # no growth
+    np.testing.assert_array_equal(
+        np.asarray(group["vertical_column"][1]),
+        expected_vertical_column(tiny.times[1])[0],
+    )
+
+
+def test_forward_rejects_conflicting_granule(tiny: TinyCollection) -> None:
+    processor = backfilled(tiny)
+    # A *different* granule (different filename => different UR) claiming
+    # granule 0's time step.
+    imposter = write_tempo_granule(
+        tiny.granule_paths[0].parent / "imposter.nc", time_value=tiny.times[0]
+    )
+    assert forward(processor, [f"file://{imposter}"]) == [ProcessOutcome.REJECTED]
+
+    repo = processor.open_backfill_repo()
+    group = zarr.open_group(repo.readonly_session("main").store, mode="r")
+    np.testing.assert_array_equal(np.asarray(group["time"][:]), tiny.times)
+
+
+def test_forward_defers_out_of_order_granule(tiny: TinyCollection) -> None:
+    import os
+
+    from virtualizarr_processor.manifest import PendingLedger
+
+    processor = backfilled(tiny)
+    historical_time = tiny.times[0] + 1800.0  # between slots, not on the axis
+    historical = write_tempo_granule(
+        tiny.granule_paths[0].parent / "historical.nc", time_value=historical_time
+    )
+    assert forward(processor, [f"file://{historical}"]) == [ProcessOutcome.DEFERRED]
+
+    ledger = PendingLedger.read(os.environ["PENDING_LEDGER_URI"])
+    assert [entry.granule_ur for entry in ledger] == ["historical"]
+    assert ledger[0].time == historical_time
+    repo = processor.open_backfill_repo()
+    group = zarr.open_group(repo.readonly_session("main").store, mode="r")
+    np.testing.assert_array_equal(np.asarray(group["time"][:]), tiny.times)
+
+
+def test_forward_republication_overwrites_in_place(tiny: TinyCollection) -> None:
+    processor = backfilled(tiny)
+    # The producer replaces granule 1's file in place: same name, same time,
+    # different data (weight_scale changes the weight payload).
+    write_tempo_granule(
+        tiny.granule_paths[1], time_value=tiny.times[1], weight_scale=42.0
+    )
+    assert forward(processor, [tiny.urls[1]]) == [ProcessOutcome.WRITTEN]
+
+    repo = processor.open_backfill_repo()
+    group = zarr.open_group(repo.readonly_session("main").store, mode="r")
+    np.testing.assert_array_equal(
+        np.asarray(group["weight"][1]),
+        expected_weight(tiny.times[1], weight_scale=42.0),
+    )

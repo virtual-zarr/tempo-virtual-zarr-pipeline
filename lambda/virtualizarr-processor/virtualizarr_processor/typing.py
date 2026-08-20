@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import enum
 from datetime import datetime
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
@@ -8,6 +9,14 @@ from icechunk import ForkSession, Repository, Session
 
 if TYPE_CHECKING:
     from virtualizarr_processor.inventory import BackfillInventory
+
+
+class ProcessOutcome(enum.Enum):
+    """What became of one forward-processed granule (design spec §5)."""
+
+    WRITTEN = "written"  # appended, or republication overwritten in place
+    DEFERRED = "deferred"  # out of order: recorded in the pending ledger
+    REJECTED = "rejected"  # validation failure — SQS retry, then DLQ
 
 
 @runtime_checkable
@@ -43,10 +52,14 @@ class VirtualizarrProcessor(Protocol):
         """
         ...
 
-    def process_file(self, file_key: str, session: Session) -> bool:
+    def process_file(self, file_key: str, session: Session) -> ProcessOutcome:
         """
-        Uses a Virtualizarr parser to parse the file, manipulate the resulting
-        ManifestStore and add it to the Icechunk store
+        Parse, validate, and route one granule (design spec §5):
+        append when its time is after the axis end; overwrite in place when
+        its time already owns a slot and the granule UR matches the store
+        manifest (republication / redelivery); defer to the pending ledger
+        when it arrived out of order; reject on any validation failure or
+        when a different granule claims an occupied slot.
 
         Parameters
         ----------
@@ -54,8 +67,8 @@ class VirtualizarrProcessor(Protocol):
             session: The Icechunk writable Session to use for adding the file.
         Returns
         -------
-        bool
-            True if file was successfully processed.
+        ProcessOutcome
+            WRITTEN, DEFERRED, or REJECTED.
         """
         ...
 
