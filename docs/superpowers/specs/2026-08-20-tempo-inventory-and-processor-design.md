@@ -208,9 +208,21 @@ Store-level:
 - Init: `validate_store(resized template, ...)` after creation, before
   the base commit.
 - Promote: `validate_store` again on the final tip + time axis strictly
-  increasing and equal to the manifest's values; only then fast-forward
-  `main`. (Completeness of data chunks is guaranteed by orchestration:
-  any worker failure fails the run before promote.)
+  increasing and equal to the manifest's values + the store's native
+  `latitude`/`longitude` chunks bit-equal to the committed artifact; only
+  then fast-forward `main`. (Completeness of data chunks is guaranteed by
+  orchestration: any worker failure fails the run before promote.)
+
+A note on coordinate storage: `time`/`latitude`/`longitude` are
+contiguous and uncompressed in the source files, so `HDFParser` loads
+them (they are never `ManifestArray`s) and they live in the store as
+**native** chunks, not virtual references — written once by init (axis
+from the manifest, grid from the artifact). Workers validate lat/lon
+against the artifact and then drop them before writing (both the
+region-write and the forward append paths), so the only native chunk a
+worker ever touches is its identical-valued rewrite of the time chunk
+that `region="auto"` requires — a pattern the backfill mechanics tests
+already prove safe under fork/merge.
 - Post-promote QA (script, sample-based): open the store, pick random
   granules, compare a data slice read through the virtual store against
   the same slice read directly from the source file with h5py.
@@ -246,6 +258,32 @@ fraction of the collection into a dead letter queue with no way back in.
   against the store's actual axis (bit-exact) and aborts on divergence.
   It is what maps a slice back to its source file — needed by the
   re-sort job and the QA sampler.
+
+### Feeding the queue
+
+The template's only built-in feeder is a subscription of the SQS queue to
+an SNS topic named by `SNS_TOPIC` — a topic the *data provider* would have
+to own and publish object-created events to. Whether ASDC exposes such a
+topic for `asdc-prod-protected` is unconfirmed (**open question for the
+operator**). The pipeline therefore gets a feeder it fully controls:
+
+- **CMR poller** (scheduled Lambda, ~every 30 min; the product's median
+  production lag is ~3 h, so polling latency is immaterial): queries CMR
+  for the collection's granules with `revision_date` ≥ a persisted
+  watermark minus an overlap window (24 h), and enqueues one message per
+  granule — the direct `s3://…/*.nc` URL, the same key format the
+  inventory and partition manifests use. The watermark lives next to the
+  store manifest in S3.
+- Revision-date polling naturally captures all three arrival kinds:
+  new scans, republications (revision bump), and the historical
+  drip-feed (old scans, fresh revision dates).
+- The overlap window plus the consumer's idempotent routing (same-UR
+  redelivery hits the overwrite-in-place case; ledger appends dedupe)
+  makes duplicate enqueues harmless, so the poller needs no exactness.
+- If an ASDC SNS topic exists, it can be subscribed *in addition* for
+  lower latency; the poller then serves as the missed-notification
+  backstop the README's sequencing section step 5 currently asks
+  operators to perform by hand.
 
 ### Consumer routing rules
 

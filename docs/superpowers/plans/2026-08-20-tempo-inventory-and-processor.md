@@ -321,7 +321,9 @@ def initialize_repo(self) -> Repository      # open_or_create; if empty store,
     # lat/lon, commit, and write an empty-granule store manifest
 def initialize_session(self, repo) -> Session  # writable "main"
 def process_file(self, file_key: str, session: Session) -> ProcessOutcome
-    # parse + validate V1–V3, then route on t vs axis (spec §5 table):
+    # parse + validate V1–V3 (incl. lat/lon vs artifact, then drop them —
+    # coordinates are native, written once at init; appends must not carry
+    # them), then route on t vs axis (spec §5 table):
     #   t in axis & same granule_ur in manifest → region="auto" overwrite
     #   t in axis & different granule_ur       → REJECTED (hard)
     #   t > axis max                           → append_dim="time"
@@ -386,7 +388,12 @@ forward consumer Lambda gets reserved concurrency 1 (spec §5 —
 single-writer appends; SQS `max_concurrency` cannot go below 2);
 `RESORT_SCHEDULE` (EventBridge rule, default daily, disabled when
 backfill-only) triggering the resort job; `STORE_MANIFEST_URI` /
-`PENDING_LEDGER_URI` env for the Lambdas.
+`PENDING_LEDGER_URI` env for the Lambdas; the CMR poller feeder (spec §5
+"Feeding the queue"): a scheduled Lambda (`lambda/cmr_poller/handler.py`,
+`POLL_SCHEDULE` default 30 min, S3-persisted revision-date watermark with
+24 h overlap) enqueueing direct `s3://` granule URLs, deployed whenever
+the forward queue is enabled — SNS_TOPIC stays optional low-latency
+sugar on top.
 
 - [ ] Step 1: failing CDK assertions for each; Step 2: implement;
   Step 3: green + lint + commit.
