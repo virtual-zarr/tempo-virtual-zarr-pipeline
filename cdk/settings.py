@@ -34,9 +34,12 @@ class StackSettings(BaseSettings):
     MAX_CONCURRENCY: int = 50
     SQS_BATCH_SIZE: int = 10
 
-    # ARN of the Secrets Manager secret holding Earthdata {username, password}.
-    # Optional: required only for reading protected GES DISC granules. When unset,
-    # no secret resource or IAM grant is created.
+    # ARN of the Secrets Manager secret holding Earthdata Login material —
+    # JSON with "token" or "username"+"password". The processor exchanges it
+    # for temporary S3 credentials at the DAAC's s3credentials endpoint when
+    # reading protected source granules. When unset, no secret resource or
+    # IAM grant is created and reads rely on the Lambda role's ambient IAM
+    # access to the source bucket.
     EARTHDATA_SECRET_ARN: str | None = None
 
     # Freguency in days to run garbage collection.
@@ -57,6 +60,10 @@ class StackSettings(BaseSettings):
     # enabled. None disables the individual schedule.
     RESORT_SCHEDULE_HOURS: int | None = 24
     POLL_SCHEDULE_MINUTES: int | None = 30
+    # Max pending granules one re-sort run parses and inserts; the rest stay
+    # in the ledger for the next run. Relocating already-ingested slots is
+    # metadata-only and not bounded by this.
+    RESORT_MAX_FOLD: int = 500
 
     VPC_ID: str | None = None
     # AWS Batch cluster reference to SSM parameter describing the AMI _or_ the AMI ID

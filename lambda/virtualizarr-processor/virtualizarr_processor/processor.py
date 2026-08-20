@@ -29,6 +29,7 @@ from __future__ import annotations
 import logging
 import os
 import time as time_module
+from collections.abc import Iterable
 from datetime import datetime, timedelta, timezone
 from typing import cast
 
@@ -52,6 +53,7 @@ from virtualizarr_processor.granule import (
 )
 from virtualizarr_processor.inventory import BackfillInventory, GranuleEntry
 from virtualizarr_processor.manifest import PendingLedger, StoreManifest
+from virtualizarr_processor.resort import first_shifted_index
 from virtualizarr_processor.store_template import (
     GranuleValidationError,
     StoreValidationError,
@@ -60,7 +62,7 @@ from virtualizarr_processor.store_template import (
     validate_granule,
     validate_store,
 )
-from virtualizarr_processor.typing import ProcessOutcome
+from virtualizarr_processor.typing import BranchInit, ProcessOutcome
 
 logger = logging.getLogger(__name__)
 
@@ -148,7 +150,7 @@ class Processor:
 
     def initialize_backfill_store(
         self, repo: Repository, inventory: BackfillInventory
-    ) -> str:
+    ) -> BranchInit:
         """Create the full-shape store on a clean ``backfill`` branch."""
         if inventory.collection != self.config.collection_shortname:
             raise StoreValidationError(
@@ -160,7 +162,8 @@ class Processor:
         template = resize(
             self.template, {self.config.append_dim: len(inventory.granules)}
         )
-        repo.create_branch("backfill", repo.lookup_branch("main"))
+        main_tip = repo.lookup_branch("main")
+        repo.create_branch("backfill", main_tip)
         session = repo.writable_session("backfill")
         create_empty_store(template, session.store)
 
@@ -174,13 +177,11 @@ class Processor:
         validate_store(
             template, zarr.open_group(session.store, mode="r"), allow_extra=True
         )
-        return cast(
-            str,
-            session.commit(
-                f"Initialize backfill store: {len(inventory.granules)} granules "
-                f"of {inventory.collection}"
-            ),
+        snapshot = session.commit(
+            f"Initialize backfill store: {len(inventory.granules)} granules "
+            f"of {inventory.collection}"
         )
+        return BranchInit(snapshot=snapshot, branched_from=main_tip)
 
     def process_backfill_file(self, file_key: str, fork: ForkSession) -> bool:
         """Validate one granule and region-write it into the fork (no commit)."""
@@ -197,14 +198,15 @@ class Processor:
 
     def initialize_resort_store(
         self, repo: Repository, merged: BackfillInventory
-    ) -> str:
+    ) -> BranchInit:
         """Prepare the ``resort`` branch for the re-sort job.
 
         Branch (or reset) ``resort`` off the current ``main`` tip, resize
         every array carrying the append dimension to the merged inventory's
         length, rewrite the time axis, validate, and commit. Slots at or
         after the first shifted index hold stale references until the job
-        rewrites them, which it must do before promoting.
+        relocates them (:meth:`reindex_resort_slots`) and writes the
+        inserted granules, which it must do before promoting.
         """
         if merged.collection != self.config.collection_shortname:
             raise StoreValidationError(
@@ -232,16 +234,87 @@ class Processor:
         validate_store(
             template, zarr.open_group(session.store, mode="r"), allow_extra=True
         )
-        return cast(
-            str,
-            session.commit(f"Resort: axis of {len(merged.granules)} granules"),
-        )
+        snapshot = session.commit(f"Resort: axis of {len(merged.granules)} granules")
+        return BranchInit(snapshot=snapshot, branched_from=tip)
 
     def process_resort_file(self, file_key: str, session: Session) -> bool:
         """Rewrite one granule's slot on the resort branch without committing."""
         # Same as the backfill worker path; only the session type differs,
         # and only the .store attribute is used.
         return self.process_backfill_file(file_key, session)  # type: ignore[arg-type]
+
+    def reindex_resort_slots(
+        self,
+        session: Session,
+        manifest: BackfillInventory,
+        merged: BackfillInventory,
+    ) -> int:
+        """Move already-ingested slots to their merged positions, metadata-only.
+
+        For every template array chunked one slot per chunk along the append
+        dimension, relocate each shifted slot's chunk references with
+        icechunk's ``reindex_array`` — the payloads (virtual refs including
+        their ``last_updated_at`` checksums) move untouched, so no granule is
+        re-read from source. Slots whose merged position holds a granule not
+        in ``manifest`` (the inserted ones) are cleared and must be written
+        by :meth:`process_resort_file` before the branch validates.
+
+        Runs on the ``resort`` session after :meth:`initialize_resort_store`
+        resized the arrays and rewrote the axis. Returns the number of slots
+        moved.
+        """
+        shift = first_shifted_index(manifest, merged)
+        merged_position = {e.granule_ur: i for i, e in enumerate(merged.granules)}
+        # old slot -> new slot for every already-ingested granule that moves.
+        forward_map = {
+            old: merged_position[entry.granule_ur]
+            for old, entry in enumerate(manifest.granules)
+            if old >= shift
+        }
+        backward_map = {new: old for old, new in forward_map.items()}
+        if not forward_map:
+            return 0
+
+        for path, node in self.template.to_flat().items():
+            if not isinstance(node, ArraySpec) or not node.dimension_names:
+                continue
+            if self.config.append_dim not in node.dimension_names:
+                continue
+            if path.lstrip("/") == self.config.append_dim:
+                continue  # the axis itself is rewritten wholesale at init
+            axis_pos = node.dimension_names.index(self.config.append_dim)
+            chunk_shape = node.chunk_grid["configuration"]["chunk_shape"]
+            if chunk_shape[axis_pos] != 1:
+                # A chunk spanning several slots cannot be relocated per slot.
+                raise StoreValidationError(
+                    [
+                        f"array {path!r} chunks {chunk_shape[axis_pos]} slots per "
+                        f"chunk along {self.config.append_dim!r}; the re-sort "
+                        "job can only relocate arrays chunked one slot per chunk"
+                    ]
+                )
+
+            def forward(coords: Iterable[int]) -> list[int] | None:
+                coords = list(coords)
+                new_slot = forward_map.get(coords[axis_pos])
+                if new_slot is None:  # unshifted slot: leave in place
+                    return None
+                coords[axis_pos] = new_slot
+                return coords
+
+            def backward(coords: Iterable[int]) -> list[int] | None:
+                coords = list(coords)
+                slot = coords[axis_pos]
+                if slot < shift:
+                    return coords  # identity: the slot keeps its chunk
+                old_slot = backward_map.get(slot)
+                if old_slot is None:  # an inserted granule's slot: clear it
+                    return None
+                coords[axis_pos] = old_slot
+                return coords
+
+            session.reindex_array(f"/{path.lstrip('/')}", forward, backward)
+        return len(forward_map)
 
     def validate_backfill_store(
         self, repo: Repository, inventory: BackfillInventory, *, branch: str

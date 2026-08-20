@@ -345,6 +345,8 @@ class VirtualizarrSqsStack(Stack):
         that folds the pending ledger in, and the CMR poller that feeds the
         queue (ASDC publishes no SNS topic)."""
         if settings.RESORT_SCHEDULE_HOURS:
+            resort_env = dict(self.processor_env)
+            resort_env["RESORT_MAX_FOLD"] = str(settings.RESORT_MAX_FOLD)
             self.resort_lambda = _lambda.DockerImageFunction(
                 self,
                 f"{settings.STACK_NAME}-resort-lambda",
@@ -356,8 +358,10 @@ class VirtualizarrSqsStack(Stack):
                 ),
                 architecture=_lambda.Architecture.X86_64,
                 timeout=Duration.minutes(15),
-                memory_size=2048,
-                environment=dict(self.processor_env),
+                # A deep resort's chunk-reference relocation builds the whole
+                # shifted suffix's manifest updates in memory.
+                memory_size=4096,
+                environment=resort_env,
             )
             self.icechunk_bucket.grant_read_write(self.resort_lambda)
             if self.earthdata_secret is not None:

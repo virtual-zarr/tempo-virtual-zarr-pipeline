@@ -29,7 +29,7 @@ def tiny(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> TinyCollect
 def backfill_and_promote(tiny: TinyCollection) -> Processor:
     processor = Processor()
     repo = processor.open_backfill_repo()
-    processor.initialize_backfill_store(repo, tiny.inventory)
+    init = processor.initialize_backfill_store(repo, tiny.inventory)
     shared = pickle.loads(backfill.create_fork(repo))
     children = []
     for url in tiny.urls:
@@ -37,7 +37,7 @@ def backfill_and_promote(tiny: TinyCollection) -> Processor:
         assert processor.process_backfill_file(url, child)
         children.append(pickle.dumps(child))
     backfill.merge_and_commit(repo, children, message="backfill")
-    backfill.promote(repo)
+    backfill.promote(repo, expected_target_tip=init.branched_from)
     StoreManifest.write(os.environ["STORE_MANIFEST_URI"], tiny.inventory)
     return processor
 

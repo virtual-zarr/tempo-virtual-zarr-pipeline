@@ -2,18 +2,18 @@
 
 Merges the store manifest with the pending ledger into one sorted
 inventory (collisions abort before any branch is touched), rewrites the
-axis on a ``resort`` branch, re-ingests every granule from the first
-shifted slot on, validates, fast-forwards ``main``, updates the store
-manifest, and clears the folded ledger entries.
+axis on a ``resort`` branch, relocates every already-ingested slot with a
+metadata-only chunk reindex (no source file is re-read), parses and
+writes only the inserted granules, validates, promotes ``main`` with a
+compare-and-swap against the tip the branch was created from, updates the
+store manifest, and clears the folded ledger entries.
 
-The shifted suffix is re-ingested serially in one Lambda invocation,
-which covers the routine cases: adjacent-scan swaps shift only the tail,
-and a daily batch of historical arrivals stays bounded.
+A run folds at most ``$RESORT_MAX_FOLD`` pending granules (earliest
+first); the remainder stays in the ledger for the next scheduled run, so
+each run's parse work is bounded and every promoted run is durable
+partial progress. Deep historical insertions are cheap: the shifted
+suffix moves as chunk references, however long it is.
 """
-
-# ponytail: serial suffix rewrite in one invocation; if a deep resort ever
-# exceeds the Lambda time limit, run the backfill state machine over the
-# suffix on the resort branch instead (same worker path, distributed map).
 
 import os
 from typing import Any
@@ -30,17 +30,21 @@ from virtualizarr_processor.resort import first_shifted_index, merge_pending
 logger = Logger()
 tracer = Tracer()
 
+DEFAULT_MAX_FOLD = 500
+
 
 @logger.inject_lambda_context()
 @tracer.capture_lambda_handler
 def handler(event: dict[str, Any], context: LambdaContext) -> dict[str, Any]:
     manifest_uri = os.environ["STORE_MANIFEST_URI"]
     ledger_uri = os.environ["PENDING_LEDGER_URI"]
+    max_fold = int(os.environ.get("RESORT_MAX_FOLD", DEFAULT_MAX_FOLD))
 
     pending = PendingLedger.read(ledger_uri)
     if not pending:
         logger.info("Pending ledger is empty; nothing to resort")
         return {"resorted": False, "reason": "ledger empty"}
+    fold = sorted(pending, key=lambda entry: entry.time)[:max_fold]
 
     processor = Processor()
     repo = processor.open_backfill_repo()
@@ -53,31 +57,51 @@ def handler(event: dict[str, Any], context: LambdaContext) -> dict[str, Any]:
     # relocate existing granules.
     StoreManifest.validate_against_axis(manifest, axis)
 
-    merged = merge_pending(manifest, pending)  # collisions raise here
+    merged = merge_pending(manifest, fold)  # collisions raise here
     shift_index = first_shifted_index(manifest, merged)
     logger.info(
         "Resorting",
         extra={
             "pending": len(pending),
+            "folding": len(fold),
             "first_shifted_index": shift_index,
-            "rewrites": len(merged.granules) - shift_index,
+            "relocations": len(manifest.granules) - shift_index,
         },
     )
 
-    processor.initialize_resort_store(repo, merged)
+    init_result = processor.initialize_resort_store(repo, merged)
     session = repo.writable_session("resort")
-    for entry in merged.granules[shift_index:]:
+    # Already-ingested slots move as chunk references; only the inserted
+    # granules are parsed from source.
+    processor.reindex_resort_slots(session, manifest, merged)
+    fold_urs = {entry.granule_ur for entry in fold}
+    for entry in merged.granules:
+        if entry.granule_ur not in fold_urs:
+            continue
         if not processor.process_resort_file(entry.url, session):
-            raise RuntimeError(f"resort rewrite failed for {entry.url}")
-    session.commit(f"Resort: rewrite slots {shift_index}..{len(merged.granules) - 1}")
+            raise RuntimeError(f"resort insert failed for {entry.url}")
+    session.commit(
+        f"Resort: insert {len(fold)} granules, "
+        f"relocate slots {shift_index}..{len(merged.granules) - 1}"
+    )
 
     processor.validate_backfill_store(repo, merged, branch="resort")
-    backfill.promote(repo, source="resort")
+    backfill.promote(
+        repo, source="resort", expected_target_tip=init_result.branched_from
+    )
     StoreManifest.write(manifest_uri, merged)
-    PendingLedger.remove(ledger_uri, [entry.granule_ur for entry in pending])
-    logger.info("Resort promoted to main")
+    PendingLedger.remove(ledger_uri, fold_urs)
+    remaining = len(pending) - len(fold)
+    if remaining:
+        logger.info(
+            "Resort promoted to main; ledger not yet drained",
+            extra={"remaining": remaining},
+        )
+    else:
+        logger.info("Resort promoted to main")
     return {
         "resorted": True,
-        "inserted": len(pending),
+        "inserted": len(fold),
+        "remaining": remaining,
         "first_shifted_index": shift_index,
     }

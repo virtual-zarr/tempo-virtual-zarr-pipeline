@@ -1,10 +1,13 @@
-"""Handler: validate the finished backfill store, then fast-forward main.
+"""Handler: validate the finished backfill store, then promote main.
 
-The promote gate runs before the fast-forward: the store must
+The promote gate runs before the branch move: the store must
 match the resized template, the time axis must equal the inventory's
 values bit-exactly and be strictly increasing, and the native lat/lon
 chunks must equal the committed reference grid. A gate failure raises and
-leaves `main` untouched.
+leaves `main` untouched. The move itself is compare-and-swap against the
+`main` tip the Init step branched from (``branched_from`` in the event),
+so a commit that landed on `main` during the run fails the promote loudly
+instead of being discarded.
 """
 
 import os
@@ -29,7 +32,7 @@ def handler(event: dict[str, Any], context: LambdaContext) -> dict[str, Any]:
     repo = processor.open_backfill_repo()
     backfill_inventory = inventory.read_inventory(event["inventory_uri"])
     processor.validate_backfill_store(repo, backfill_inventory, branch="backfill")
-    backfill.promote(repo)
+    backfill.promote(repo, expected_target_tip=event["branched_from"])
     logger.info("Promoted main to backfill tip")
     manifest_uri = os.environ.get("STORE_MANIFEST_URI")
     if manifest_uri:

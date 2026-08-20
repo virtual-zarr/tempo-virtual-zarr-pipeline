@@ -1,10 +1,11 @@
 """Generic Icechunk fork/merge/promote helpers for backfill.
 
 These operations are identical for every VirtualizarrProcessor implementation,
-so they live here rather than on the Protocol. All were verified against
-icechunk 1.1.14: a fresh writable session can merge forks created by an earlier
-(now-discarded) session and commit, as long as the fork's base is a committed
-branch-tip snapshot.
+so they live here rather than on the Protocol. The fork/merge mechanics are
+covered by tests/backfill_mechanics against the pinned icechunk (>=2.1): a
+fresh writable session can merge forks created by an earlier (now-discarded)
+session and commit, as long as the fork's base is a committed branch-tip
+snapshot.
 """
 
 import pickle
@@ -44,7 +45,21 @@ def merge_and_commit(
 
 
 def promote(
-    repo: Repository, *, source: str = "backfill", target: str = "main"
+    repo: Repository,
+    *,
+    source: str = "backfill",
+    target: str = "main",
+    expected_target_tip: str,
 ) -> None:
-    """Fast-forward `target` to the current tip of `source`."""
-    repo.reset_branch(target, repo.lookup_branch(source))
+    """Move `target` to the current tip of `source`, compare-and-swap style.
+
+    `expected_target_tip` must be the `target` tip the `source` branch was
+    created from (BranchInit.branched_from). If `target` moved in the
+    meantime — e.g. the forward consumer committed an append while a re-sort
+    or backfill run was in flight — icechunk refuses the reset and this
+    raises instead of silently discarding that commit. The failed run can
+    then be retried against the new tip.
+    """
+    repo.reset_branch(
+        target, repo.lookup_branch(source), from_snapshot_id=expected_target_tip
+    )

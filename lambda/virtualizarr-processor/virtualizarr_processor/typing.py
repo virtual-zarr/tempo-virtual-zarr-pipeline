@@ -2,13 +2,26 @@ from __future__ import annotations
 
 import enum
 from datetime import datetime
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, NamedTuple, Protocol, runtime_checkable
 
 import icechunk
 from icechunk import ForkSession, Repository, Session
 
 if TYPE_CHECKING:
     from virtualizarr_processor.inventory import BackfillInventory
+
+
+class BranchInit(NamedTuple):
+    """Result of creating a work branch off the promote target.
+
+    ``branched_from`` is the target branch's tip at branch time — the
+    compare-and-swap expectation :func:`virtualizarr_processor.backfill.promote`
+    requires, so a commit that lands on the target while the work branch is
+    built fails the promote loudly instead of being silently discarded.
+    """
+
+    snapshot: str  # the init commit on the work branch
+    branched_from: str  # the promote target's tip when the branch was created
 
 
 class ProcessOutcome(enum.Enum):
@@ -88,11 +101,12 @@ class VirtualizarrProcessor(Protocol):
 
     def initialize_backfill_store(
         self, repo: Repository, inventory: "BackfillInventory"
-    ) -> str:
+    ) -> BranchInit:
         """
         Create the `backfill` branch off the current `main` tip and build the
         full-shape store (metadata plus native coordinates), commit, and
-        return the base snapshot id.
+        return the base snapshot id together with the `main` tip the branch
+        was created from (the promote CAS expectation).
 
         The store is declared at its full extent up front because backfill
         writes disjoint regions rather than appending. The time axis is
@@ -113,8 +127,9 @@ class VirtualizarrProcessor(Protocol):
             inventory: The validated backfill inventory for this collection.
         Returns
         -------
-        str
-            The base snapshot id of the committed full-shape store.
+        BranchInit
+            The base snapshot id of the committed full-shape store and the
+            `main` tip it was branched from.
         """
         ...
 

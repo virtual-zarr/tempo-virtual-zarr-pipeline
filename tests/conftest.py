@@ -1,6 +1,7 @@
 import os
 import pathlib
 import tempfile
+from collections.abc import Iterator
 
 import icechunk
 import numpy as np
@@ -141,3 +142,16 @@ def tempo_granule_dir(tmp_path: pathlib.Path) -> pathlib.Path:
     directory = tmp_path / "granules"
     directory.mkdir()
     return directory
+
+
+@pytest.fixture(autouse=True)
+def _clear_earthdata_caches() -> Iterator[None]:
+    """The EDL auth material and credential providers are cached per process
+    (a warm Lambda's env is stable); tests vary the env, so clear between."""
+    from virtualizarr_processor import granule
+
+    granule._earthdata_auth.cache_clear()
+    granule._s3_credential_provider.cache_clear()
+    yield
+    granule._earthdata_auth.cache_clear()
+    granule._s3_credential_provider.cache_clear()

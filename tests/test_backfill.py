@@ -16,9 +16,11 @@ def test_initialize_backfill_store_creates_full_shape(
     backfill_repo: icechunk.Repository,
 ) -> None:
     processor = Processor()
-    snapshot = processor.initialize_backfill_store(backfill_repo)
+    main_tip = backfill_repo.lookup_branch("main")
+    init = processor.initialize_backfill_store(backfill_repo)
 
-    assert isinstance(snapshot, str) and snapshot
+    assert isinstance(init.snapshot, str) and init.snapshot
+    assert init.branched_from == main_tip
     assert "backfill" in backfill_repo.list_branches()
     session = backfill_repo.readonly_session("backfill")
     arr = zarr.open_group(session.store, mode="r")["foo"]
@@ -45,7 +47,7 @@ def _worker(shared_fork_bytes: bytes, keys: list[str]) -> bytes:
 
 def test_full_backfill_round_trip(backfill_repo: icechunk.Repository) -> None:
     processor = Processor()
-    processor.initialize_backfill_store(backfill_repo)
+    init = processor.initialize_backfill_store(backfill_repo)
 
     shared = backfill.create_fork(backfill_repo)
     child_a = _worker(shared, ["0", "1", "2"])
@@ -62,11 +64,29 @@ def test_full_backfill_round_trip(backfill_repo: icechunk.Repository) -> None:
     expected = np.arange(6)[:, None, None]
     assert (np.asarray(arr[:]) == expected).all()
 
-    backfill.promote(backfill_repo)
+    backfill.promote(backfill_repo, expected_target_tip=init.branched_from)
     arr_main = zarr.open_group(backfill_repo.readonly_session("main").store, mode="r")[
         "foo"
     ]
     assert (np.asarray(arr_main[:]) == expected).all()
+
+
+def test_promote_refuses_when_main_moved(backfill_repo: icechunk.Repository) -> None:
+    """A commit landing on main mid-run fails the promote instead of being
+    silently discarded (the compare-and-swap that guards H1)."""
+    processor = Processor()
+    init = processor.initialize_backfill_store(backfill_repo)
+    child = _worker(backfill.create_fork(backfill_repo), ["0"])
+    backfill.merge_and_commit(backfill_repo, [child], message="partial")
+
+    # Meanwhile something else (e.g. the forward consumer) commits to main.
+    session = backfill_repo.writable_session("main")
+    zarr.create_group(store=session.store, path="concurrent", zarr_format=3)
+    concurrent_tip = session.commit("concurrent append")
+
+    with pytest.raises(icechunk.IcechunkError):
+        backfill.promote(backfill_repo, expected_target_tip=init.branched_from)
+    assert backfill_repo.lookup_branch("main") == concurrent_tip
 
 
 def test_open_backfill_repo_local_filesystem(

@@ -17,6 +17,8 @@ def test_init_creates_backfill_branch_with_inventory_axis(
 
     assert isinstance(result["base_snapshot"], str) and result["base_snapshot"]
     repo = Processor().open_backfill_repo()
+    # The CAS expectation for the promote step: main's tip at branch time.
+    assert result["branched_from"] == repo.lookup_branch("main")
     assert "backfill" in repo.list_branches()
     group = zarr.open_group(repo.readonly_session("backfill").store, mode="r")
     np.testing.assert_array_equal(np.asarray(group["time"][:]), tempo_pipeline.times)

@@ -14,10 +14,16 @@ def test_promote_gates_then_moves_main_to_backfill_tip(
     tempo_pipeline: SimpleNamespace,
     lambda_context: MagicMock,
 ) -> None:
-    init.handler({"inventory_uri": tempo_pipeline.inventory_uri}, lambda_context)
+    init_result = init.handler(
+        {"inventory_uri": tempo_pipeline.inventory_uri}, lambda_context
+    )
 
     result = promote.handler(
-        {"inventory_uri": tempo_pipeline.inventory_uri}, lambda_context
+        {
+            "inventory_uri": tempo_pipeline.inventory_uri,
+            "branched_from": init_result["branched_from"],
+        },
+        lambda_context,
     )
 
     assert result["promoted"] is True
@@ -29,7 +35,9 @@ def test_promote_gate_failure_leaves_main_untouched(
     tempo_pipeline: SimpleNamespace,
     lambda_context: MagicMock,
 ) -> None:
-    init.handler({"inventory_uri": tempo_pipeline.inventory_uri}, lambda_context)
+    init_result = init.handler(
+        {"inventory_uri": tempo_pipeline.inventory_uri}, lambda_context
+    )
 
     # An inventory that disagrees with the store axis: one granule extra.
     wrong = tempo_pipeline.tiny.inventory.model_copy(
@@ -42,7 +50,13 @@ def test_promote_gate_failure_leaves_main_untouched(
     main_before = repo.lookup_branch("main")
 
     with pytest.raises(StoreValidationError):
-        promote.handler({"inventory_uri": f"s3://{BUCKET}/wrong.json"}, lambda_context)
+        promote.handler(
+            {
+                "inventory_uri": f"s3://{BUCKET}/wrong.json",
+                "branched_from": init_result["branched_from"],
+            },
+            lambda_context,
+        )
 
     repo = Processor().open_backfill_repo()
     assert repo.lookup_branch("main") == main_before

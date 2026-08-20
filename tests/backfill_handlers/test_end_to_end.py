@@ -29,7 +29,9 @@ def test_full_backfill_chain(
         },
         lambda_context,
     )["partitions"]
-    init.handler({"inventory_uri": tempo_pipeline.inventory_uri}, lambda_context)
+    init_result = init.handler(
+        {"inventory_uri": tempo_pipeline.inventory_uri}, lambda_context
+    )
 
     # serial over partitions: fork -> workers (one per file) -> reduce
     for part in parts:
@@ -58,8 +60,14 @@ def test_full_backfill_chain(
             lambda_context,
         )
 
-    # promote (gate + fast-forward) and verify every scan on main
-    promote.handler({"inventory_uri": tempo_pipeline.inventory_uri}, lambda_context)
+    # promote (gate + CAS branch move) and verify every scan on main
+    promote.handler(
+        {
+            "inventory_uri": tempo_pipeline.inventory_uri,
+            "branched_from": init_result["branched_from"],
+        },
+        lambda_context,
+    )
     repo = Processor().open_backfill_repo()
     group = zarr.open_group(repo.readonly_session("main").store, mode="r")
     np.testing.assert_array_equal(np.asarray(group["time"][:]), tempo_pipeline.times)

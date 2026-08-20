@@ -38,7 +38,7 @@ def tiny(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> TinyCollect
 def run_backfill(processor: Processor, tiny: TinyCollection) -> zarr.Group:
     """init -> one fork per granule -> merge -> gate -> promote; returns main."""
     repo = processor.open_backfill_repo()
-    processor.initialize_backfill_store(repo, tiny.inventory)
+    init = processor.initialize_backfill_store(repo, tiny.inventory)
     shared = pickle.loads(backfill.create_fork(repo))
     children = []
     for url in tiny.urls:
@@ -47,7 +47,7 @@ def run_backfill(processor: Processor, tiny: TinyCollection) -> zarr.Group:
         children.append(pickle.dumps(child))
     backfill.merge_and_commit(repo, children, message="partition 0")
     processor.validate_backfill_store(repo, tiny.inventory, branch="backfill")
-    backfill.promote(repo)
+    backfill.promote(repo, expected_target_tip=init.branched_from)
     return zarr.open_group(repo.readonly_session("main").store, mode="r")
 
 
@@ -175,7 +175,7 @@ def test_real_backfill_two_granules(
 
     processor = Processor()
     repo = processor.open_backfill_repo()
-    processor.initialize_backfill_store(repo, inventory)
+    init = processor.initialize_backfill_store(repo, inventory)
     shared = pickle.loads(backfill.create_fork(repo))
     children = []
     for entry in entries:
@@ -184,7 +184,7 @@ def test_real_backfill_two_granules(
         children.append(pickle.dumps(child))
     backfill.merge_and_commit(repo, children, message="real granules")
     processor.validate_backfill_store(repo, inventory, branch="backfill")
-    backfill.promote(repo)
+    backfill.promote(repo, expected_target_tip=init.branched_from)
 
     group = zarr.open_group(repo.readonly_session("main").store, mode="r")
     window = np.s_[1200:1205, 3200:3205]

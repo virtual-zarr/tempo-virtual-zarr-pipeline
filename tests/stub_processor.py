@@ -26,6 +26,7 @@ from virtualizarr_processor.store_template import (
     validate_granule,
     validate_store,
 )
+from virtualizarr_processor.typing import BranchInit
 from zarr.codecs import BytesCodec
 from zarr.core.dtype import parse_data_type
 from zarr.core.metadata import ArrayV3Metadata
@@ -171,8 +172,9 @@ class Processor:
         snapshot = session.commit(message=f"Append to {session.snapshot_id}")
         return str(snapshot)
 
-    def initialize_backfill_store(self, repo: Repository) -> str:
-        repo.create_branch("backfill", repo.lookup_branch("main"))
+    def initialize_backfill_store(self, repo: Repository) -> BranchInit:
+        main_tip = repo.lookup_branch("main")
+        repo.create_branch("backfill", main_tip)
         session = repo.writable_session("backfill")
         create_empty_store(BACKFILL_TEMPLATE, session.store)
         time_coord = zarr.open_array(session.store, path="time")
@@ -183,7 +185,8 @@ class Processor:
             zarr.open_group(session.store, mode="r"),
             allow_extra=True,
         )
-        return cast(str, session.commit("Initialize backfill shape"))
+        snapshot = cast(str, session.commit("Initialize backfill shape"))
+        return BranchInit(snapshot=snapshot, branched_from=main_tip)
 
     def open_backfill_repo(self) -> Repository:
         # Reference impl storage config, read from the environment:

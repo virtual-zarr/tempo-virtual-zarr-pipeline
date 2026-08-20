@@ -15,8 +15,10 @@ internally inconsistent file cannot define its own axis position.
 
 from __future__ import annotations
 
+import json
 import os
 from datetime import datetime
+from functools import lru_cache
 from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
@@ -24,9 +26,10 @@ import numpy as np
 import obstore
 import xarray as xr
 from obspec_utils.registry import ObjectStoreRegistry
-from obstore.store import HTTPStore, LocalStore, from_url
+from obstore.store import HTTPStore, LocalStore, S3Store, from_url
 
 if TYPE_CHECKING:  # ClientConfig is a stub-only TypedDict in obstore
+    from obstore.auth.earthdata import NasaEarthdataCredentialProvider
     from obstore.store import ClientConfig
 from virtualizarr.parsers.hdf import HDFParser
 
@@ -35,25 +38,101 @@ from virtualizarr_processor.store_template import GranuleValidationError
 
 EPOCH_ATTRIBUTE = "time_coverage_start_since_epoch"
 
+# Buckets whose reads are authorized with temporary credentials from the
+# DAAC's ``s3credentials`` endpoint (the flow readers of the virtual store
+# use too). $EARTHDATA_S3_CREDENTIALS_ENDPOINT overrides for other buckets.
+S3_CREDENTIALS_ENDPOINTS = {
+    "asdc-prod-protected": "https://data.asdc.earthdata.nasa.gov/s3credentials",
+    "asdc2-prod-protected": "https://data.asdc.earthdata.nasa.gov/s3credentials",
+}
+
+
+@lru_cache(maxsize=1)
+def _earthdata_auth() -> str | tuple[str, str] | None:
+    """Resolve Earthdata Login material for the process, or None.
+
+    Sources, in order: ``$EARTHDATA_TOKEN`` (a bearer token),
+    ``$EARTHDATA_USERNAME``/``$EARTHDATA_PASSWORD``, then the Secrets
+    Manager secret at ``$EARTHDATA_SECRET_ARN`` — JSON carrying ``token``
+    or ``username``+``password``, or a plain token string. None means the
+    deployment relies on ambient IAM access to the source bucket instead
+    (e.g. an in-account bucket policy).
+    """
+    token = os.environ.get("EARTHDATA_TOKEN")
+    if token:
+        return token
+    username = os.environ.get("EARTHDATA_USERNAME")
+    password = os.environ.get("EARTHDATA_PASSWORD")
+    if username and password:
+        return (username, password)
+    arn = os.environ.get("EARTHDATA_SECRET_ARN")
+    if not arn:
+        return None
+    import boto3  # deferred: provided by the Lambda runtime / dev deps
+
+    secret = boto3.client("secretsmanager").get_secret_value(SecretId=arn)[
+        "SecretString"
+    ]
+    try:
+        data = json.loads(secret)
+    except ValueError:
+        return str(secret)  # a plain token string
+    if not isinstance(data, dict):
+        return str(secret)
+    if data.get("token"):
+        return str(data["token"])
+    return (str(data["username"]), str(data["password"]))
+
+
+@lru_cache(maxsize=None)
+def _s3_credential_provider(bucket: str) -> "NasaEarthdataCredentialProvider | None":
+    """An EDL-refreshing credential provider for ``bucket``, or None.
+
+    None when no EDL material is configured, or the bucket has no known
+    ``s3credentials`` endpoint (tests and staging buckets read with ambient
+    AWS credentials). Cached so a warm Lambda exchanges credentials once
+    per expiry window, not once per granule.
+    """
+    auth = _earthdata_auth()
+    if auth is None:
+        return None
+    endpoint = os.environ.get(
+        "EARTHDATA_S3_CREDENTIALS_ENDPOINT"
+    ) or S3_CREDENTIALS_ENDPOINTS.get(bucket)
+    if endpoint is None:
+        return None
+    from obstore.auth.earthdata import NasaEarthdataCredentialProvider
+
+    return NasaEarthdataCredentialProvider(endpoint, auth=auth)
+
 
 def make_registry(url: str) -> ObjectStoreRegistry:
     """Build an object-store registry that can resolve ``url``.
 
     Supports ``file://`` (tests, the template generator), ``s3://``
-    (in-region access with AWS credentials from the environment), and
-    ``https://`` with an ``$EARTHDATA_TOKEN`` bearer header.
+    (temporary Earthdata credentials when EDL material is configured — see
+    :func:`_earthdata_auth` — otherwise ambient AWS credentials), and
+    ``https://`` with an EDL bearer-token header (token-based EDL material
+    only).
     """
     parsed = urlparse(url)
     if parsed.scheme == "file":
         return ObjectStoreRegistry({"file://": LocalStore()})
     if parsed.scheme == "s3":
         base = f"s3://{parsed.netloc}"
+        provider = _s3_credential_provider(parsed.netloc)
+        if provider is not None:
+            return ObjectStoreRegistry(
+                {base: S3Store.from_url(base, credential_provider=provider)}
+            )
         return ObjectStoreRegistry({base: from_url(base)})
     if parsed.scheme == "https":
         base = f"https://{parsed.netloc}"
-        token = os.environ.get("EARTHDATA_TOKEN")
+        auth = _earthdata_auth()
         client_options: ClientConfig | None = (
-            {"default_headers": {"Authorization": f"Bearer {token}"}} if token else None
+            {"default_headers": {"Authorization": f"Bearer {auth}"}}
+            if isinstance(auth, str)
+            else None
         )
         return ObjectStoreRegistry(
             {base: HTTPStore.from_url(base, client_options=client_options)}

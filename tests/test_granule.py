@@ -160,6 +160,90 @@ def test_make_registry_schemes(monkeypatch: pytest.MonkeyPatch) -> None:
         make_registry("ftp://nope/g.nc")
 
 
+# --- Earthdata credential resolution ---
+
+
+@pytest.fixture()
+def no_edl_env(monkeypatch: pytest.MonkeyPatch) -> pytest.MonkeyPatch:
+    for name in (
+        "EARTHDATA_TOKEN",
+        "EARTHDATA_USERNAME",
+        "EARTHDATA_PASSWORD",
+        "EARTHDATA_SECRET_ARN",
+        "EARTHDATA_S3_CREDENTIALS_ENDPOINT",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    return monkeypatch
+
+
+def _secret_arn(secret: str) -> str:
+    import boto3
+
+    client = boto3.client("secretsmanager", region_name="us-east-1")
+    return str(client.create_secret(Name="edl", SecretString=secret)["ARN"])
+
+
+def test_earthdata_auth_resolution(no_edl_env: pytest.MonkeyPatch) -> None:
+    from virtualizarr_processor.granule import _earthdata_auth
+
+    assert _earthdata_auth() is None
+
+    _earthdata_auth.cache_clear()
+    no_edl_env.setenv("EARTHDATA_USERNAME", "user")
+    no_edl_env.setenv("EARTHDATA_PASSWORD", "pass")
+    assert _earthdata_auth() == ("user", "pass")
+
+    _earthdata_auth.cache_clear()
+    no_edl_env.setenv("EARTHDATA_TOKEN", "tok")  # token beats username/password
+    assert _earthdata_auth() == "tok"
+
+
+def test_earthdata_auth_from_secrets_manager(no_edl_env: pytest.MonkeyPatch) -> None:
+    from moto import mock_aws
+    from virtualizarr_processor.granule import _earthdata_auth
+
+    no_edl_env.setenv("AWS_DEFAULT_REGION", "us-east-1")  # Lambda sets AWS_REGION
+    with mock_aws():
+        no_edl_env.setenv(
+            "EARTHDATA_SECRET_ARN",
+            _secret_arn('{"username": "user", "password": "pass"}'),
+        )
+        assert _earthdata_auth() == ("user", "pass")
+
+    _earthdata_auth.cache_clear()
+    with mock_aws():
+        no_edl_env.setenv("EARTHDATA_SECRET_ARN", _secret_arn('{"token": "tok"}'))
+        assert _earthdata_auth() == "tok"
+
+    _earthdata_auth.cache_clear()
+    with mock_aws():
+        no_edl_env.setenv("EARTHDATA_SECRET_ARN", _secret_arn("bare-token"))
+        assert _earthdata_auth() == "bare-token"
+
+
+def test_s3_credential_provider_selection(no_edl_env: pytest.MonkeyPatch) -> None:
+    from virtualizarr_processor.granule import _s3_credential_provider
+
+    # No EDL material: ambient IAM, no provider — even for known buckets.
+    assert _s3_credential_provider("asdc-prod-protected") is None
+
+    _s3_credential_provider.cache_clear()
+    no_edl_env.setenv("EARTHDATA_TOKEN", "tok")
+    from virtualizarr_processor.granule import _earthdata_auth
+
+    _earthdata_auth.cache_clear()
+    # EDL material + a bucket with a known s3credentials endpoint: provider.
+    assert _s3_credential_provider("asdc-prod-protected") is not None
+    # Unknown bucket (tests, staging): ambient IAM.
+    assert _s3_credential_provider("my-staging-bucket") is None
+    # ...unless an endpoint override says otherwise.
+    no_edl_env.setenv(
+        "EARTHDATA_S3_CREDENTIALS_ENDPOINT", "https://example.test/s3credentials"
+    )
+    _s3_credential_provider.cache_clear()
+    assert _s3_credential_provider("my-staging-bucket") is not None
+
+
 # --- Real-granule integration (skipped when the context data is absent) ---
 
 

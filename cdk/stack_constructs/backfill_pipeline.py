@@ -222,7 +222,15 @@ class BackfillPipeline(Construct):
             "PromoteTask",
             lambda_function=self.functions["promote"],
             payload=sfn.TaskInput.from_object(
-                {"inventory_uri": sfn.JsonPath.string_at("$.inventory_uri")}
+                {
+                    "inventory_uri": sfn.JsonPath.string_at("$.inventory_uri"),
+                    # The `main` tip Init branched from: promote's
+                    # compare-and-swap expectation, so a commit that landed
+                    # on main during the run fails the promote loudly.
+                    "branched_from": sfn.JsonPath.string_at(
+                        "$.initResult.branched_from"
+                    ),
+                }
             ),
             payload_response_only=True,
         )
