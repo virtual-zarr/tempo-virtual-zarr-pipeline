@@ -184,7 +184,11 @@ def strip_attributes(spec: AnyGroupSpec, names: Collection[str]) -> AnyGroupSpec
 
 
 def validate_store(
-    spec: AnyGroupSpec, group: zarr.Group, *, allow_extra: bool = False
+    spec: AnyGroupSpec,
+    group: zarr.Group,
+    *,
+    allow_extra: bool = False,
+    volatile: Collection[str] = (),
 ) -> None:
     """Check that ``group`` conforms to the template ``spec``.
 
@@ -192,7 +196,8 @@ def validate_store(
     unexpected node, and mismatched metadata field (NaN fill values compare
     equal). Attributes follow the shared policy: every attribute the
     template declares must be present and equal, while undeclared ones only
-    produce a warning. Returns ``None`` when the store matches. With
+    produce a warning. Attribute names in ``volatile`` are neither required
+    nor warned about. Returns ``None`` when the store matches. With
     ``allow_extra`` the store may contain nodes the template does not
     declare, as when the template landed on a branch that inherited other
     nodes.
@@ -224,7 +229,7 @@ def validate_store(
             path,
             expected[path].get("attributes") or {},
             found[path].get("attributes") or {},
-            volatile=(),
+            volatile=volatile,
             where="store",
         )
     if differences:

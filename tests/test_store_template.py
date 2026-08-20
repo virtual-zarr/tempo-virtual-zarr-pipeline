@@ -5,6 +5,8 @@ pydantic-zarr GroupSpec), materialize it as an empty (metadata-only) store,
 and validate that an existing store conforms to it.
 """
 
+import pathlib
+
 import icechunk
 import numpy as np
 import pytest
@@ -498,3 +500,54 @@ class TestValidateStoreAttributePolicy:
 
         with pytest.raises(StoreValidationError, match="title"):
             validate_store(template(), zarr.open_group(store, mode="r"))
+
+
+def test_template_declares_manifest_arrays(tmp_path: pathlib.Path) -> None:
+    import sys
+
+    sys.path.insert(0, str(pathlib.Path(__file__).parent))
+    from tempo_fixtures import build_tiny_collection
+    from virtualizarr_processor.collection import load_collection, load_template
+    from virtualizarr_processor.manifest import MANIFEST_ARRAYS
+
+    tiny = build_tiny_collection(tmp_path / "collection", n=2)
+    spec = load_template(load_collection(str(tiny.config_path)))
+    flat = spec.to_flat()
+    for name in MANIFEST_ARRAYS:
+        node = flat[f"/{name}"]
+        assert node.data_type == "string"
+        assert node.dimension_names == ("time",)
+        # time_chunk_size in the tiny fixture's TOML is 8
+        assert tuple(node.chunk_grid["configuration"]["chunk_shape"]) == (8,)
+
+
+def test_validate_store_volatile_silences_state_attributes(
+    tmp_path: pathlib.Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    import sys
+
+    import icechunk
+    import zarr
+
+    sys.path.insert(0, str(pathlib.Path(__file__).parent))
+    from tempo_fixtures import build_tiny_collection
+    from virtualizarr_processor.collection import load_collection, load_template
+    from virtualizarr_processor.manifest import PIPELINE_STATE_ATTRIBUTES
+    from virtualizarr_processor.store_template import create_empty_store, validate_store
+
+    tiny = build_tiny_collection(tmp_path / "collection", n=2)
+    spec = load_template(load_collection(str(tiny.config_path)))
+    repo = icechunk.Repository.create(storage=icechunk.in_memory_storage())
+    session = repo.writable_session("main")
+    create_empty_store(spec, session.store)
+    group = zarr.open_group(session.store, mode="a")
+    group.attrs["tempo_store"] = {"schema": "tempo-backfill-inventory/1"}
+    group.attrs["pending_ledger"] = []
+    with caplog.at_level("WARNING", logger="virtualizarr_processor.store_template"):
+        validate_store(
+            spec,
+            zarr.open_group(session.store, mode="r"),
+            allow_extra=True,
+            volatile=PIPELINE_STATE_ATTRIBUTES,
+        )
+    assert "tempo_store" not in caplog.text and "pending_ledger" not in caplog.text

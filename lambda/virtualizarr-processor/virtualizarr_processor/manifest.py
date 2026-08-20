@@ -30,6 +30,15 @@ import numpy as np
 from virtualizarr_processor.inventory import BackfillInventory, GranuleEntry
 from virtualizarr_processor.store_template import StoreValidationError
 
+# The manifest's storage representation inside the store itself: two
+# vlen-string arrays on the append dimension, plus two root attributes.
+MANIFEST_ARRAYS: tuple[str, str] = ("granule_ur", "granule_url")
+STORE_META_ATTRIBUTE = "tempo_store"
+PENDING_LEDGER_ATTRIBUTE = "pending_ledger"
+PIPELINE_STATE_ATTRIBUTES: frozenset[str] = frozenset(
+    {STORE_META_ATTRIBUTE, PENDING_LEDGER_ATTRIBUTE}
+)
+
 
 def storage_prefix() -> str | None:
     """The repository's S3 key prefix: $S3_PREFIX and $ICECHUNK_PREFIX joined.
