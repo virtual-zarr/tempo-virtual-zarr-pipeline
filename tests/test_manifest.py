@@ -1,89 +1,108 @@
-"""Tests for the store manifest and pending ledger."""
+"""StoreManifest / PendingLedger round-trips against an icechunk store."""
 
-import pathlib
-from collections.abc import Iterator
-
-import boto3
-import numpy as np
+import icechunk
 import pytest
-from moto import mock_aws
+import zarr
 from virtualizarr_processor.inventory import BackfillInventory, GranuleEntry
-from virtualizarr_processor.manifest import PendingLedger, StoreManifest
-from virtualizarr_processor.store_template import StoreValidationError
-
-TIME_0 = 1471196538.0244286
-
-
-@pytest.fixture()
-def s3_bucket() -> Iterator[str]:
-    with mock_aws():
-        boto3.client("s3", region_name="us-east-1").create_bucket(Bucket="manifests")
-        yield "manifests"
+from virtualizarr_processor.manifest import (
+    MANIFEST_ARRAYS,
+    PendingLedger,
+    StoreManifest,
+)
 
 
 def entry(i: int) -> GranuleEntry:
-    return GranuleEntry(
-        url=f"s3://data/granule_{i}.nc",
-        granule_ur=f"granule_{i}",
-        time=TIME_0 + 3600.0 * i,
-    )
+    return GranuleEntry(url=f"s3://b/g{i}.nc", granule_ur=f"G{i}", time=float(i))
 
 
-def inventory(n: int = 3) -> BackfillInventory:
+def inventory(n: int) -> BackfillInventory:
     return BackfillInventory(
         schema_id="tempo-backfill-inventory/1",
         collection="TEMPO_HCHO_L3",
-        concept_id="C3685897141-LARC_CLOUD",
-        time_units="seconds since 1980-01-06T00:00:00Z",
+        concept_id="C1",
+        time_units="seconds since 1980-01-06",
         built_at="2026-08-20T00:00:00Z",
         granules=tuple(entry(i) for i in range(n)),
     )
 
 
-def test_store_manifest_file_round_trip(tmp_path: pathlib.Path) -> None:
-    uri = str(tmp_path / "manifest.json")
-    StoreManifest.write(uri, inventory())
-    assert StoreManifest.read(uri) == inventory()
+@pytest.fixture()
+def store() -> zarr.abc.store.Store:
+    """A minimal store: time axis + manifest arrays, as the template creates."""
+    repo = icechunk.Repository.create(storage=icechunk.in_memory_storage())
+    session = repo.writable_session("main")
+    zarr.create_array(
+        session.store, name="time", shape=(0,), chunks=(8,), dtype="float64",
+        dimension_names=("time",),
+    )
+    for name in MANIFEST_ARRAYS:
+        zarr.create_array(
+            session.store, name=name, shape=(0,), chunks=(8,), dtype="str",
+            dimension_names=("time",),
+        )
+    return session.store
 
 
-def test_store_manifest_s3_round_trip(s3_bucket: str) -> None:
-    uri = f"s3://{s3_bucket}/store-manifest.json"
-    StoreManifest.write(uri, inventory())
-    assert StoreManifest.read(uri) == inventory()
+def test_manifest_round_trip(store: zarr.abc.store.Store) -> None:
+    inv = inventory(3)
+    zarr.open_array(store, path="time").resize((3,))
+    zarr.open_array(store, path="time")[:] = inv.times()
+    StoreManifest.write(store, inv)
+    assert StoreManifest.read(store) == inv
 
 
-def test_validate_against_axis_bit_exact() -> None:
-    document = inventory()
-    StoreManifest.validate_against_axis(document, document.times())
-
-    with pytest.raises(StoreValidationError, match="axis"):
-        StoreManifest.validate_against_axis(document, document.times() + 1e-6)
-    with pytest.raises(StoreValidationError, match="axis"):
-        StoreManifest.validate_against_axis(document, document.times()[:-1])
-    with pytest.raises(StoreValidationError, match="axis"):
-        StoreManifest.validate_against_axis(document, np.array([]))
+def test_manifest_read_none_before_write(store: zarr.abc.store.Store) -> None:
+    assert StoreManifest.read(store) is None
 
 
-def test_pending_ledger_absent_reads_empty(tmp_path: pathlib.Path) -> None:
-    assert PendingLedger.read(str(tmp_path / "missing.json")) == ()
+def test_manifest_read_runs_inventory_validators(
+    store: zarr.abc.store.Store,
+) -> None:
+    inv = inventory(2)
+    zarr.open_array(store, path="time").resize((2,))
+    zarr.open_array(store, path="time")[:] = inv.times()
+    StoreManifest.write(store, inv)
+    # Corrupt: duplicate UR directly in the array.
+    zarr.open_array(store, path="granule_ur")[1] = "G0"
+    with pytest.raises(ValueError, match="duplicate granule_ur"):
+        StoreManifest.read(store)
 
 
-def test_pending_ledger_absent_s3_reads_empty(s3_bucket: str) -> None:
-    assert PendingLedger.read(f"s3://{s3_bucket}/missing.json") == ()
+def test_pending_ledger_round_trip_and_dedupe(store: zarr.abc.store.Store) -> None:
+    assert PendingLedger.read(store) == ()
+    PendingLedger.append(store, [entry(1)])
+    PendingLedger.append(store, [entry(1), entry(2)])  # redelivery of 1
+    assert [e.granule_ur for e in PendingLedger.read(store)] == ["G1", "G2"]
+    PendingLedger.write(store, [entry(2)])
+    assert [e.granule_ur for e in PendingLedger.read(store)] == ["G2"]
 
 
-def test_pending_ledger_append_dedupes(tmp_path: pathlib.Path) -> None:
-    uri = str(tmp_path / "ledger.json")
-    PendingLedger.append(uri, [entry(0), entry(1)])
-    PendingLedger.append(uri, [entry(1), entry(2)])  # redelivery of 1
-    assert PendingLedger.read(uri) == (entry(0), entry(1), entry(2))
+def test_state_rides_the_commit() -> None:
+    """Manifest + ledger written through a session survive commit, and an
+    attrs-only change is a committable session change (no empty commit)."""
+    repo = icechunk.Repository.create(storage=icechunk.in_memory_storage())
+    session = repo.writable_session("main")
+    zarr.create_array(
+        session.store, name="time", shape=(1,), chunks=(8,), dtype="float64",
+        dimension_names=("time",),
+    )
+    for name in MANIFEST_ARRAYS:
+        zarr.create_array(
+            session.store, name=name, shape=(1,), chunks=(8,), dtype="str",
+            dimension_names=("time",),
+        )
+    inv = inventory(1)
+    zarr.open_array(session.store, path="time")[:] = inv.times()
+    StoreManifest.write(session.store, inv)
+    session.commit("init")
 
+    deferral = repo.writable_session("main")
+    PendingLedger.append(deferral.store, [entry(7)])  # attrs-only change
+    deferral.commit("defer")  # must not raise NoChangesToCommitError
 
-def test_pending_ledger_remove(tmp_path: pathlib.Path) -> None:
-    uri = str(tmp_path / "ledger.json")
-    PendingLedger.append(uri, [entry(0), entry(1), entry(2)])
-    PendingLedger.remove(uri, ["granule_0", "granule_2"])
-    assert PendingLedger.read(uri) == (entry(1),)
+    readonly = repo.readonly_session("main")
+    assert StoreManifest.read(readonly.store) == inv
+    assert [e.granule_ur for e in PendingLedger.read(readonly.store)] == ["G7"]
 
 
 def test_storage_prefix_combines_like_the_cdk_stack(
@@ -100,21 +119,3 @@ def test_storage_prefix_combines_like_the_cdk_stack(
 
     monkeypatch.setenv("S3_PREFIX", "/tempo/")
     assert storage_prefix() == "tempo/hcho-v04"
-
-
-def test_default_state_uri_matches_the_deployed_layout(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from virtualizarr_processor.manifest import default_state_uri
-
-    monkeypatch.setenv("ICECHUNK_BUCKET", "ice")
-    monkeypatch.setenv("S3_PREFIX", "tempo")
-    monkeypatch.setenv("ICECHUNK_PREFIX", "hcho-v04")
-    assert (
-        default_state_uri("store-manifest.json")
-        == "s3://ice/tempo/hcho-v04/state/store-manifest.json"
-    )
-
-    monkeypatch.delenv("ICECHUNK_BUCKET")
-    with pytest.raises(ValueError, match="ICECHUNK_BUCKET"):
-        default_state_uri("store-manifest.json")
