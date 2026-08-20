@@ -1,3 +1,4 @@
+import textwrap
 from pathlib import Path
 from typing import Any
 
@@ -95,23 +96,29 @@ class VirtualizarrSqsStack(Stack):
                 queue=self.dlq,
             ),
         )
+        # Backfill run artifacts (fork pickles, partition manifests) are
+        # per-execution debris under <S3_PREFIX>/backfill/<execution>/.
+        s3_prefix = settings.s3_key_prefix
+        run_artifact_prefix = f"{s3_prefix}/backfill/" if s3_prefix else "backfill/"
+
         if settings.ICECHUNK_BUCKET:
             self.icechunk_bucket = s3.Bucket.from_bucket_name(
                 self,
                 f"{settings.STACK_NAME}-bucket",
                 bucket_name=settings.ICECHUNK_BUCKET,
             )
+            self._validate_bucket_region(settings)
         else:
             dev = settings.STAGE == "dev"
             self.icechunk_bucket = s3.Bucket(
                 self,
                 f"{settings.STACK_NAME}-bucket",
                 bucket_name=settings.ICECHUNK_BUCKET_NAME,
-                # Backfill run artifacts (fork pickles, partition manifests)
-                # are per-execution debris under backfill/<execution>/;
-                # expire them so repeated runs don't accumulate.
+                # Expire the run artifacts so repeated runs don't accumulate.
                 lifecycle_rules=[
-                    s3.LifecycleRule(prefix="backfill/", expiration=Duration.days(30))
+                    s3.LifecycleRule(
+                        prefix=run_artifact_prefix, expiration=Duration.days(30)
+                    )
                 ],
                 # dev stores are disposable: `cdk destroy` empties and deletes
                 # the bucket. prod keeps the default RETAIN so the store
@@ -130,9 +137,10 @@ class VirtualizarrSqsStack(Stack):
 
         # Forward-processing state artifacts live next to the repo unless
         # overridden.
+        storage_prefix = settings.icechunk_storage_prefix
         state_prefix = (
             f"s3://{self.icechunk_bucket.bucket_name}/"
-            f"{settings.ICECHUNK_PREFIX or ''}state/"
+            f"{storage_prefix + '/' if storage_prefix else ''}state/"
         )
         self.store_manifest_uri = (
             settings.STORE_MANIFEST_URI or f"{state_prefix}store-manifest.json"
@@ -157,8 +165,8 @@ class VirtualizarrSqsStack(Stack):
             self.processor_env["TEMPO_COLLECTION"] = settings.TEMPO_COLLECTION
         if settings.VIRTUAL_CHUNK_PREFIX:
             self.processor_env["VIRTUAL_CHUNK_PREFIX"] = settings.VIRTUAL_CHUNK_PREFIX
-        if settings.ICECHUNK_PREFIX:
-            self.processor_env["ICECHUNK_PREFIX"] = settings.ICECHUNK_PREFIX
+        if storage_prefix:
+            self.processor_env["ICECHUNK_PREFIX"] = storage_prefix
         if settings.EARTHDATA_SECRET_ARN:
             self.processor_env["EARTHDATA_SECRET_ARN"] = settings.EARTHDATA_SECRET_ARN
 
@@ -452,7 +460,8 @@ class VirtualizarrSqsStack(Stack):
                 self,
                 "BackfillPipeline",
                 icechunk_bucket=self.icechunk_bucket,
-                icechunk_prefix=settings.ICECHUNK_PREFIX,
+                icechunk_prefix=settings.icechunk_storage_prefix,
+                s3_prefix=settings.s3_key_prefix,
                 data_bucket_name=settings.DATA_BUCKET_NAME,
                 partition_size=settings.BACKFILL_PARTITION_SIZE,
                 max_items_per_batch=settings.BACKFILL_MAX_ITEMS_PER_BATCH,
@@ -477,3 +486,67 @@ class VirtualizarrSqsStack(Stack):
                 description="Start a backfill with: aws stepfunctions start-execution "
                 '--state-machine-arn <this> --input \'{"inventory_uri": "s3://..."}\'',
             )
+
+    def _validate_bucket_region(self, settings: StackSettings) -> None:
+        """Fail the deploy if the existing Icechunk bucket is in another region.
+
+        An out-of-region bucket would silently make every store read and
+        write a cross-region transfer.
+        """
+        validator = _lambda.Function(
+            self,
+            "ValidateIcechunkBucketRegionFunction",
+            runtime=_lambda.Runtime.PYTHON_3_12,
+            handler="index.handler",
+            timeout=Duration.seconds(30),
+            log_group=function_log_group(self, "validate-bucket-region-logs"),
+            code=_lambda.Code.from_inline(
+                textwrap.dedent(
+                    """\
+                    import boto3
+
+
+                    def handler(event, _context):
+                        if event["RequestType"] == "Delete":
+                            return {
+                                "PhysicalResourceId": event["PhysicalResourceId"]
+                            }
+
+                        bucket = event["ResourceProperties"]["BucketName"]
+                        expected = event["ResourceProperties"]["ExpectedRegion"]
+                        location = boto3.client("s3").get_bucket_location(
+                            Bucket=bucket
+                        )["LocationConstraint"]
+                        actual = {None: "us-east-1", "EU": "eu-west-1"}.get(
+                            location, location
+                        )
+                        if actual != expected:
+                            raise ValueError(
+                                f"Icechunk bucket {bucket!r} is in {actual!r}; "
+                                f"expected {expected!r}"
+                            )
+                        return {"PhysicalResourceId": f"{bucket}:{actual}"}
+                    """
+                )
+            ),
+        )
+        validator.add_to_role_policy(
+            iam.PolicyStatement(
+                actions=["s3:GetBucketLocation"],
+                resources=[self.icechunk_bucket.bucket_arn],
+            )
+        )
+        provider = cr.Provider(
+            self,
+            "ValidateIcechunkBucketRegionProvider",
+            on_event_handler=validator,
+        )
+        self.icechunk_bucket_region_validator = CustomResource(
+            self,
+            "ValidateIcechunkBucketRegion",
+            service_token=provider.service_token,
+            properties={
+                "BucketName": self.icechunk_bucket.bucket_name,
+                "ExpectedRegion": settings.ACCOUNT_REGION,
+            },
+        )

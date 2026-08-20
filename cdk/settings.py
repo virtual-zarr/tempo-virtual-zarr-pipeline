@@ -26,10 +26,16 @@ class StackSettings(BaseSettings):
     # cross-region transfer (the largest avoidable backfill cost).
     ACCOUNT_REGION: str = "us-west-2"
     ICECHUNK_BUCKET_NAME: str = "icechunk-outuput"
+    # Optional existing bucket for the Icechunk store and per-run backfill
+    # artifacts. It must be in the stack's region; deployment checks its
+    # actual region and fails otherwise.
     ICECHUNK_BUCKET: str | None = None
-    # Key prefix for this dataset's repo. Icechunk >=2.1.0 refuses to CREATE a
-    # repo at an empty prefix (bucket root), so this must be non-empty to bootstrap
-    # a new store. Passed into the Lambda env as ICECHUNK_PREFIX.
+    # Common key prefix for every output written by this deployment. Backfill
+    # artifacts are placed directly below it; ICECHUNK_PREFIX is relative to it.
+    S3_PREFIX: str | None = None
+    # Dataset-specific suffix for the Icechunk repo. Icechunk >=2.1.0 refuses to
+    # create a repo at the bucket root, so S3_PREFIX or ICECHUNK_PREFIX must be
+    # non-empty to bootstrap a new store. Passed into Lambda as the combined path.
     ICECHUNK_PREFIX: str | None = None
     DATA_BUCKET_NAME: str | None = None
     PROJECT: str = "virtualizarr-data-pipelines"
@@ -89,6 +95,34 @@ class StackSettings(BaseSettings):
     #   backfill enabled  -> default disabled (bootstrap via backfill, enable later)
     #   backfill disabled -> default enabled  (normal forward-only deployment)
     FORWARD_QUEUE_ENABLED: bool | None = None
+
+    @property
+    def s3_key_prefix(self) -> str | None:
+        """Return the normalized global S3 key prefix."""
+        return self.S3_PREFIX.strip("/") if self.S3_PREFIX else None
+
+    @property
+    def icechunk_storage_prefix(self) -> str | None:
+        """Return the global and dataset-specific prefixes as one S3 key prefix."""
+        return (
+            "/".join(
+                prefix.strip("/")
+                for prefix in (self.S3_PREFIX, self.ICECHUNK_PREFIX)
+                if prefix and prefix.strip("/")
+            )
+            or None
+        )
+
+    @model_validator(mode="after")
+    def _validate_prefixes(self) -> "StackSettings":
+        """Keep the Icechunk prefix relative to the global output prefix."""
+        icechunk_prefix = (self.ICECHUNK_PREFIX or "").strip("/")
+        if self.s3_key_prefix and (
+            icechunk_prefix == self.s3_key_prefix
+            or icechunk_prefix.startswith(f"{self.s3_key_prefix}/")
+        ):
+            raise ValueError("ICECHUNK_PREFIX must be relative to S3_PREFIX")
+        return self
 
     @model_validator(mode="after")
     def _resolve_forward_queue_enabled(self) -> "StackSettings":

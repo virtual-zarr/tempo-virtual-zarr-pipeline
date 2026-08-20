@@ -76,3 +76,51 @@ def test_resort_and_poller_are_scheduled() -> None:
 def test_backfill_only_deployment_has_no_forward_jobs() -> None:
     template = _template(BACKFILL_ENABLED=True)
     template.resource_count_is("AWS::Events::Rule", 0)
+
+
+def test_existing_bucket_gets_a_region_check() -> None:
+    """An out-of-region bucket must fail the deploy, not silently incur
+    cross-region transfer on every store read and write."""
+    template = _template(ICECHUNK_BUCKET="existing-ice")
+    template.has_resource_properties(
+        "AWS::CloudFormation::CustomResource",
+        Match.object_like(
+            {"BucketName": "existing-ice", "ExpectedRegion": "us-west-2"}
+        ),
+    )
+
+
+def test_created_bucket_has_no_region_check() -> None:
+    template = _template()
+    resources = template.to_json()["Resources"].values()
+    assert not any("ExpectedRegion" in str(r.get("Properties", {})) for r in resources)
+
+
+def test_s3_prefix_scopes_state_env_and_run_artifact_lifecycle() -> None:
+    template = _template(S3_PREFIX="tempo")
+    # The processor sees the combined prefix and state artifacts below it.
+    template.has_resource_properties(
+        "AWS::Lambda::Function",
+        Match.object_like(
+            {
+                "Environment": {
+                    "Variables": Match.object_like(
+                        {"ICECHUNK_PREFIX": "tempo/tempo-hcho"}
+                    )
+                }
+            }
+        ),
+    )
+    # The state URIs embed the bucket ref, so match the serialized template.
+    assert "tempo/tempo-hcho/state/store-manifest.json" in str(template.to_json())
+    # The run-artifact lifecycle rule follows the scoped run prefix.
+    template.has_resource_properties(
+        "AWS::S3::Bucket",
+        Match.object_like(
+            {
+                "LifecycleConfiguration": {
+                    "Rules": [Match.object_like({"Prefix": "tempo/backfill/"})]
+                }
+            }
+        ),
+    )

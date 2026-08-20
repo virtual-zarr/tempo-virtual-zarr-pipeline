@@ -32,6 +32,7 @@ class BackfillPipeline(Construct):
         *,
         icechunk_bucket: s3.IBucket,
         icechunk_prefix: str | None,
+        s3_prefix: str | None = None,
         data_bucket_name: str,
         earthdata_secret_arn: str | None = None,
         partition_size: int,
@@ -101,16 +102,30 @@ class BackfillPipeline(Construct):
         self.functions["partition"].add_to_role_policy(data_policy)
 
         self.state_machine = self._build_state_machine(
-            icechunk_bucket, partition_size, max_items_per_batch, max_concurrency
+            icechunk_bucket,
+            s3_prefix,
+            partition_size,
+            max_items_per_batch,
+            max_concurrency,
         )
 
     def _build_state_machine(
         self,
         icechunk_bucket: s3.IBucket,
+        s3_prefix: str | None,
         partition_size: int,
         max_items_per_batch: int,
         max_concurrency: int,
     ) -> sfn.StateMachine:
+        # Per-run artifacts are scoped under the deployment's global output
+        # prefix so stacks sharing a bucket don't mingle their run debris.
+        run_prefix = sfn.JsonPath.format(
+            f"s3://{{}}/{s3_prefix}/backfill/{{}}/"
+            if s3_prefix
+            else "s3://{}/backfill/{}/",
+            icechunk_bucket.bucket_name,
+            sfn.JsonPath.string_at("$$.Execution.Name"),
+        )
         partition = tasks.LambdaInvoke(
             self,
             "PartitionTask",
@@ -118,11 +133,7 @@ class BackfillPipeline(Construct):
             payload=sfn.TaskInput.from_object(
                 {
                     "inventory_uri": sfn.JsonPath.string_at("$.inventory_uri"),
-                    "run_prefix": sfn.JsonPath.format(
-                        "s3://{}/backfill/{}/",
-                        icechunk_bucket.bucket_name,
-                        sfn.JsonPath.string_at("$$.Execution.Name"),
-                    ),
+                    "run_prefix": run_prefix,
                     "partition_size": partition_size,
                 }
             ),

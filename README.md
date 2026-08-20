@@ -100,7 +100,10 @@ Settings live in [`cdk/settings.py`](./cdk/settings.py) and a `.env` file ([samp
 | Setting | Default | Meaning |
 |---|---|---|
 | `TEMPO_COLLECTION` | — | `hcho` or `no2`; one deployment per collection |
-| `ICECHUNK_BUCKET_NAME` / `ICECHUNK_PREFIX` | — | where the Icechunk repository lives |
+| `ICECHUNK_BUCKET` | — | existing bucket for the store; must be in the stack's region (checked at deploy) |
+| `ICECHUNK_BUCKET_NAME` | — | bucket to create when `ICECHUNK_BUCKET` is unset |
+| `S3_PREFIX` | — | common key prefix for all pipeline output (run artifacts land at `<S3_PREFIX>/backfill/`) |
+| `ICECHUNK_PREFIX` | — | the repository's key prefix, relative to `S3_PREFIX` |
 | `DATA_BUCKET_NAME` | — | source bucket workers read granules from |
 | `BACKFILL_ENABLED` | `false` | deploy the backfill Step Functions pipeline |
 | `BACKFILL_PARTITION_SIZE` | 500 | files per partition (one merged commit each) |

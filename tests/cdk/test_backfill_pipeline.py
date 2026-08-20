@@ -76,6 +76,7 @@ def _state_machine_asl() -> str:
         "Backfill",
         icechunk_bucket=bucket,
         icechunk_prefix=None,
+        s3_prefix="tempo",
         data_bucket_name="my-data-bucket",
         partition_size=500,
         max_items_per_batch=10,
@@ -109,7 +110,9 @@ def test_state_machine_shape() -> None:
     assert '"fork_in_uri.$":"$.forkResult.fork_in_uri"' in asl
     # reduce is reshaped to the flat event its handler expects
     assert '"forks_out_prefix.$":"$.forkResult.forks_out_prefix"' in asl
-    # run_prefix derives from the execution name
+    # run_prefix is scoped under the configured global output prefix and
+    # derives from the execution name
+    assert "tempo/backfill" in asl
     assert "Execution.Name" in asl
 
 
