@@ -4,7 +4,6 @@ import pathlib
 
 import h5py
 import numpy as np
-
 from tempo_fixtures import expected_vertical_column, write_tempo_granule
 
 
