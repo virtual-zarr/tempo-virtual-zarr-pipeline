@@ -3,24 +3,35 @@
 # dependencies = [
 #     "earthaccess>=0.14",
 #     "boto3>=1.34.0",
+#     "h5py",
+#     "virtualizarr-processor",
 # ]
+#
+# [tool.uv.sources]
+# virtualizarr-processor = { path = "../lambda/virtualizarr-processor" }
 # ///
-"""Build the backfill inventory file for the selected TEMPO L3 collection.
+"""Build the typed backfill inventory for the selected TEMPO L3 collection.
 
-Queries CMR for every granule of the collection (HCHO by default,
-``--collection no2`` for NO2, optionally windowed with ``--start``/``--end``),
-takes one ``.nc`` data link per granule, and writes them in chronological
-order as a bare JSON array — exactly the format
-``backfill_handlers.inventory.read_inventory`` parses. Upload the file (or
-pass ``--s3-uri`` to have this script upload it) and hand its URI to
-``scripts/start_backfill.sh``.
+Produces the ``tempo-backfill-inventory/1`` JSON document the backfill
+pipeline consumes (``virtualizarr_processor.inventory.BackfillInventory``):
+one entry per granule with its ``.nc`` data link, its granule UR (the
+filename stem — the convention the forward consumer's routing relies on),
+and the granule's **exact** in-file ``/time[0]`` value.
 
-The backfill pipeline requires each inventory entry to map to a distinct
-region of the store (merge is last-writer-wins), so the script fails loudly
-if two granules claim the same time step or a granule has no ``.nc`` link.
+The exact times matter: TEMPO's in-file scan time differs from the
+CMR/filename timestamp (e.g. ...T174200Z has /time = 17:42:18.02), and the
+store's time axis — which region writes align against and users read — is
+built from these values at Init. There is no metadata-only source for
+them, so this script opens every granule's header (a few KB each) over
+in-region S3 or EDL-authed HTTPS with bounded concurrency and backoff.
 
-Only CMR metadata is read, so no Earthdata credentials are needed;
-``--s3-uri`` uses the ambient AWS credentials.
+Republished granules (same UR, new revision) are deduped keeping the
+newest revision. The pydantic model validates the result (non-empty,
+strictly increasing unique times, unique URs) before anything is written.
+
+Requires Earthdata credentials (``~/.netrc`` or ``$EARTHDATA_TOKEN``) for
+the per-granule reads; run in us-west-2 with ``--access direct`` for the
+production inventory.
 
 Usage:
     uv run exploration/build_backfill_inventory.py
@@ -31,61 +42,119 @@ Usage:
 """
 
 import argparse
-import json
 import sys
+import time as time_module
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from tempo_collections import add_collection_argument, resolve_concept_id
+from virtualizarr_processor.inventory import SCHEMA_ID, BackfillInventory, GranuleEntry
+
+TIME_UNITS = "seconds since 1980-01-06T00:00:00Z"
+READ_ATTEMPTS = 4
+BACKOFF_SECONDS = (10, 30, 60)
 
 
 class InventoryError(Exception):
     """The granule set cannot form a valid backfill inventory."""
 
 
-def _temporal_start(granule: Any) -> str:
-    return str(granule["umm"]["TemporalExtent"]["RangeDateTime"]["BeginningDateTime"])
+def _revision(granule: Any) -> int:
+    return int(granule["meta"].get("revision-id", 0))
 
 
-def build_inventory(granules: list[Any], access: str) -> list[str]:
-    """Ordered, validated inventory keys for ``granules``.
+def data_link(granule: Any, access: str) -> str:
+    links = [u for u in granule.data_links(access=access) if u.endswith(".nc")]
+    if not links:
+        raise InventoryError(
+            f"No .nc data link for granule {granule['meta']['concept-id']}"
+        )
+    return str(links[0])
 
-    Returns one ``.nc`` data link per granule, sorted by temporal start so
-    partitions stay time-contiguous. Raises :class:`InventoryError` for an
-    empty granule set, a granule without a ``.nc`` link, or two granules on
-    the same time step (which would break the pipeline's disjoint-regions
-    requirement).
+
+def dedupe_republications(granules: list[Any]) -> list[Any]:
+    """Keep only the newest revision of each granule UR."""
+    newest: dict[str, Any] = {}
+    for granule in granules:
+        ur = str(granule["umm"].get("GranuleUR", granule["meta"]["concept-id"]))
+        if ur not in newest or _revision(granule) > _revision(newest[ur]):
+            newest[ur] = granule
+    return list(newest.values())
+
+
+def build_inventory(
+    granules: list[Any],
+    *,
+    access: str,
+    read_time: Callable[[str], float],
+    collection_shortname: str,
+    concept_id: str,
+    workers: int = 4,
+) -> BackfillInventory:
+    """The validated typed inventory for ``granules``.
+
+    ``read_time(url) -> float`` supplies each granule's exact in-file time
+    (injectable so the pure logic tests offline). Raises
+    :class:`InventoryError` / ``pydantic.ValidationError`` on any set that
+    cannot form a valid axis.
     """
     if not granules:
         raise InventoryError("No granules matched the query")
+    deduped = dedupe_republications(granules)
+    urls = [data_link(granule, access) for granule in deduped]
 
-    entries: list[tuple[str, str]] = []
-    for granule in granules:
-        links = [u for u in granule.data_links(access=access) if u.endswith(".nc")]
-        if not links:
-            raise InventoryError(
-                f"No .nc data link for granule {granule['meta']['concept-id']}"
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        times = list(pool.map(read_time, urls))
+
+    entries = sorted(
+        (
+            GranuleEntry(
+                url=url,
+                granule_ur=url.rsplit("/", 1)[-1].removesuffix(".nc"),
+                time=time_value,
             )
-        entries.append((_temporal_start(granule), links[0]))
-
-    entries.sort()
-    duplicates = {
-        start
-        for (start, _), (next_start, _) in zip(entries, entries[1:])
-        if start == next_start
-    }
-    if duplicates:
-        raise InventoryError(
-            "Multiple granules share a time step (the backfill requires "
-            f"disjoint regions): {sorted(duplicates)}"
-        )
-    return [key for _, key in entries]
+            for url, time_value in zip(urls, times)
+        ),
+        key=lambda entry: entry.time,
+    )
+    return BackfillInventory(
+        schema=SCHEMA_ID,  # type: ignore[call-arg]
+        collection=collection_shortname,
+        concept_id=concept_id,
+        time_units=TIME_UNITS,
+        built_at=datetime.now(timezone.utc).isoformat(),
+        granules=tuple(entries),
+    )
 
 
-def write_inventory(keys: list[str], path: Path) -> None:
-    """Write ``keys`` as the bare JSON array ``read_inventory`` expects."""
+def read_time_via_earthaccess(url: str) -> float:
+    """The granule's exact /time[0], read from a few KB of its header."""
+    import earthaccess
+    import h5py
+
+    for attempt in range(READ_ATTEMPTS):
+        try:
+            [f] = earthaccess.open([url])
+            with h5py.File(f) as h5:
+                return float(h5["time"][0])
+        except Exception as error:
+            if attempt == READ_ATTEMPTS - 1:
+                raise
+            delay = BACKOFF_SECONDS[min(attempt, len(BACKOFF_SECONDS) - 1)]
+            print(
+                f"  {url.rsplit('/', 1)[-1]}: {type(error).__name__} "
+                f"(attempt {attempt + 1}), retrying in {delay}s",
+                file=sys.stderr,
+            )
+            time_module.sleep(delay)
+    raise AssertionError("unreachable")
+
+
+def write_inventory(inventory: BackfillInventory, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(keys, indent=1) + "\n")
+    path.write_text(inventory.to_json() + "\n")
 
 
 def search_granules(concept_id: str, start: str | None, end: str | None) -> list[Any]:
@@ -127,6 +196,12 @@ def main() -> int:
         help="Keep only the N most recent granules (for test runs)",
     )
     parser.add_argument(
+        "--workers",
+        type=int,
+        default=4,
+        help="Concurrent per-granule header reads (keep low over HTTPS)",
+    )
+    parser.add_argument(
         "--output",
         default=None,
         help=("Output path (default inventories/tempo-<collection>-inventory.json)"),
@@ -140,18 +215,40 @@ def main() -> int:
     concept_id = resolve_concept_id(args)
     output = Path(args.output or f"inventories/tempo-{args.collection}-inventory.json")
 
+    import earthaccess
+
+    earthaccess.login(strategy="netrc")
+
     print(f"Searching CMR for all granules of {concept_id}...", file=sys.stderr)
     granules = search_granules(concept_id, args.start, args.end)
     print(f"  {len(granules)} granules returned", file=sys.stderr)
-
-    keys = build_inventory(granules, access=args.access)
     if args.max_count:
-        keys = keys[-args.max_count :]
+        granules = sorted(
+            granules,
+            key=lambda g: str(
+                g["umm"]["TemporalExtent"]["RangeDateTime"]["BeginningDateTime"]
+            ),
+        )[-args.max_count :]
 
-    write_inventory(keys, output)
-    print(f"Wrote {len(keys)} keys to {output}", file=sys.stderr)
-    print(f"  first: {keys[0]}", file=sys.stderr)
-    print(f"  last:  {keys[-1]}", file=sys.stderr)
+    shortname = str(granules[0]["umm"]["CollectionReference"]["ShortName"])
+    print(
+        f"Reading exact /time from {len(granules)} granule headers "
+        f"({args.workers} workers)...",
+        file=sys.stderr,
+    )
+    inventory = build_inventory(
+        granules,
+        access=args.access,
+        read_time=read_time_via_earthaccess,
+        collection_shortname=shortname,
+        concept_id=concept_id,
+        workers=args.workers,
+    )
+
+    write_inventory(inventory, output)
+    print(f"Wrote {len(inventory.granules)} granules to {output}", file=sys.stderr)
+    print(f"  first: {inventory.granules[0].url}", file=sys.stderr)
+    print(f"  last:  {inventory.granules[-1].url}", file=sys.stderr)
 
     if args.s3_uri:
         upload(output, args.s3_uri)
