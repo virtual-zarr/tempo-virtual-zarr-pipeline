@@ -116,7 +116,7 @@ class VirtualizarrSqsStack(Stack):
         )
 
         # Forward-processing state artifacts live next to the repo unless
-        # overridden (spec §5 / I4).
+        # overridden.
         state_prefix = (
             f"s3://{self.icechunk_bucket.bucket_name}/"
             f"{settings.ICECHUNK_PREFIX or ''}state/"
@@ -185,7 +185,7 @@ class VirtualizarrSqsStack(Stack):
             environment=dict(self.processor_env),
             # Single-writer: concurrent consumers conflict on the append
             # resize and the store-manifest update, and SQS max_concurrency
-            # cannot go below 2 (spec §5).
+            # cannot go below 2.
             reserved_concurrent_executions=1,
         )
 
@@ -341,7 +341,7 @@ class VirtualizarrSqsStack(Stack):
         self._build_backfill(settings)
 
     def _forward_ops(self, settings: StackSettings) -> None:
-        """The scheduled forward-processing jobs (spec §5): the re-sort job
+        """The scheduled forward-processing jobs: the re-sort job
         that folds the pending ledger in, and the CMR poller that feeds the
         queue (ASDC publishes no SNS topic)."""
         if settings.RESORT_SCHEDULE_HOURS:
@@ -386,6 +386,10 @@ class VirtualizarrSqsStack(Stack):
             poller_env = {
                 "QUEUE_URL": self.queue.queue_url,
                 "POLL_WATERMARK_URI": self.poll_watermark_uri,
+                # A first poll with no watermark starts from the store
+                # manifest's built_at, covering everything published while
+                # the backfill ran.
+                "STORE_MANIFEST_URI": self.store_manifest_uri,
             }
             if settings.TEMPO_COLLECTION:
                 # Resolved at synth from the collection's declarative TOML so

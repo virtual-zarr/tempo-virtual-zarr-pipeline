@@ -1,15 +1,15 @@
 """Scheduled CMR poller: the feeder for the forward-processing queue.
 
 ASDC publishes no SNS topic for ``asdc-prod-protected``, so this Lambda
-polls CMR instead (design spec §5 "Feeding the queue"): every granule of
-the collection whose ``revision_date`` advanced past a persisted watermark
-(minus a 24 h overlap window) is enqueued as ``{"url": "s3://.../*.nc"}``.
-Revision-date polling captures new scans, republications, and the
-historical drip-feed alike, and duplicate enqueues are harmless — the
-consumer's routing is idempotent — so the watermark needs no exactness.
+polls CMR instead. Every granule of the collection whose ``revision_date``
+advanced past a persisted watermark (minus a 24 h overlap window) is
+enqueued as ``{"url": "s3://.../*.nc"}``. Revision-date polling captures
+new scans, republications, and historical arrivals alike. Duplicate
+enqueues are harmless because the consumer's routing is idempotent, so
+the watermark does not need to be exact.
 
-Deliberately lightweight: stdlib HTTP against CMR's public search API
-(no Earthdata credentials needed for metadata) plus boto3.
+Kept lightweight on purpose: stdlib HTTP against CMR's public search API
+(metadata needs no Earthdata credentials) plus boto3.
 """
 
 from __future__ import annotations
@@ -36,7 +36,7 @@ FetchPage = Callable[[str, str, Optional[str]], tuple[list[dict], Optional[str]]
 
 
 def direct_s3_url(umm: dict[str, Any]) -> str | None:
-    """The granule's direct in-region s3:// data link, if it has one."""
+    """Return the granule's direct in-region s3:// data link, if any."""
     for related in umm.get("RelatedUrls", []):
         url = related.get("URL", "")
         if (
@@ -90,6 +90,21 @@ def write_watermark(uri: str, value: datetime) -> None:
     _write_bytes(uri, json.dumps({"revision_date": value.isoformat()}).encode())
 
 
+def initial_watermark(manifest_uri: str | None, now: datetime) -> datetime:
+    """Choose the starting point for a first poll (no watermark yet).
+
+    The store manifest's ``built_at`` is when the backfill inventory was
+    built, so starting there covers everything published while the
+    backfill ran, however long it took. Without a manifest, fall back to a
+    fixed lookback.
+    """
+    if manifest_uri:
+        data = _read_bytes(manifest_uri)
+        if data is not None:
+            return datetime.fromisoformat(json.loads(data)["built_at"])
+    return now - DEFAULT_LOOKBACK
+
+
 def _read_bytes(uri: str) -> bytes | None:
     if uri.startswith("s3://"):
         import boto3
@@ -140,7 +155,9 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     watermark_uri = os.environ["POLL_WATERMARK_URI"]
 
     started = datetime.now(timezone.utc)
-    watermark = read_watermark(watermark_uri) or (started - DEFAULT_LOOKBACK)
+    watermark = read_watermark(watermark_uri) or initial_watermark(
+        os.environ.get("STORE_MANIFEST_URI"), started
+    )
     since = watermark - OVERLAP
 
     items = search_granules(concept_id, since.isoformat())
