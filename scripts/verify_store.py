@@ -1,38 +1,67 @@
 #!/usr/bin/env python3
-"""Compare random store slices against the source files.
+"""Compare store contents against the sources CMR currently advertises.
 
-Samples N time steps, maps each slice back to its source granule via the
-store manifest, and compares a random window of every data variable read
-through the virtual store against the same window read directly from the
-source file with h5py. Any mismatch, missing variable, or read failure
-(including the checksum error a source object overwritten after ingest
-produces) is reported and the script exits non-zero.
+Samples random time steps and, for each, asks CMR for the granule nearest
+that time — independently of the pipeline's own bookkeeping — opens the
+file CMR points at, and requires its in-file ``/time[0]`` to match the
+store's axis value exactly. Random windows of every data variable are then
+compared twice: raw bytes through the virtual store against raw h5py reads
+(the primary oracle), and CF-decoded values through xarray against the
+source values masked by the source's own fill value (the read path users
+take). Because the source URL comes from CMR rather than the store
+manifest, a store still referencing a superseded revision is caught even
+when the old object is intact; a manifest URL that disagrees with CMR is
+reported as its own finding.
+
+``--offline`` falls back to manifest-provided URLs (no CMR access), which
+still detects corrupt references and mutated source objects.
+``--completeness`` additionally lists the collection's granules from CMR
+and diffs their URs against the store manifest plus the pending ledger.
+
+Any mismatch, missing granule, or read failure (including the checksum
+error a source object overwritten after ingest produces) is reported and
+the script exits non-zero.
 
 Uses the same environment variables as the processor Lambdas
 (ICECHUNK_BUCKET or ICECHUNK_LOCAL_PATH, VIRTUAL_CHUNK_PREFIX,
-TEMPO_COLLECTION, STORE_MANIFEST_URI). Reading s3:// sources requires
-Earthdata credentials.
+TEMPO_COLLECTION, STORE_MANIFEST_URI, PENDING_LEDGER_URI). Reading s3://
+sources requires Earthdata credentials; CMR metadata does not.
 
 Usage:
     uv run scripts/verify_store.py --samples 8 --window 5
+    uv run scripts/verify_store.py --completeness
+    uv run scripts/verify_store.py --offline
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
+import urllib.parse
+import urllib.request
 from contextlib import contextmanager
-from typing import Any, Callable, Iterator
+from datetime import datetime, timedelta, timezone
+from typing import Any, Callable, Iterator, Optional
 
 import h5py
 import numpy as np
+import xarray as xr
 import zarr
 from icechunk import Repository
 from virtualizarr_processor.inventory import BackfillInventory
-from virtualizarr_processor.manifest import StoreManifest
+from virtualizarr_processor.manifest import PendingLedger, StoreManifest
 
 COORDINATES = ("time", "latitude", "longitude")
+TEMPO_EPOCH = datetime(1980, 1, 6, tzinfo=timezone.utc)
+CMR_GRANULES_URL = "https://cmr.earthdata.nasa.gov/search/granules.umm_json"
+# Wide enough to absorb the nominal-vs-in-file time offset (tens of
+# seconds), narrow enough to exclude the closest neighboring scan (8 min).
+SEARCH_WINDOW = timedelta(minutes=4)
+
+# when -> (url, granule_ur) of the CMR granule nearest that time, or None.
+CmrLookup = Callable[[datetime], Optional[tuple[str, str]]]
 
 
 @contextmanager
@@ -49,14 +78,82 @@ def open_source(url: str) -> Iterator[h5py.File]:
         yield h5
 
 
-def _source_dataset(h5: h5py.File, name: str) -> h5py.Dataset | None:
-    """Find the source dataset behind a flattened variable name."""
-    if name in h5:
-        return h5[name]  # type: ignore[no-any-return]
-    for item in h5.values():
-        if isinstance(item, h5py.Group) and name in item:
-            return item[name]  # type: ignore[no-any-return]
+def axis_datetime(time_value: float) -> datetime:
+    """Convert a raw axis value (seconds since the TEMPO epoch) to UTC."""
+    return TEMPO_EPOCH + timedelta(seconds=time_value)
+
+
+def _cmr_search(
+    params: dict[str, Any], search_after: str | None = None
+) -> tuple[list[dict], str | None]:
+    request = urllib.request.Request(
+        f"{CMR_GRANULES_URL}?{urllib.parse.urlencode(params)}"
+    )
+    if search_after:
+        request.add_header("CMR-Search-After", search_after)
+    with urllib.request.urlopen(request, timeout=60) as response:
+        payload = json.loads(response.read())
+        return payload.get("items", []), response.headers.get("CMR-Search-After")
+
+
+def _direct_s3_url(umm: dict[str, Any]) -> str | None:
+    for related in umm.get("RelatedUrls", []):
+        url = related.get("URL", "")
+        if (
+            related.get("Type") == "GET DATA VIA DIRECT ACCESS"
+            and url.startswith("s3://")
+            and url.endswith(".nc")
+        ):
+            return str(url)
     return None
+
+
+def _beginning(umm: dict[str, Any]) -> datetime:
+    raw = umm["TemporalExtent"]["RangeDateTime"]["BeginningDateTime"]
+    return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+
+
+def cmr_lookup_for(concept_id: str) -> CmrLookup:
+    """Build the live CMR lookup used outside of tests."""
+
+    def lookup(when: datetime) -> tuple[str, str] | None:
+        start = (when - SEARCH_WINDOW).isoformat()
+        end = (when + SEARCH_WINDOW).isoformat()
+        items, _ = _cmr_search(
+            {
+                "collection_concept_id": concept_id,
+                "temporal": f"{start},{end}",
+                "page_size": 10,
+            }
+        )
+        candidates = [item for item in items if _direct_s3_url(item["umm"])]
+        if not candidates:
+            return None
+        nearest = min(candidates, key=lambda i: abs(_beginning(i["umm"]) - when))
+        umm = nearest["umm"]
+        url = _direct_s3_url(umm)
+        assert url is not None
+        return url, str(umm.get("GranuleUR", ""))
+
+    return lookup
+
+
+def _mask_fill(values: np.ndarray, dataset: h5py.Dataset) -> np.ndarray:
+    """Apply the source's own fill-value convention, as a CF reader would."""
+    fill = dataset.attrs.get("_FillValue")
+    if fill is None:
+        return values
+    fill_value = np.asarray(fill).ravel()[0]
+    return np.where(values == fill_value, np.nan, values.astype("float64"))
+
+
+def _values_match(a: np.ndarray, b: np.ndarray) -> bool:
+    a, b = np.asarray(a), np.asarray(b)
+    if a.dtype.kind == "f" or b.dtype.kind == "f":
+        return bool(
+            np.array_equal(a.astype("float64"), b.astype("float64"), equal_nan=True)
+        )
+    return bool(np.array_equal(a, b))
 
 
 def verify_store(
@@ -66,11 +163,18 @@ def verify_store(
     samples: int = 8,
     window: int = 5,
     seed: int = 0,
+    cmr_lookup: CmrLookup | None = None,
     open_source_file: Callable[[str], Any] = open_source,
 ) -> list[str]:
-    """Return every discrepancy found, one line each; empty means clean."""
+    """Return every discrepancy found, one line each; empty means clean.
+
+    With ``cmr_lookup`` the source URL for each sampled slot comes from
+    CMR, independently of the manifest; without it (offline mode) the
+    manifest's own URL is used.
+    """
     session = repo.readonly_session("main")
     group = zarr.open_group(session.store, mode="r")
+    decoded = xr.open_dataset(session.store, engine="zarr", consolidated=False)
     axis = np.asarray(zarr.open_array(session.store, path="time")[:])
     StoreManifest.validate_against_axis(manifest, axis)
 
@@ -84,41 +188,104 @@ def verify_store(
     problems: list[str] = []
     for index in indices:
         entry = manifest.granules[index]
+        url = entry.url
+        if cmr_lookup is not None:
+            found = cmr_lookup(axis_datetime(float(axis[index])))
+            if found is None:
+                problems.append(
+                    f"slot {index}: CMR has no granule near "
+                    f"{axis_datetime(float(axis[index])).isoformat()} "
+                    f"(manifest says {entry.granule_ur})"
+                )
+                continue
+            url, granule_ur = found
+            if url != entry.url:
+                problems.append(
+                    f"slot {index}: manifest url {entry.url} differs from "
+                    f"CMR's current url {url} ({granule_ur}); comparing "
+                    "against CMR's"
+                )
         try:
-            with open_source_file(entry.url) as h5:
-                if float(h5["time"][0]) != entry.time:
+            with open_source_file(url) as h5:
+                if float(h5["time"][0]) != float(axis[index]):
                     problems.append(
                         f"slot {index}: source /time {float(h5['time'][0])!r} != "
-                        f"manifest time {entry.time!r} ({entry.granule_ur})"
+                        f"store axis {float(axis[index])!r} ({url})"
                     )
                     continue
                 for name in variables:
                     dataset = _source_dataset(h5, name)
                     if dataset is None:
                         problems.append(
-                            f"slot {index}: variable {name!r} missing from "
-                            f"source {entry.granule_ur}"
+                            f"slot {index}: variable {name!r} missing from source {url}"
                         )
                         continue
                     ny, nx = group[name].shape[1], group[name].shape[2]
                     y0 = int(rng.integers(0, max(1, ny - window)))
                     x0 = int(rng.integers(0, max(1, nx - window)))
                     win = np.s_[y0 : y0 + window, x0 : x0 + window]
-                    stored = np.asarray(group[name][index][win])
                     source = np.asarray(
                         dataset[0][win] if dataset.ndim == 3 else dataset[win]
                     )
+                    stored = np.asarray(group[name][index][win])
                     if not np.array_equal(stored, source):
                         problems.append(
                             f"slot {index}: {name}[{y0}:{y0 + window},"
-                            f"{x0}:{x0 + window}] differs from source "
-                            f"{entry.granule_ur}"
+                            f"{x0}:{x0 + window}] raw bytes differ from {url}"
+                        )
+                        continue
+                    read = np.asarray(decoded[name].isel(time=index).values[win])
+                    if not _values_match(read, _mask_fill(source, dataset)):
+                        problems.append(
+                            f"slot {index}: {name}[{y0}:{y0 + window},"
+                            f"{x0}:{x0 + window}] decoded values differ from "
+                            f"the source's fill convention ({url})"
                         )
         except Exception as error:  # a read failure is a finding, not a crash
             problems.append(
-                f"slot {index}: reading {entry.granule_ur} failed: "
-                f"{type(error).__name__}: {error}"
+                f"slot {index}: reading {url} failed: {type(error).__name__}: {error}"
             )
+    return problems
+
+
+def _source_dataset(h5: h5py.File, name: str) -> h5py.Dataset | None:
+    """Find the source dataset behind a flattened variable name."""
+    if name in h5:
+        return h5[name]  # type: ignore[no-any-return]
+    for item in h5.values():
+        if isinstance(item, h5py.Group) and name in item:
+            return item[name]  # type: ignore[no-any-return]
+    return None
+
+
+def verify_completeness(
+    concept_id: str,
+    manifest: BackfillInventory,
+    ledger_urs: set[str],
+    search: Callable[..., tuple[list[dict], str | None]] = _cmr_search,
+) -> list[str]:
+    """Diff CMR's granule URs against the manifest plus the pending ledger."""
+    cmr_urs: set[str] = set()
+    search_after: str | None = None
+    while True:
+        items, search_after = search(
+            {"collection_concept_id": concept_id, "page_size": 2000},
+            search_after,
+        )
+        cmr_urs |= {str(item["umm"]["GranuleUR"]) for item in items}
+        if not items or not search_after:
+            break
+
+    known = {entry.granule_ur for entry in manifest.granules} | ledger_urs
+    problems = [
+        f"completeness: {ur} exists in CMR but is neither in the store "
+        "manifest nor the pending ledger"
+        for ur in sorted(cmr_urs - known)
+    ]
+    problems += [
+        f"completeness: {ur} is in the store but CMR no longer lists it"
+        for ur in sorted({e.granule_ur for e in manifest.granules} - cmr_urs)
+    ]
     return problems
 
 
@@ -127,6 +294,16 @@ def main() -> int:
     parser.add_argument("--samples", type=int, default=8)
     parser.add_argument("--window", type=int, default=5)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument(
+        "--offline",
+        action="store_true",
+        help="use manifest URLs instead of querying CMR",
+    )
+    parser.add_argument(
+        "--completeness",
+        action="store_true",
+        help="also diff CMR's granule listing against manifest + ledger",
+    )
     args = parser.parse_args()
 
     from virtualizarr_processor.processor import Processor
@@ -134,9 +311,26 @@ def main() -> int:
     processor = Processor()
     repo = processor.open_backfill_repo()
     manifest = StoreManifest.read(os.environ["STORE_MANIFEST_URI"])
+    lookup = None if args.offline else cmr_lookup_for(processor.config.concept_id)
     problems = verify_store(
-        repo, manifest, samples=args.samples, window=args.window, seed=args.seed
+        repo,
+        manifest,
+        samples=args.samples,
+        window=args.window,
+        seed=args.seed,
+        cmr_lookup=lookup,
     )
+    if args.completeness:
+        ledger_uri = os.environ.get("PENDING_LEDGER_URI")
+        ledger_urs = (
+            {entry.granule_ur for entry in PendingLedger.read(ledger_uri)}
+            if ledger_uri
+            else set()
+        )
+        problems += verify_completeness(
+            processor.config.concept_id, manifest, ledger_urs
+        )
+
     if problems:
         print(f"FAIL: {len(problems)} discrepancies", file=sys.stderr)
         for line in problems:

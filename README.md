@@ -73,7 +73,7 @@ Points worth knowing:
 
 Out-of-order arrivals are common: TEMPO's historical archive is still being back-filled, and about 7% of adjacent scans publish swapped. A scheduled re-sort job merges the pending ledger into the store on a `resort` branch, rewriting only the slots at or after the earliest insertion, and fast-forwards `main`. The consumer runs at reserved concurrency 1 because concurrent appends conflict. The store manifest (which granule owns which slot), the pending ledger, and the poll watermark live under `s3://<icechunk bucket>/<prefix>state/`.
 
-**Verification.** `uv run scripts/verify_store.py` samples random time steps, maps each to its source granule through the store manifest, and compares windows read through the virtual store against direct h5py reads of the source. Any mismatch or read failure exits non-zero.
+**Verification.** `uv run scripts/verify_store.py` samples random time steps and, for each, asks CMR for the granule nearest that time, independently of the pipeline's own bookkeeping. The file CMR points at must match the store's axis time exactly, and random windows of every variable are compared both raw (store bytes against h5py reads) and CF-decoded (the read path users take). Because the URL comes from CMR, a store still referencing a superseded revision is caught even when the old object is intact. `--completeness` diffs CMR's granule listing against the manifest and pending ledger; `--offline` falls back to manifest-provided URLs. Any mismatch or read failure exits non-zero.
 
 > **Feeding the queue:** ASDC does not publish an SNS notification topic for
 > `asdc-prod-protected`, so this pipeline polls CMR instead. Duplicate
