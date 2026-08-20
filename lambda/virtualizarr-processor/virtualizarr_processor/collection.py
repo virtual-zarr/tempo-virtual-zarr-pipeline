@@ -14,6 +14,7 @@ import os
 import tomllib
 from importlib.resources import files
 from importlib.resources.abc import Traversable
+from pathlib import Path
 
 import numpy as np
 from pydantic import BaseModel
@@ -50,40 +51,52 @@ def _resource(filename: str) -> Traversable:
 
 
 def load_collection(name: str | None = None) -> CollectionConfig:
-    """Load a collection config by name, or from ``$TEMPO_COLLECTION``."""
+    """Load a collection config by name, or from ``$TEMPO_COLLECTION``.
+
+    A value ending in ``.toml`` is read as a filesystem path instead of a
+    packaged collection name (used by tests and ad-hoc deployments; such a
+    config typically names its template/coordinates artifacts by absolute
+    path too).
+    """
     if name is None:
         name = os.environ.get("TEMPO_COLLECTION")
         if not name:
             raise ValueError("No collection name given and TEMPO_COLLECTION is not set")
-    resource = _resource(f"{name}.toml")
-    if not resource.is_file():
-        raise ValueError(f"Unknown collection {name!r}: no {name}.toml packaged")
-    data = tomllib.loads(resource.read_text())
+    if name.endswith(".toml"):
+        data = tomllib.loads(Path(name).read_text())
+    else:
+        resource = _resource(f"{name}.toml")
+        if not resource.is_file():
+            raise ValueError(f"Unknown collection {name!r}: no {name}.toml packaged")
+        data = tomllib.loads(resource.read_text())
     extra = data.pop("extra_volatile_attributes", [])
     return CollectionConfig(
         volatile_attributes=TEMPO_L3_VOLATILE_ATTRIBUTES | frozenset(extra), **data
     )
 
 
-def load_template(config: CollectionConfig) -> AnyGroupSpec:
-    """The collection's committed store template (single-granule shape)."""
-    resource = _resource(config.template_file)
+def _artifact(filename: str, kind: str) -> Traversable:
+    """A packaged artifact, or a filesystem one when named by absolute path."""
+    resource: Traversable = (
+        Path(filename) if Path(filename).is_absolute() else _resource(filename)
+    )
     if not resource.is_file():
         raise FileNotFoundError(
-            f"Template artifact {config.template_file} is not packaged; "
+            f"{kind} artifact {filename} is not available; "
             "run scripts/generate_template.py"
         )
-    return GroupSpec.model_validate_json(resource.read_text())
+    return resource
+
+
+def load_template(config: CollectionConfig) -> AnyGroupSpec:
+    """The collection's committed store template (single-granule shape)."""
+    return GroupSpec.model_validate_json(
+        _artifact(config.template_file, "Template").read_text()
+    )
 
 
 def load_coordinates(config: CollectionConfig) -> dict[str, np.ndarray]:
     """The committed reference coordinate arrays (bit-exact grid)."""
-    resource = _resource(config.coordinates_file)
-    if not resource.is_file():
-        raise FileNotFoundError(
-            f"Coordinates artifact {config.coordinates_file} is not packaged; "
-            "run scripts/generate_template.py"
-        )
-    with resource.open("rb") as f:
+    with _artifact(config.coordinates_file, "Coordinates").open("rb") as f:
         with np.load(f) as data:
             return {name: data[name] for name in data.files}

@@ -12,11 +12,15 @@ so read-back can be asserted per scan.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import h5py
 import numpy as np
+
+if TYPE_CHECKING:
+    from virtualizarr_processor.inventory import BackfillInventory
 
 TINY_LAT = np.linspace(14.01, 72.99, 4, dtype="float32")
 TINY_LON = np.linspace(-167.99, -13.01, 6, dtype="float32")
@@ -158,3 +162,88 @@ def write_tempo_granule(
             {"units": "hPa"},
         )
     return path
+
+
+TIME_BASE = 1471196538.0244286
+TINY_TOML = """\
+name = "tiny-hcho"
+collection_shortname = "TEMPO_HCHO_L3"
+concept_id = "C3685897141-LARC_CLOUD"
+append_dim = "time"
+time_units = "seconds since 1980-01-06T00:00:00Z"
+flatten_groups = ["product", "geolocation", "support_data"]
+promote_to_time = ["weight"]
+drop_variables = []
+extra_volatile_attributes = [
+    "geospatial_lat_min",
+    "geospatial_lat_max",
+    "geospatial_lon_min",
+    "geospatial_lon_max",
+]
+time_chunk_size = 8
+template_file = "{template_file}"
+coordinates_file = "{coordinates_file}"
+"""
+
+
+@dataclass
+class TinyCollection:
+    """A complete miniature collection: granules, config, artifacts, inventory."""
+
+    config_path: Path
+    granule_paths: list[Path]
+    urls: list[str]
+    inventory: "BackfillInventory"
+
+    @property
+    def times(self) -> list[float]:
+        return [entry.time for entry in self.inventory.granules]
+
+
+def build_tiny_collection(
+    directory: Path, n: int = 3, spacing: float = 3600.0
+) -> TinyCollection:
+    """Granules + config TOML + generated template/coords + typed inventory."""
+    from virtualizarr_processor.collection import load_collection
+    from virtualizarr_processor.inventory import BackfillInventory, GranuleEntry
+    from virtualizarr_processor.template import build_template
+
+    directory.mkdir(parents=True, exist_ok=True)
+    times = [TIME_BASE + i * spacing for i in range(n)]
+    paths = [
+        write_tempo_granule(
+            directory / f"granule_{i}.nc", time_value=t, weight_scale=1.0 + i
+        )
+        for i, t in enumerate(times)
+    ]
+
+    config_path = directory / "tiny.toml"
+    config_path.write_text(
+        TINY_TOML.format(
+            template_file=directory / "template.json",
+            coordinates_file=directory / "coordinates.npz",
+        )
+    )
+    config = load_collection(str(config_path))
+    spec, coords = build_template(paths, config)
+    (directory / "template.json").write_text(spec.model_dump_json(indent=1))
+    with (directory / "coordinates.npz").open("wb") as f:
+        np.savez(f, **coords)
+
+    inventory = BackfillInventory(
+        schema_id="tempo-backfill-inventory/1",
+        collection="TEMPO_HCHO_L3",
+        concept_id="C3685897141-LARC_CLOUD",
+        time_units=TIME_UNITS,
+        built_at="2026-08-20T00:00:00Z",
+        granules=tuple(
+            GranuleEntry(url=f"file://{path}", granule_ur=f"tiny_granule_{i}", time=t)
+            for i, (path, t) in enumerate(zip(paths, times))
+        ),
+    )
+    return TinyCollection(
+        config_path=config_path,
+        granule_paths=paths,
+        urls=[f"file://{p}" for p in paths],
+        inventory=inventory,
+    )

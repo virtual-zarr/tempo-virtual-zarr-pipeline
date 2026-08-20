@@ -4,8 +4,8 @@ import icechunk
 import numpy as np
 import pytest
 import zarr
+from stub_processor import Processor
 from virtualizarr_processor import backfill
-from virtualizarr_processor.processor import Processor
 
 
 def test_backfill_repo_has_main_branch(backfill_repo: icechunk.Repository) -> None:
@@ -87,7 +87,7 @@ def test_open_backfill_repo_local_filesystem(
 def test_backfill_store_matches_declared_template(
     backfill_repo: icechunk.Repository,
 ) -> None:
-    from virtualizarr_processor.processor import BACKFILL_TEMPLATE
+    from stub_processor import BACKFILL_TEMPLATE
     from virtualizarr_processor.store_template import validate_store
 
     processor = Processor()

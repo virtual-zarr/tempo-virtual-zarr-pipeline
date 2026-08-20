@@ -4,10 +4,10 @@ import pathlib
 
 import numpy as np
 import pytest
-from generate_template import build_template
 from tempo_fixtures import TINY_LAT, TINY_LON, write_tempo_granule
 from virtualizarr_processor.collection import CollectionConfig, load_collection
 from virtualizarr_processor.store_template import GranuleValidationError
+from virtualizarr_processor.template import build_template
 
 TIME_0 = 1471196538.0244286
 

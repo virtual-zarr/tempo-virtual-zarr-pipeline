@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 import icechunk
 from icechunk import ForkSession, Repository, Session
+
+if TYPE_CHECKING:
+    from virtualizarr_processor.inventory import BackfillInventory
 
 
 @runtime_checkable
@@ -70,25 +73,31 @@ class VirtualizarrProcessor(Protocol):
         """
         ...
 
-    def initialize_backfill_store(self, repo: Repository) -> str:
+    def initialize_backfill_store(
+        self, repo: Repository, inventory: "BackfillInventory"
+    ) -> str:
         """
         Create the `backfill` branch off the current `main` tip and build the
-        full-shape array(s) and coordinates (metadata only), commit, and return
-        the base snapshot id.
+        full-shape store (metadata plus native coordinates), commit, and
+        return the base snapshot id.
 
-        The store is declared at its full extent up front because backfill writes
-        disjoint regions via region writes rather than appending. It also writes
-        the coordinate arrays (e.g. `time`) that region writes rely on to align
-        each per-file virtual dataset to the correct position. The session MUST
-        have no uncommitted changes after this returns, so that forks taken from
-        a fresh session share the committed branch-tip snapshot as their base.
+        The store is declared at its full extent up front because backfill
+        writes disjoint regions via region writes rather than appending. The
+        time axis is written from the inventory's exact per-granule values
+        (read from the files at inventory build time) — that axis is what
+        `region="auto"` aligns each worker's granule against, so a granule
+        whose in-file time is not in the inventory fails loudly instead of
+        landing in a wrong slot. The session MUST have no uncommitted changes
+        after this returns, so that forks taken from a fresh session share
+        the committed branch-tip snapshot as their base.
 
-        The `backfill` branch must not already exist. This method is intended to
-        be called exactly once per backfill run.
+        The `backfill` branch must not already exist. This method is intended
+        to be called exactly once per backfill run.
 
         Parameters
         ----------
             repo: An Icechunk Repository (durable storage; not in-memory).
+            inventory: The validated backfill inventory for this collection.
         Returns
         -------
         str

@@ -1,39 +1,35 @@
-import pathlib
+import sys
+from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-import boto3
 import numpy as np
-import pytest
 import zarr
 from backfill_handlers import fork, init, inventory, partition, promote, reduce, worker
 from virtualizarr_processor.processor import Processor
 
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from tempo_fixtures import expected_vertical_column, expected_weight  # noqa: E402
+
+BUCKET = "test-backfill-bucket"
+
 
 def test_full_backfill_chain(
-    s3_bucket: str,
-    tmp_path: pathlib.Path,
-    monkeypatch: pytest.MonkeyPatch,
+    tempo_pipeline: SimpleNamespace,
     lambda_context: MagicMock,
 ) -> None:
-    monkeypatch.delenv("ICECHUNK_BUCKET", raising=False)
-    monkeypatch.setenv("ICECHUNK_LOCAL_PATH", str(tmp_path / "repo"))
-    run_prefix = f"s3://{s3_bucket}/run/"
-
-    # Inventory: 6 synthetic keys "0".."5" (one per time slice).
-    boto3.client("s3", region_name="us-east-1").put_object(
-        Bucket=s3_bucket, Key="inv.json", Body=b'["0", "1", "2", "3", "4", "5"]'
-    )
+    run_prefix = f"s3://{BUCKET}/run/"
 
     # partition -> init
     parts = partition.handler(
         {
-            "inventory_uri": f"s3://{s3_bucket}/inv.json",
+            "inventory_uri": tempo_pipeline.inventory_uri,
             "run_prefix": run_prefix,
             "partition_size": 3,
         },
         lambda_context,
     )["partitions"]
-    init.handler({}, lambda_context)
+    init.handler({"inventory_uri": tempo_pipeline.inventory_uri}, lambda_context)
 
     # serial over partitions: fork -> workers (one per file) -> reduce
     for part in parts:
@@ -62,8 +58,20 @@ def test_full_backfill_chain(
             lambda_context,
         )
 
-    # promote and verify all 6 slices on main
-    promote.handler({}, lambda_context)
+    # promote (gate + fast-forward) and verify every scan on main
+    promote.handler({"inventory_uri": tempo_pipeline.inventory_uri}, lambda_context)
     repo = Processor().open_backfill_repo()
-    arr = zarr.open_group(repo.readonly_session("main").store, mode="r")["foo"]
-    assert (np.asarray(arr[:]) == np.arange(6)[:, None, None]).all()
+    group = zarr.open_group(repo.readonly_session("main").store, mode="r")
+    np.testing.assert_array_equal(np.asarray(group["time"][:]), tempo_pipeline.times)
+    for i, time_value in enumerate(tempo_pipeline.times):
+        np.testing.assert_array_equal(
+            np.asarray(group["vertical_column"][i]),
+            expected_vertical_column(time_value)[0],
+        )
+        np.testing.assert_array_equal(
+            np.asarray(group["weight"][i]),
+            expected_weight(time_value, weight_scale=1.0 + i),
+        )
+    # Store attributes are the shared template ones only.
+    assert group.attrs["project"] == "TEMPO"
+    assert "history" not in group.attrs

@@ -4,7 +4,7 @@ import icechunk
 import pytest
 import xarray as xr
 from icechunk import Repository, Session
-from virtualizarr_processor.processor import Processor
+from stub_processor import Processor
 from virtualizarr_processor.typing import VirtualizarrProcessor
 
 
@@ -47,7 +47,7 @@ def test_process_file_warns_on_unexpected_granule_attrs(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    import virtualizarr_processor.processor as processor_module
+    import stub_processor as processor_module
 
     original = processor_module.synthetic_vds
 

@@ -1,191 +1,82 @@
+"""The TEMPO L3 VirtualizarrProcessor.
+
+Config-driven (``virtualizarr_processor.collection``): the deployed
+instance selects its collection via ``$TEMPO_COLLECTION`` and creates /
+validates the store from the committed declarative artifacts (template
+JSON + reference coordinates). Every granule insertion runs the layered
+validation from the design spec (docs/superpowers/specs/
+2026-08-20-tempo-inventory-and-processor-design.md): shared-attribute
+template check, bit-exact reference grid, in-file time integrity, and
+axis alignment via ``region="auto"`` — a granule that fails any check is
+rejected loudly and nothing is written for it. All virtual references are
+stamped with ``last_updated_at`` so a source object that is overwritten
+after ingest fails reads instead of returning bytes from a changed file.
+
+Repository/storage environment contract (Lambda and tests):
+
+- ``ICECHUNK_BUCKET`` / ``ICECHUNK_PREFIX`` / ``ICECHUNK_REGION`` — S3
+  repo storage (IAM creds from the environment); or
+  ``ICECHUNK_LOCAL_PATH`` — local filesystem repo (tests).
+- ``VIRTUAL_CHUNK_PREFIX`` — url prefix of the virtual chunk container
+  (default ``s3://asdc-prod-protected/``; tests use ``file:///...``).
+  S3 containers are registered credential-less: readers authorize with
+  temporary ASDC credentials at open time.
+- ``VIRTUAL_CHUNK_REGION`` — region of the s3 container (default
+  ``us-west-2``).
+"""
+
+from __future__ import annotations
+
 import logging
 import os
-import tempfile
-from copy import Error
-from datetime import datetime
-from itertools import islice
+import time as time_module
+from datetime import datetime, timedelta
 from typing import cast
 
 import icechunk
 import numpy as np
-import obstore
 import xarray as xr
 import zarr
 from icechunk import ForkSession, Repository, Session
-from pydantic_zarr.v3 import ArraySpec, DefaultChunkKeyEncoding, GroupSpec
-from virtualizarr.manifests import ChunkManifest, ManifestArray
-from zarr.codecs import BytesCodec
-from zarr.core.dtype import parse_data_type
-from zarr.core.metadata import ArrayV3Metadata
 
+from virtualizarr_processor.collection import (
+    CollectionConfig,
+    load_collection,
+    load_coordinates,
+    load_template,
+)
+from virtualizarr_processor.granule import (
+    granule_time,
+    open_flat_granule,
+    source_last_modified,
+)
+from virtualizarr_processor.inventory import BackfillInventory
 from virtualizarr_processor.store_template import (
+    WRITE_ARTIFACT_ATTRIBUTES,
+    GranuleValidationError,
+    StoreValidationError,
     create_empty_store,
+    resize,
     validate_granule,
     validate_store,
 )
 
 logger = logging.getLogger(__name__)
 
-CHUNK_DIR = os.path.realpath(tempfile.gettempdir())
-CHUNK_DIRECTORY_URL_PREFIX = f"file://{CHUNK_DIR}/"
-
-# Backfill synthetic dataset: N time steps, each a (Y, X) int32 chunk.
-BACKFILL_N, BACKFILL_Y, BACKFILL_X = 6, 2, 3
-BACKFILL_DTYPE = np.dtype("int32")
-
-
-def _template_array(
-    shape: tuple[int, ...],
-    chunks: tuple[int, ...],
-    dtype: str,
-    dims: tuple[str, ...],
-) -> ArraySpec:
-    """An uncompressed little-endian array spec, matching what the synthetic
-    backfill worker expects when it decodes raw chunk bytes."""
-    return ArraySpec(
-        attributes={},
-        shape=shape,
-        data_type=dtype,
-        chunk_grid={"name": "regular", "configuration": {"chunk_shape": chunks}},
-        chunk_key_encoding=DefaultChunkKeyEncoding(
-            name="default", configuration={"separator": "/"}
-        ),
-        fill_value=0,
-        codecs=({"name": "bytes", "configuration": {"endian": "little"}},),
-        dimension_names=dims,
-    )
-
-
-# The full-shape schema of the synthetic backfill store. Declared once so the
-# store can be created empty (metadata only) and later checked against it.
-BACKFILL_TEMPLATE: GroupSpec = GroupSpec.from_flat(
-    {
-        "": GroupSpec(attributes={}, members=None),
-        "/foo": _template_array(
-            (BACKFILL_N, BACKFILL_Y, BACKFILL_X),
-            (1, BACKFILL_Y, BACKFILL_X),
-            str(BACKFILL_DTYPE),
-            ("time", "y", "x"),
-        ),
-        "/time": _template_array((BACKFILL_N,), (BACKFILL_N,), "int64", ("time",)),
-    }
-)
-
-
-def synthetic_vds(date: str) -> xr.Dataset:
-    filepath = f"{CHUNK_DIR}/data_chunk"
-    store = obstore.store.LocalStore()
-    arr = np.repeat([[1, 2]], 3, axis=1)
-    shape = arr.shape
-    dtype = arr.dtype
-    buf = arr.tobytes()
-    obstore.put(
-        store,
-        filepath,
-        buf,
-    )
-    manifest = ChunkManifest(
-        {"0.0": {"path": filepath, "offset": 0, "length": len(buf)}}
-    )
-    zdtype = parse_data_type(dtype, zarr_format=3)
-    metadata = ArrayV3Metadata(
-        shape=shape,
-        data_type=zdtype,
-        chunk_grid={
-            "name": "regular",
-            "configuration": {"chunk_shape": shape},
-        },
-        chunk_key_encoding={"name": "default"},
-        fill_value=zdtype.default_scalar(),
-        codecs=[BytesCodec()],
-        attributes={},
-        dimension_names=("y", "x"),
-        storage_transformers=None,
-    )
-    ma = ManifestArray(
-        chunkmanifest=manifest,
-        metadata=metadata,
-    )
-    foo = xr.Variable(data=ma, dims=["y", "x"], encoding={"scale_factor": 2})
-    vds = xr.Dataset(
-        {"foo": foo},
-        coords={
-            "time": ("time", [np.datetime64(date)])  # Single time point
-        },
-    )
-    return vds
+DEFAULT_VIRTUAL_CHUNK_PREFIX = "s3://asdc-prod-protected/"
+PARSE_ATTEMPTS = 3
+PARSE_BACKOFF_SECONDS = (5, 15)
 
 
 class Processor:
-    def initialize_repo(self) -> Repository:
-        chunk_store = icechunk.local_filesystem_store(CHUNK_DIR)
-        storage = icechunk.in_memory_storage()
-        config = icechunk.RepositoryConfig.default()
-        config.set_virtual_chunk_container(
-            icechunk.VirtualChunkContainer(CHUNK_DIRECTORY_URL_PREFIX, chunk_store)
-        )
-        repo = icechunk.Repository.open_or_create(
-            storage=storage,
-            config=config,
-            authorize_virtual_chunk_access={
-                CHUNK_DIRECTORY_URL_PREFIX: icechunk.credentials.LocalFileSystemAccess
-            },
-        )
-        # Get only up to 2 commits to check if the repository is new
-        history = list(islice(repo.ancestry(branch="main"), 2))
-        if len(history) == 1:
-            session = repo.writable_session("main")
-            vds = synthetic_vds("2024-01-01")
-            vds.vz.to_icechunk(session.store, validate_containers=False)
-            session.commit(message="Initialization")
-        return repo
+    def __init__(self, config: CollectionConfig | None = None) -> None:
+        self.config = config or load_collection()
+        self.template = load_template(self.config)
+        self.coordinates = load_coordinates(self.config)
 
-    def initialize_session(self, repo: Repository) -> Session:
-        session = repo.writable_session("main")
-        return session
-
-    def process_file(self, file_key: str, session: Session) -> bool:
-        result = False
-        try:
-            vds = synthetic_vds(file_key)
-            # Reject granules whose expected shared attributes differ from
-            # the template (raises); merely-unexpected attributes only warn.
-            # A real processor also passes coordinates= with the reference
-            # spatial grid so mis-gridded granules are rejected.
-            validate_granule(BACKFILL_TEMPLATE, vds)
-            vds.vz.to_icechunk(
-                session.store, append_dim="time", validate_containers=False
-            )
-            result = True
-        except Error:
-            result = False
-        return result
-
-    def commit_processed_files(self, session: Session) -> str:
-        snapshot = session.commit(message=f"Append to {session.snapshot_id}")
-        return str(snapshot)
-
-    def initialize_backfill_store(self, repo: Repository) -> str:
-        repo.create_branch("backfill", repo.lookup_branch("main"))
-        session = repo.writable_session("backfill")
-        create_empty_store(BACKFILL_TEMPLATE, session.store)
-        time_coord = zarr.open_array(session.store, path="time")
-        time_coord[:] = np.arange(BACKFILL_N)
-        # allow_extra: the branch also carries whatever `main` already held.
-        validate_store(
-            BACKFILL_TEMPLATE,
-            zarr.open_group(session.store, mode="r"),
-            allow_extra=True,
-        )
-        return cast(str, session.commit("Initialize backfill shape"))
+    # -- repository ---------------------------------------------------------
 
     def open_backfill_repo(self) -> Repository:
-        # Reference impl storage config, read from the environment:
-        #   ICECHUNK_BUCKET  - if set, use S3 storage (Lambda); IAM creds via from_env
-        #   ICECHUNK_PREFIX  - S3 key prefix (optional)
-        #   ICECHUNK_REGION  - S3 region (optional)
-        #   ICECHUNK_LOCAL_PATH - filesystem repo path when no bucket (tests)
-        chunk_store = icechunk.local_filesystem_store(CHUNK_DIR)
         bucket = os.environ.get("ICECHUNK_BUCKET")
         if bucket:
             storage = icechunk.s3_storage(
@@ -198,77 +89,243 @@ class Processor:
             storage = icechunk.local_filesystem_storage(
                 os.environ["ICECHUNK_LOCAL_PATH"]
             )
+
+        prefix = os.environ.get("VIRTUAL_CHUNK_PREFIX", DEFAULT_VIRTUAL_CHUNK_PREFIX)
         config = icechunk.RepositoryConfig.default()
+        authorize: dict[str, object] | None = None
+        chunk_store: (
+            icechunk.ObjectStoreConfig.LocalFileSystem
+            | icechunk.ObjectStoreConfig.S3Compatible
+            | icechunk.ObjectStoreConfig.S3
+        )
+        if prefix.startswith("file://"):
+            chunk_store = icechunk.local_filesystem_store(
+                prefix.removeprefix("file://")
+            )
+            authorize = {prefix: icechunk.credentials.LocalFileSystemAccess}
+        elif prefix.startswith("s3://"):
+            # Credential-less container: writing refs needs no chunk access;
+            # readers authorize with temporary ASDC credentials at open time.
+            chunk_store = icechunk.s3_store(
+                region=os.environ.get("VIRTUAL_CHUNK_REGION", "us-west-2")
+            )
+        else:
+            raise ValueError(f"Unsupported VIRTUAL_CHUNK_PREFIX {prefix!r}")
         config.set_virtual_chunk_container(
-            icechunk.VirtualChunkContainer(CHUNK_DIRECTORY_URL_PREFIX, chunk_store)
+            icechunk.VirtualChunkContainer(prefix, chunk_store)
         )
         return icechunk.Repository.open_or_create(
             storage=storage,
             config=config,
-            authorize_virtual_chunk_access={
-                CHUNK_DIRECTORY_URL_PREFIX: icechunk.credentials.LocalFileSystemAccess
-            },
+            authorize_virtual_chunk_access=authorize,  # type: ignore[arg-type]
         )
 
-    def _backfill_slice_vds(self, t: int) -> xr.Dataset:
-        """A one-time-step virtual dataset for backfill index t, carrying the
-        matching `time` coordinate so to_icechunk(region="auto") can place it."""
-        buf = np.full((1, BACKFILL_Y, BACKFILL_X), t, dtype=BACKFILL_DTYPE).tobytes()
-        # Synthetic reference only: each slice writes its own local source chunk.
-        # These accumulate under CHUNK_DIR; a real Processor references existing
-        # source files (e.g. in S3) and does not create per-slice temp files.
-        filepath = f"{CHUNK_DIR}/backfill_slice_{t}"
-        obstore.put(obstore.store.LocalStore(), filepath, buf)
-        manifest = ChunkManifest(
-            {"0.0.0": {"path": filepath, "offset": 0, "length": len(buf)}}
+    # -- backfill -----------------------------------------------------------
+
+    def initialize_backfill_store(
+        self, repo: Repository, inventory: BackfillInventory
+    ) -> str:
+        """Create the full-shape store on a clean `backfill` branch (spec §2)."""
+        if inventory.collection != self.config.collection_shortname:
+            raise StoreValidationError(
+                [
+                    f"inventory is for {inventory.collection!r}, this deployment "
+                    f"processes {self.config.collection_shortname!r}"
+                ]
+            )
+        template = resize(
+            self.template, {self.config.append_dim: len(inventory.granules)}
         )
-        zdtype = parse_data_type(BACKFILL_DTYPE, zarr_format=3)
-        metadata = ArrayV3Metadata(
-            shape=(1, BACKFILL_Y, BACKFILL_X),
-            data_type=zdtype,
-            chunk_grid={
-                "name": "regular",
-                "configuration": {"chunk_shape": (1, BACKFILL_Y, BACKFILL_X)},
-            },
-            chunk_key_encoding={"name": "default"},
-            fill_value=zdtype.default_scalar(),
-            codecs=[BytesCodec()],
-            attributes={},
-            dimension_names=("time", "y", "x"),
-            storage_transformers=None,
+        repo.create_branch("backfill", repo.lookup_branch("main"))
+        session = repo.writable_session("backfill")
+        create_empty_store(template, session.store)
+
+        # The native coordinates, written once: the axis from the inventory's
+        # exact per-granule times, the grid from the committed artifact.
+        zarr.open_array(session.store, path="time")[:] = inventory.times()
+        for axis, values in self.coordinates.items():
+            zarr.open_array(session.store, path=axis)[:] = values
+
+        # allow_extra: the branch also carries whatever `main` already held.
+        validate_store(
+            template, zarr.open_group(session.store, mode="r"), allow_extra=True
         )
-        ma = ManifestArray(chunkmanifest=manifest, metadata=metadata)
-        return xr.Dataset(
-            {"foo": xr.Variable(("time", "y", "x"), ma)},
-            coords={"time": ("time", [t])},
+        return cast(
+            str,
+            session.commit(
+                f"Initialize backfill store: {len(inventory.granules)} granules "
+                f"of {inventory.collection}"
+            ),
         )
 
     def process_backfill_file(self, file_key: str, fork: ForkSession) -> bool:
+        """Validate one granule and region-write it into the fork (no commit)."""
         try:
-            # Synthetic keys are the integer time index as a string ("0".."5").
-            # A real processor parses the source file for its own coordinate.
-            t = int(file_key)
-            vds = self._backfill_slice_vds(t)
-            # Reject granules whose expected shared attributes differ from
-            # the template; the except below turns the raise into a logged
-            # rejection (False). A real processor also passes coordinates=
-            # with the reference spatial grid.
-            validate_granule(BACKFILL_TEMPLATE, vds)
-            vds.vz.to_icechunk(fork.store, region="auto", validate_containers=False)
+            vds, stamp = self._parse_and_validate(file_key)
+            index = self._axis_index(fork.store, float(vds["time"].values[0]))
+            # The axis slot is located by exact raw-float match and the region
+            # passed explicitly; region="auto" would CF-decode the store axis
+            # and compare in datetime64 space — a precision seam this pipeline
+            # forbids — and rewrite the shared native time chunk from every
+            # worker. Dropping `time` leaves the init-written axis untouched.
+            vds = vds.drop_vars("time")
+            # Root attrs come solely from the template at init; per-granule
+            # attrs must not land in the store, and differing group-attr
+            # updates from parallel forks make the merge conflict.
+            vds.attrs = {}
+            vds.vz.to_icechunk(
+                fork.store,
+                region={self.config.append_dim: slice(index, index + 1)},
+                validate_containers=False,
+                last_updated_at=stamp,
+            )
             return True
         except Exception:
-            # Catch parse/region errors and I/O failures from to_icechunk, but log
-            # the real cause first — otherwise the worker only reports a generic
-            # "process_backfill_file failed" and the underlying error is lost.
-            # A real (network-reading) processor should also retry the granule read
-            # here with backoff, since transient object-store / auth throttling under
-            # a large backfill's concurrency is otherwise fatal. logger.exception
-            # includes the traceback.
+            # Log the real cause; the worker handler turns False into a raise
+            # so the Step Functions run fails before promote.
             logger.exception("process_backfill_file failed for %s", file_key)
             return False
 
+    def validate_backfill_store(
+        self, repo: Repository, inventory: BackfillInventory, *, branch: str
+    ) -> None:
+        """The promote gate (spec §4): template, axis, and grid, bit-exact."""
+        session = repo.readonly_session(branch)
+        group = zarr.open_group(session.store, mode="r")
+        template = resize(
+            self.template, {self.config.append_dim: len(inventory.granules)}
+        )
+        validate_store(template, group, allow_extra=True)
+        differences = []
+        axis = np.asarray(zarr.open_array(session.store, path="time")[:])
+        if not np.array_equal(axis, inventory.times()):
+            differences.append("store time axis differs from the inventory")
+        if np.any(np.diff(axis) <= 0):
+            differences.append("store time axis is not strictly increasing")
+        for name, values in self.coordinates.items():
+            actual = np.asarray(zarr.open_array(session.store, path=name)[:])
+            if not np.array_equal(actual, values):
+                differences.append(
+                    f"store {name} differs from the reference coordinates"
+                )
+        if differences:
+            raise StoreValidationError(differences)
+
+    def _axis_index(self, store: object, time_value: float) -> int:
+        """The unique axis slot whose value equals ``time_value`` bit-exactly."""
+        axis = np.asarray(zarr.open_array(store, path="time")[:])  # type: ignore[arg-type]
+        matches = np.nonzero(axis == time_value)[0]
+        if matches.size != 1:
+            raise GranuleValidationError(
+                [
+                    f"granule time {time_value!r} matches {matches.size} slots "
+                    "in the store axis; expected exactly one (is the granule in "
+                    "the inventory?)"
+                ]
+            )
+        return int(matches[0])
+
+    # -- shared parsing/validation ------------------------------------------
+
+    def _parse_and_validate(self, file_key: str) -> tuple[xr.Dataset, datetime]:
+        """Parse + validate one granule; returns the writable vds (reference
+        coordinates validated then dropped — they are native, written once at
+        init) and the `last_updated_at` stamp for its refs.
+
+        The stamp anchors to the source object's own observed mtime (plus a
+        one-second checksum-precision margin, matching virtualizarr's own
+        default margin) so overwritten objects fail reads without depending
+        on the worker's clock."""
+        stamp = source_last_modified(file_key) + timedelta(seconds=1)
+        vds = self._open_with_retry(file_key)
+        granule_time(vds)
+        validate_granule(
+            self.template,
+            vds,
+            coordinates=self.coordinates,
+            volatile=self.config.volatile_attributes | WRITE_ARTIFACT_ATTRIBUTES,
+        )
+        return vds.drop_vars(list(self.coordinates)), stamp
+
+    def _open_with_retry(self, file_key: str) -> xr.Dataset:
+        """Parse with backoff on transient (non-validation) errors; object-store
+        throttling under backfill concurrency must not fail the whole batch."""
+        for attempt in range(PARSE_ATTEMPTS):
+            try:
+                return open_flat_granule(file_key, self.config)
+            except GranuleValidationError:
+                raise
+            except Exception:
+                if attempt == PARSE_ATTEMPTS - 1:
+                    raise
+                delay = PARSE_BACKOFF_SECONDS[
+                    min(attempt, len(PARSE_BACKOFF_SECONDS) - 1)
+                ]
+                logger.warning(
+                    "parse attempt %d for %s failed; retrying in %ds",
+                    attempt + 1,
+                    file_key,
+                    delay,
+                    exc_info=True,
+                )
+                time_module.sleep(delay)
+        raise AssertionError("unreachable")
+
+    # -- forward processing --------------------------------------------------
+
+    def initialize_repo(self) -> Repository:
+        """Open the repo; create an empty (time=0) templated store if new."""
+        repo = self.open_backfill_repo()
+        session = repo.writable_session("main")
+        group = zarr.open_group(session.store, mode="a")
+        if "time" not in group:
+            template = resize(self.template, {self.config.append_dim: 0})
+            create_empty_store(template, session.store)
+            for axis, values in self.coordinates.items():
+                zarr.open_array(session.store, path=axis)[:] = values
+            validate_store(
+                template, zarr.open_group(session.store, mode="r"), allow_extra=True
+            )
+            session.commit("Initialize empty templated store")
+        return repo
+
+    def initialize_session(self, repo: Repository) -> Session:
+        return repo.writable_session("main")
+
+    def process_file(self, file_key: str, session: Session) -> bool:
+        """Append one granule to `main` (must be strictly after the axis end).
+
+        Routing beyond in-order appends (in-place republication overwrite,
+        deferral to the pending ledger) lands with the forward-processing
+        task; until then any non-append case is a rejection.
+        """
+        try:
+            vds, stamp = self._parse_and_validate(file_key)
+            axis = np.asarray(zarr.open_array(session.store, path="time")[:])
+            time_value = float(np.asarray(vds["time"].values)[0])
+            if axis.size and time_value <= float(axis[-1]):
+                raise GranuleValidationError(
+                    [
+                        f"granule time {time_value!r} is not after the store "
+                        f"axis end {float(axis[-1])!r}; out-of-order arrivals "
+                        "are not appendable"
+                    ]
+                )
+            vds.vz.to_icechunk(
+                session.store,
+                append_dim=self.config.append_dim,
+                validate_containers=False,
+                last_updated_at=stamp,
+            )
+            return True
+        except Exception:
+            logger.exception("process_file failed for %s", file_key)
+            return False
+
+    def commit_processed_files(self, session: Session) -> str:
+        return cast(str, session.commit(f"Append to {session.snapshot_id}"))
+
     def garbage_collect(self, expiry_time: datetime) -> icechunk.GCSummary:
-        repo = self.initialize_repo()
+        repo = self.open_backfill_repo()
         repo.expire_snapshots(older_than=expiry_time)
-        gcs = repo.garbage_collect(delete_object_older_than=expiry_time)
-        return gcs
+        return repo.garbage_collect(delete_object_older_than=expiry_time)

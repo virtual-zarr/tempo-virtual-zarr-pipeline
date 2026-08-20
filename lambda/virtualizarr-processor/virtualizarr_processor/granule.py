@@ -18,10 +18,12 @@ define its own position on the axis.
 from __future__ import annotations
 
 import os
+from datetime import datetime
 from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
 import numpy as np
+import obstore
 import xarray as xr
 from obspec_utils.registry import ObjectStoreRegistry
 from obstore.store import HTTPStore, LocalStore, from_url
@@ -63,6 +65,22 @@ def make_registry(url: str) -> ObjectStoreRegistry:
         f"Unsupported url scheme {parsed.scheme!r} for {url!r}; "
         "expected file://, s3://, or https://"
     )
+
+
+def source_last_modified(
+    url: str, registry: ObjectStoreRegistry | None = None
+) -> datetime:
+    """The source object's last-modified time as observed right now.
+
+    Used (plus a one-second precision margin) as the ``last_updated_at``
+    checksum on every virtual ref written for the object, so a later
+    overwrite of the object makes reads of the stale refs fail loudly.
+    Anchoring the stamp to the object's own mtime rather than the worker's
+    clock keeps it immune to clock skew.
+    """
+    registry = registry or make_registry(url)
+    store, path = registry.resolve(url)
+    return obstore.head(store, path)["last_modified"]
 
 
 def open_flat_granule(
