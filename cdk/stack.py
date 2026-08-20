@@ -5,6 +5,7 @@ from aws_cdk import (
     CfnOutput,
     CustomResource,
     Duration,
+    RemovalPolicy,
     Stack,
     Tags,
 )
@@ -47,7 +48,7 @@ from aws_cdk import (
 from aws_cdk import custom_resources as cr
 from constructs import Construct
 from settings import StackSettings  # type: ignore[import-not-found]
-from stack_constructs import BackfillPipeline, BatchInfra, BatchJob
+from stack_constructs import BackfillPipeline, BatchInfra, BatchJob, function_log_group
 
 
 def _concept_id(collection_name: str) -> str:
@@ -101,10 +102,22 @@ class VirtualizarrSqsStack(Stack):
                 bucket_name=settings.ICECHUNK_BUCKET,
             )
         else:
+            dev = settings.STAGE == "dev"
             self.icechunk_bucket = s3.Bucket(
                 self,
                 f"{settings.STACK_NAME}-bucket",
                 bucket_name=settings.ICECHUNK_BUCKET_NAME,
+                # Backfill run artifacts (fork pickles, partition manifests)
+                # are per-execution debris under backfill/<execution>/;
+                # expire them so repeated runs don't accumulate.
+                lifecycle_rules=[
+                    s3.LifecycleRule(prefix="backfill/", expiration=Duration.days(30))
+                ],
+                # dev stores are disposable: `cdk destroy` empties and deletes
+                # the bucket. prod keeps the default RETAIN so the store
+                # outlives the stack.
+                removal_policy=RemovalPolicy.DESTROY if dev else RemovalPolicy.RETAIN,
+                auto_delete_objects=dev,
             )
 
         CfnOutput(
@@ -174,6 +187,7 @@ class VirtualizarrSqsStack(Stack):
         self.process_messages_lambda = _lambda.DockerImageFunction(
             self,
             f"{settings.STACK_NAME}-process_messages_lambda",
+            log_group=function_log_group(self, "process-messages-logs"),
             code=_lambda.DockerImageCode.from_image_asset(
                 directory="lambda",
                 file="process_messages/Dockerfile",
@@ -229,6 +243,7 @@ class VirtualizarrSqsStack(Stack):
             self.initialize_icechunk_lambda = _lambda.DockerImageFunction(
                 self,
                 f"{settings.STACK_NAME}-initialize-icechunk-lambda",
+                log_group=function_log_group(self, "initialize-icechunk-logs"),
                 code=_lambda.DockerImageCode.from_image_asset(
                     directory="lambda",
                     file="initialize/Dockerfile",
@@ -350,6 +365,7 @@ class VirtualizarrSqsStack(Stack):
             self.resort_lambda = _lambda.DockerImageFunction(
                 self,
                 f"{settings.STACK_NAME}-resort-lambda",
+                log_group=function_log_group(self, "resort-logs"),
                 code=_lambda.DockerImageCode.from_image_asset(
                     directory="lambda",
                     file="backfill/Dockerfile",
@@ -402,6 +418,7 @@ class VirtualizarrSqsStack(Stack):
             self.cmr_poller_lambda = _lambda.DockerImageFunction(
                 self,
                 f"{settings.STACK_NAME}-cmr-poller-lambda",
+                log_group=function_log_group(self, "cmr-poller-logs"),
                 code=_lambda.DockerImageCode.from_image_asset(
                     directory="lambda",
                     file="cmr_poller/Dockerfile",

@@ -3,6 +3,7 @@ from typing import Any
 from aws_cdk import (
     Aws,
     Duration,
+    RemovalPolicy,
     Size,
 )
 from aws_cdk import (
@@ -44,6 +45,10 @@ class BatchJob(Construct):
         self.log_group = logs.LogGroup(
             self,
             "JobLogGroup",
+            # Bounded retention, deleted with the stack (the default is
+            # never-expire and RETAIN, which outlives `cdk destroy`).
+            retention=logs.RetentionDays.ONE_MONTH,
+            removal_policy=RemovalPolicy.DESTROY,
         )
 
         # Execution role needs ECR permissions to pull from private repo

@@ -21,7 +21,10 @@ class StackSettings(BaseSettings):
     # Optional: when blank, app.py falls back to CDK_DEFAULT_ACCOUNT (the account
     # of the active AWS credentials) so synth/deploy still resolve an environment.
     ACCOUNT_ID: str | None = None
-    ACCOUNT_REGION: str = "us-east-1"
+    # Default to the source data's region: asdc-prod-protected is in
+    # us-west-2, and deploying elsewhere makes every worker read a
+    # cross-region transfer (the largest avoidable backfill cost).
+    ACCOUNT_REGION: str = "us-west-2"
     ICECHUNK_BUCKET_NAME: str = "icechunk-outuput"
     ICECHUNK_BUCKET: str | None = None
     # Key prefix for this dataset's repo. Icechunk >=2.1.0 refuses to CREATE a

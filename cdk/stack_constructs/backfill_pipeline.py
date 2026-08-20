@@ -10,6 +10,8 @@ from aws_cdk import aws_stepfunctions as sfn
 from aws_cdk import aws_stepfunctions_tasks as tasks
 from constructs import Construct
 
+from .log_groups import function_log_group
+
 _ACTIONS = ["partition", "init", "fork", "worker", "reduce", "promote"]
 
 # Actions whose handler opens the icechunk repo and therefore needs Earthdata
@@ -68,6 +70,7 @@ class BackfillPipeline(Construct):
             fn = lmb.DockerImageFunction(
                 self,
                 f"{action}-fn",
+                log_group=function_log_group(self, f"{action}-logs"),
                 code=lmb.DockerImageCode.from_image_asset(
                     "lambda",
                     file="backfill/Dockerfile",

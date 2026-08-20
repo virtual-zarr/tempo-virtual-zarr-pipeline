@@ -5,9 +5,11 @@ from settings import StackSettings
 from stack import VirtualizarrSqsStack
 
 
-def _template(*, backfill: bool, forward: bool | None = None) -> Template:
+def _template(
+    *, backfill: bool, forward: bool | None = None, stage: str = "dev"
+) -> Template:
     kwargs = dict(
-        STAGE="dev",
+        STAGE=stage,
         ACCOUNT_ID="111111111111",
         ICECHUNK_BUCKET_NAME="ice-test",
         DATA_BUCKET_NAME="data-test",
@@ -83,3 +85,63 @@ def test_backfill_enabled_requires_data_bucket_name() -> None:
             settings=settings,
             env={"account": settings.ACCOUNT_ID, "region": settings.ACCOUNT_REGION},
         )
+
+
+def test_dev_bucket_is_disposable() -> None:
+    """`cdk destroy` of a dev stack must fully remove the created bucket."""
+    t = _template(backfill=False, stage="dev")
+    t.has_resource(
+        "AWS::S3::Bucket",
+        {"DeletionPolicy": "Delete", "UpdateReplacePolicy": "Delete"},
+    )
+    # auto_delete_objects wires the emptying custom resource.
+    assert "autodeleteobjects" in _resource_ids(_template(backfill=False))
+
+
+def test_prod_bucket_is_retained() -> None:
+    t = _template(backfill=False, stage="prod")
+    t.has_resource("AWS::S3::Bucket", {"DeletionPolicy": "Retain"})
+
+
+def test_bucket_expires_backfill_run_artifacts() -> None:
+    """Fork pickles and partition manifests under backfill/<execution>/ are
+    per-run debris; a lifecycle rule keeps repeated runs from accumulating."""
+    from aws_cdk.assertions import Match
+
+    _template(backfill=True).has_resource_properties(
+        "AWS::S3::Bucket",
+        Match.object_like(
+            {
+                "LifecycleConfiguration": {
+                    "Rules": [
+                        Match.object_like(
+                            {"Prefix": "backfill/", "ExpirationInDays": 30}
+                        )
+                    ]
+                }
+            }
+        ),
+    )
+
+
+def test_lambdas_use_stack_owned_log_groups() -> None:
+    """Implicit /aws/lambda/* log groups are never-expire and survive destroy;
+    every function must own a bounded, stack-deleted log group instead."""
+    t = _template(backfill=True, forward=True)
+    tmpl = t.to_json()["Resources"]
+    # The pipeline's own functions are all Docker images; CDK framework
+    # helpers (e.g. the bucket auto-delete handler) are zip-based.
+    functions = [
+        r
+        for r in tmpl.values()
+        if r["Type"] == "AWS::Lambda::Function"
+        and r["Properties"].get("PackageType") == "Image"
+    ]
+    log_groups = [r for r in tmpl.values() if r["Type"] == "AWS::Logs::LogGroup"]
+    assert len(functions) == 9  # consumer, resort, poller + 6 backfill handlers
+    assert len(log_groups) >= len(functions)
+    for group in log_groups:
+        assert group["Properties"]["RetentionInDays"] == 30
+        assert group["DeletionPolicy"] == "Delete"
+    for fn in functions:
+        assert "LogGroup" in str(fn["Properties"].get("LoggingConfig", {}))

@@ -27,10 +27,16 @@ stack = VirtualizarrSqsStack(
     env={"account": account, "region": region},
 )
 
-for k, v in dict(
+# Cost-allocation tags: activate them in the Billing console so per-stage
+# and per-collection costs are separable (one deployment per collection).
+tags = dict(
     Project=settings.PROJECT_NAME,
     Stack=settings.STACK_NAME,
-).items():
+    Stage=settings.STAGE,
+)
+if settings.TEMPO_COLLECTION:
+    tags["Collection"] = settings.TEMPO_COLLECTION
+for k, v in tags.items():
     Tags.of(app).add(k, v, apply_to_launched_instances=True)
 
 app.synth()
