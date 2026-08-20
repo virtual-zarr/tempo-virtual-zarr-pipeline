@@ -7,7 +7,7 @@ JSON + reference coordinates). Every granule insertion runs the layered
 validation from the design spec (docs/superpowers/specs/
 2026-08-20-tempo-inventory-and-processor-design.md): shared-attribute
 template check, bit-exact reference grid, in-file time integrity, and
-axis alignment via ``region="auto"`` — a granule that fails any check is
+exact-match axis slot lookup — a granule that fails any check is
 rejected loudly and nothing is written for it. All virtual references are
 stamped with ``last_updated_at`` so a source object that is overwritten
 after ingest fails reads instead of returning bytes from a changed file.
@@ -38,6 +38,7 @@ import numpy as np
 import xarray as xr
 import zarr
 from icechunk import ForkSession, Repository, Session
+from pydantic_zarr.v3 import ArraySpec
 
 from virtualizarr_processor.collection import (
     CollectionConfig,
@@ -189,6 +190,55 @@ class Processor:
             # so the Step Functions run fails before promote.
             logger.exception("process_backfill_file failed for %s", file_key)
             return False
+
+    def initialize_resort_store(
+        self, repo: Repository, merged: BackfillInventory
+    ) -> str:
+        """Prepare the `resort` branch for the re-sort job (spec §5).
+
+        Branches (or resets) `resort` off the current `main` tip, resizes
+        every array carrying the append dimension to the merged inventory's
+        length, rewrites the time axis to the merged values, validates, and
+        commits the clean base the rewrite workers build on. Slots at or
+        after the first shifted index hold stale references until the job
+        rewrites all of them; promote only happens after it has.
+        """
+        if merged.collection != self.config.collection_shortname:
+            raise StoreValidationError(
+                [
+                    f"merged inventory is for {merged.collection!r}, this "
+                    f"deployment processes {self.config.collection_shortname!r}"
+                ]
+            )
+        tip = repo.lookup_branch("main")
+        if "resort" in repo.list_branches():
+            repo.reset_branch("resort", tip)
+        else:
+            repo.create_branch("resort", tip)
+        session = repo.writable_session("resort")
+        template = resize(self.template, {self.config.append_dim: len(merged.granules)})
+        for path, node in template.to_flat().items():
+            if (
+                isinstance(node, ArraySpec)
+                and node.dimension_names
+                and self.config.append_dim in node.dimension_names
+            ):
+                array = zarr.open_array(session.store, path=path.lstrip("/"))
+                array.resize(node.shape)
+        zarr.open_array(session.store, path="time")[:] = merged.times()
+        validate_store(
+            template, zarr.open_group(session.store, mode="r"), allow_extra=True
+        )
+        return cast(
+            str,
+            session.commit(f"Resort: axis of {len(merged.granules)} granules"),
+        )
+
+    def process_resort_file(self, file_key: str, session: Session) -> bool:
+        """Rewrite one granule's slot on the resort branch (no commit)."""
+        # Identical to the backfill worker path; only the session type
+        # differs, and just the .store attribute is used.
+        return self.process_backfill_file(file_key, session)  # type: ignore[arg-type]
 
     def validate_backfill_store(
         self, repo: Repository, inventory: BackfillInventory, *, branch: str

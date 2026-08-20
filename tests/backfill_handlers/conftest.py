@@ -51,6 +51,8 @@ def tempo_pipeline(
     monkeypatch.setenv("ICECHUNK_LOCAL_PATH", str(tmp_path / "repo"))
     monkeypatch.setenv("VIRTUAL_CHUNK_PREFIX", f"file://{tmp_path}/")
     monkeypatch.setenv("TEMPO_COLLECTION", str(tiny.config_path))
+    monkeypatch.setenv("STORE_MANIFEST_URI", str(tmp_path / "store-manifest.json"))
+    monkeypatch.setenv("PENDING_LEDGER_URI", str(tmp_path / "pending-ledger.json"))
     inventory_uri = f"s3://{s3_bucket}/inv.json"
     boto3.client("s3", region_name="us-east-1").put_object(
         Bucket=s3_bucket, Key="inv.json", Body=tiny.inventory.to_json().encode()
