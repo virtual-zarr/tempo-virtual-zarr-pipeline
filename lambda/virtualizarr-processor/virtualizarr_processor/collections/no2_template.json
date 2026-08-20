@@ -65,13 +65,15 @@
     "time"
    ]
   },
-  "albedo": {
+  "weight": {
    "zarr_format": 3,
    "node_type": "array",
    "attributes": {
-    "long_name": "surface albedo",
-    "valid_min": 0.0,
-    "valid_max": 1.0
+    "_FillValue": "AAAAAAAAnkc=",
+    "long_name": "sum of area weights",
+    "comment": "sum of Level 2 pixel overlap areas",
+    "units": "km^2",
+    "coordinates": "time latitude longitude"
    },
    "shape": [
     1,
@@ -84,8 +86,8 @@
     "configuration": {
      "chunk_shape": [
       1,
-      984,
-      2584
+      590,
+      1550
      ]
     }
    },
@@ -95,7 +97,7 @@
      "separator": "/"
     }
    },
-   "fill_value": -1.0000000150474662e30,
+   "fill_value": 9.969209968386869e36,
    "codecs": [
     {
      "name": "bytes",
@@ -123,13 +125,15 @@
     "longitude"
    ]
   },
-  "weight": {
+  "albedo": {
    "zarr_format": 3,
    "node_type": "array",
    "attributes": {
-    "long_name": "sum of area weights",
-    "comment": "sum of Level 2 pixel overlap areas",
-    "units": "km^2"
+    "_FillValue": "AAAAQFk+KcY=",
+    "long_name": "surface albedo",
+    "valid_min": 0.0,
+    "valid_max": 1.0,
+    "coordinates": "time latitude longitude"
    },
    "shape": [
     1,
@@ -142,8 +146,8 @@
     "configuration": {
      "chunk_shape": [
       1,
-      590,
-      1550
+      984,
+      2584
      ]
     }
    },
@@ -153,7 +157,7 @@
      "separator": "/"
     }
    },
-   "fill_value": 9.969209968386869e36,
+   "fill_value": -1.0000000150474662e30,
    "codecs": [
     {
      "name": "bytes",
@@ -224,56 +228,15 @@
     "latitude"
    ]
   },
-  "longitude": {
-   "zarr_format": 3,
-   "node_type": "array",
-   "attributes": {
-    "standard_name": "longitude",
-    "long_name": "longitude",
-    "comment": "longitude at grid box center",
-    "units": "degrees_east",
-    "valid_min": -180.0,
-    "valid_max": 180.0
-   },
-   "shape": [
-    7750
-   ],
-   "data_type": "float32",
-   "chunk_grid": {
-    "name": "regular",
-    "configuration": {
-     "chunk_shape": [
-      7750
-     ]
-    }
-   },
-   "chunk_key_encoding": {
-    "name": "default",
-    "configuration": {
-     "separator": "/"
-    }
-   },
-   "fill_value": "NaN",
-   "codecs": [
-    {
-     "name": "bytes",
-     "configuration": {
-      "endian": "little"
-     }
-    }
-   ],
-   "storage_transformers": [],
-   "dimension_names": [
-    "longitude"
-   ]
-  },
   "amf_total": {
    "zarr_format": 3,
    "node_type": "array",
    "attributes": {
+    "_FillValue": "AAAAQFk+KcY=",
     "long_name": "nitrogen dioxide air mass factor",
     "comment": "total nitrogen dioxide air mass factor (AMF) calculated from surface to top of atmosphere",
-    "valid_min": 0.0
+    "valid_min": 0.0,
+    "coordinates": "time latitude longitude"
    },
    "shape": [
     1,
@@ -325,14 +288,59 @@
     "longitude"
    ]
   },
+  "longitude": {
+   "zarr_format": 3,
+   "node_type": "array",
+   "attributes": {
+    "standard_name": "longitude",
+    "long_name": "longitude",
+    "comment": "longitude at grid box center",
+    "units": "degrees_east",
+    "valid_min": -180.0,
+    "valid_max": 180.0
+   },
+   "shape": [
+    7750
+   ],
+   "data_type": "float32",
+   "chunk_grid": {
+    "name": "regular",
+    "configuration": {
+     "chunk_shape": [
+      7750
+     ]
+    }
+   },
+   "chunk_key_encoding": {
+    "name": "default",
+    "configuration": {
+     "separator": "/"
+    }
+   },
+   "fill_value": "NaN",
+   "codecs": [
+    {
+     "name": "bytes",
+     "configuration": {
+      "endian": "little"
+     }
+    }
+   ],
+   "storage_transformers": [],
+   "dimension_names": [
+    "longitude"
+   ]
+  },
   "pbl_height": {
    "zarr_format": 3,
    "node_type": "array",
    "attributes": {
+    "_FillValue": -9999,
     "long_name": "planetary boundary layer height",
     "units": "m",
     "valid_min": 0,
-    "valid_max": 10000
+    "valid_max": 10000,
+    "coordinates": "time latitude longitude"
    },
    "shape": [
     1,
@@ -388,10 +396,12 @@
    "zarr_format": 3,
    "node_type": "array",
    "attributes": {
+    "_FillValue": -9999,
     "long_name": "terrain height",
     "units": "m",
     "valid_min": -1000,
-    "valid_max": 10000
+    "valid_max": 10000,
+    "coordinates": "time latitude longitude"
    },
    "shape": [
     1,
@@ -447,8 +457,10 @@
    "zarr_format": 3,
    "node_type": "array",
    "attributes": {
+    "_FillValue": "AAAAQFk+KcY=",
     "long_name": "nitrogen dioxide tropospheric air mass factor",
-    "valid_min": 0.0
+    "valid_min": 0.0,
+    "coordinates": "time latitude longitude"
    },
    "shape": [
     1,
@@ -504,10 +516,12 @@
    "zarr_format": 3,
    "node_type": "array",
    "attributes": {
+    "_FillValue": "AAAAQFk+KcY=",
     "long_name": "surface pressure",
     "units": "hPa",
     "valid_min": 0.0,
     "valid_max": 1200.0,
+    "coordinates": "time latitude longitude",
     "Eta_A": [
      0.0,
      0.04804826155304909,
@@ -713,8 +727,10 @@
    "zarr_format": 3,
    "node_type": "array",
    "attributes": {
+    "_FillValue": "AAAAQFk+KcY=",
     "long_name": "nitrogen dioxide stratospheric air mass factor",
-    "valid_min": 0.0
+    "valid_min": 0.0,
+    "coordinates": "time latitude longitude"
    },
    "shape": [
     1,
@@ -770,128 +786,11 @@
    "zarr_format": 3,
    "node_type": "array",
    "attributes": {
+    "_FillValue": "AAAAQFk+KcY=",
     "long_name": "fraction of pixel area covered by snow and/or ice",
     "valid_min": 0.0,
-    "valid_max": 1.0
-   },
-   "shape": [
-    1,
-    2950,
-    7750
-   ],
-   "data_type": "float32",
-   "chunk_grid": {
-    "name": "regular",
-    "configuration": {
-     "chunk_shape": [
-      1,
-      984,
-      2584
-     ]
-    }
-   },
-   "chunk_key_encoding": {
-    "name": "default",
-    "configuration": {
-     "separator": "/"
-    }
-   },
-   "fill_value": -1.0000000150474662e30,
-   "codecs": [
-    {
-     "name": "bytes",
-     "configuration": {
-      "endian": "little"
-     }
-    },
-    {
-     "name": "numcodecs.shuffle",
-     "configuration": {
-      "elementsize": 4
-     }
-    },
-    {
-     "name": "numcodecs.zlib",
-     "configuration": {
-      "level": 1
-     }
-    }
-   ],
-   "storage_transformers": [],
-   "dimension_names": [
-    "time",
-    "latitude",
-    "longitude"
-   ]
-  },
-  "amf_cloud_pressure": {
-   "zarr_format": 3,
-   "node_type": "array",
-   "attributes": {
-    "long_name": "cloud pressure",
-    "comment": "cloud pressure for AMF computation",
-    "units": "hPa",
-    "valid_min": 0.0,
-    "valid_max": 1200.0
-   },
-   "shape": [
-    1,
-    2950,
-    7750
-   ],
-   "data_type": "float32",
-   "chunk_grid": {
-    "name": "regular",
-    "configuration": {
-     "chunk_shape": [
-      1,
-      984,
-      2584
-     ]
-    }
-   },
-   "chunk_key_encoding": {
-    "name": "default",
-    "configuration": {
-     "separator": "/"
-    }
-   },
-   "fill_value": -1.0000000150474662e30,
-   "codecs": [
-    {
-     "name": "bytes",
-     "configuration": {
-      "endian": "little"
-     }
-    },
-    {
-     "name": "numcodecs.shuffle",
-     "configuration": {
-      "elementsize": 4
-     }
-    },
-    {
-     "name": "numcodecs.zlib",
-     "configuration": {
-      "level": 1
-     }
-    }
-   ],
-   "storage_transformers": [],
-   "dimension_names": [
-    "time",
-    "latitude",
-    "longitude"
-   ]
-  },
-  "solar_zenith_angle": {
-   "zarr_format": 3,
-   "node_type": "array",
-   "attributes": {
-    "long_name": "solar zenith angle at pixel center",
-    "units": "degrees",
-    "valid_min": 0.0,
-    "valid_max": 90.0
+    "valid_max": 1.0,
+    "coordinates": "time latitude longitude"
    },
    "shape": [
     1,
@@ -947,10 +846,73 @@
    "zarr_format": 3,
    "node_type": "array",
    "attributes": {
+    "_FillValue": "AAAAQFk+KcY=",
     "long_name": "cloud fraction",
     "comment": "cloud radiance fraction for AMF computation",
     "valid_min": 0.0,
-    "valid_max": 1.0
+    "valid_max": 1.0,
+    "coordinates": "time latitude longitude"
+   },
+   "shape": [
+    1,
+    2950,
+    7750
+   ],
+   "data_type": "float32",
+   "chunk_grid": {
+    "name": "regular",
+    "configuration": {
+     "chunk_shape": [
+      1,
+      984,
+      2584
+     ]
+    }
+   },
+   "chunk_key_encoding": {
+    "name": "default",
+    "configuration": {
+     "separator": "/"
+    }
+   },
+   "fill_value": -1.0000000150474662e30,
+   "codecs": [
+    {
+     "name": "bytes",
+     "configuration": {
+      "endian": "little"
+     }
+    },
+    {
+     "name": "numcodecs.shuffle",
+     "configuration": {
+      "elementsize": 4
+     }
+    },
+    {
+     "name": "numcodecs.zlib",
+     "configuration": {
+      "level": 1
+     }
+    }
+   ],
+   "storage_transformers": [],
+   "dimension_names": [
+    "time",
+    "latitude",
+    "longitude"
+   ]
+  },
+  "solar_zenith_angle": {
+   "zarr_format": 3,
+   "node_type": "array",
+   "attributes": {
+    "_FillValue": "AAAAQFk+KcY=",
+    "long_name": "solar zenith angle at pixel center",
+    "units": "degrees",
+    "valid_min": 0.0,
+    "valid_max": 90.0,
+    "coordinates": "time latitude longitude"
    },
    "shape": [
     1,
@@ -1006,10 +968,74 @@
    "zarr_format": 3,
    "node_type": "array",
    "attributes": {
+    "_FillValue": "AAAAQFk+KcY=",
     "long_name": "effective cloud fraction",
     "comment": "effective cloud fraction from cloud retrieval",
     "valid_min": 0.0,
-    "valid_max": 1.0
+    "valid_max": 1.0,
+    "coordinates": "time latitude longitude"
+   },
+   "shape": [
+    1,
+    2950,
+    7750
+   ],
+   "data_type": "float32",
+   "chunk_grid": {
+    "name": "regular",
+    "configuration": {
+     "chunk_shape": [
+      1,
+      984,
+      2584
+     ]
+    }
+   },
+   "chunk_key_encoding": {
+    "name": "default",
+    "configuration": {
+     "separator": "/"
+    }
+   },
+   "fill_value": -1.0000000150474662e30,
+   "codecs": [
+    {
+     "name": "bytes",
+     "configuration": {
+      "endian": "little"
+     }
+    },
+    {
+     "name": "numcodecs.shuffle",
+     "configuration": {
+      "elementsize": 4
+     }
+    },
+    {
+     "name": "numcodecs.zlib",
+     "configuration": {
+      "level": 1
+     }
+    }
+   ],
+   "storage_transformers": [],
+   "dimension_names": [
+    "time",
+    "latitude",
+    "longitude"
+   ]
+  },
+  "amf_cloud_pressure": {
+   "zarr_format": 3,
+   "node_type": "array",
+   "attributes": {
+    "_FillValue": "AAAAQFk+KcY=",
+    "long_name": "cloud pressure",
+    "comment": "cloud pressure for AMF computation",
+    "units": "hPa",
+    "valid_min": 0.0,
+    "valid_max": 1200.0,
+    "coordinates": "time latitude longitude"
    },
    "shape": [
     1,
@@ -1065,8 +1091,10 @@
    "zarr_format": 3,
    "node_type": "array",
    "attributes": {
+    "_FillValue": "6oygOVk+KcY=",
     "long_name": "nitrogen dioxide fitted slant column",
-    "units": "molecules/cm^2"
+    "units": "molecules/cm^2",
+    "coordinates": "time latitude longitude"
    },
    "shape": [
     1,
@@ -1122,10 +1150,12 @@
    "zarr_format": 3,
    "node_type": "array",
    "attributes": {
+    "_FillValue": "AAAAQFk+KcY=",
     "long_name": "tropopause pressure",
     "units": "hPa",
     "valid_min": 0.0,
-    "valid_max": 1200.0
+    "valid_max": 1200.0,
+    "coordinates": "time latitude longitude"
    },
    "shape": [
     1,
@@ -1181,10 +1211,12 @@
    "zarr_format": 3,
    "node_type": "array",
    "attributes": {
+    "_FillValue": "AAAAQFk+KcY=",
     "long_name": "viewing zenith angle at pixel center",
     "units": "degrees",
     "valid_min": 0.0,
-    "valid_max": 90.0
+    "valid_max": 90.0,
+    "coordinates": "time latitude longitude"
    },
    "shape": [
     1,
@@ -1240,9 +1272,11 @@
    "zarr_format": 3,
    "node_type": "array",
    "attributes": {
+    "_FillValue": "6oygOVk+KcY=",
     "long_name": "nitrogen dioxide vertical column",
     "comment": "nitrogen dioxide vertical column determined from fitted slant column and total AMF calculated from surface to top of atmosphere",
-    "units": "molecules/cm^2"
+    "units": "molecules/cm^2",
+    "coordinates": "time latitude longitude"
    },
    "shape": [
     1,
@@ -1294,13 +1328,76 @@
     "longitude"
    ]
   },
+  "relative_azimuth_angle": {
+   "zarr_format": 3,
+   "node_type": "array",
+   "attributes": {
+    "_FillValue": "AAAAQFk+KcY=",
+    "long_name": "relative azimuth angle at pixel center",
+    "units": "degrees",
+    "valid_min": -180.0,
+    "valid_max": 180.0,
+    "coordinates": "time latitude longitude"
+   },
+   "shape": [
+    1,
+    2950,
+    7750
+   ],
+   "data_type": "float32",
+   "chunk_grid": {
+    "name": "regular",
+    "configuration": {
+     "chunk_shape": [
+      1,
+      984,
+      2584
+     ]
+    }
+   },
+   "chunk_key_encoding": {
+    "name": "default",
+    "configuration": {
+     "separator": "/"
+    }
+   },
+   "fill_value": -1.0000000150474662e30,
+   "codecs": [
+    {
+     "name": "bytes",
+     "configuration": {
+      "endian": "little"
+     }
+    },
+    {
+     "name": "numcodecs.shuffle",
+     "configuration": {
+      "elementsize": 4
+     }
+    },
+    {
+     "name": "numcodecs.zlib",
+     "configuration": {
+      "level": 1
+     }
+    }
+   ],
+   "storage_transformers": [],
+   "dimension_names": [
+    "time",
+    "latitude",
+    "longitude"
+   ]
+  },
   "main_data_quality_flag": {
    "zarr_format": 3,
    "node_type": "array",
    "attributes": {
+    "_FillValue": -9999,
     "long_name": "main data quality flag",
     "valid_min": 0,
     "valid_max": 2,
+    "coordinates": "time latitude longitude",
     "flag_meanings": "normal suspicious bad",
     "flag_values": [
      0,
@@ -1358,69 +1455,12 @@
     "longitude"
    ]
   },
-  "relative_azimuth_angle": {
-   "zarr_format": 3,
-   "node_type": "array",
-   "attributes": {
-    "long_name": "relative azimuth angle at pixel center",
-    "units": "degrees",
-    "valid_min": -180.0,
-    "valid_max": 180.0
-   },
-   "shape": [
-    1,
-    2950,
-    7750
-   ],
-   "data_type": "float32",
-   "chunk_grid": {
-    "name": "regular",
-    "configuration": {
-     "chunk_shape": [
-      1,
-      984,
-      2584
-     ]
-    }
-   },
-   "chunk_key_encoding": {
-    "name": "default",
-    "configuration": {
-     "separator": "/"
-    }
-   },
-   "fill_value": -1.0000000150474662e30,
-   "codecs": [
-    {
-     "name": "bytes",
-     "configuration": {
-      "endian": "little"
-     }
-    },
-    {
-     "name": "numcodecs.shuffle",
-     "configuration": {
-      "elementsize": 4
-     }
-    },
-    {
-     "name": "numcodecs.zlib",
-     "configuration": {
-      "level": 1
-     }
-    }
-   ],
-   "storage_transformers": [],
-   "dimension_names": [
-    "time",
-    "latitude",
-    "longitude"
-   ]
-  },
   "vertical_column_troposphere": {
    "zarr_format": 3,
    "node_type": "array",
    "attributes": {
+    "_FillValue": "6oygOVk+KcY=",
+    "coordinates": "time latitude longitude",
     "long_name": "troposphere nitrogen dioxide vertical column",
     "units": "molecules/cm^2"
    },
@@ -1478,6 +1518,8 @@
    "zarr_format": 3,
    "node_type": "array",
    "attributes": {
+    "_FillValue": "6oygOVk+KcY=",
+    "coordinates": "time latitude longitude",
     "long_name": "stratosphere nitrogen dioxide vertical column",
     "units": "molecules/cm^2"
    },
@@ -1535,8 +1577,10 @@
    "zarr_format": 3,
    "node_type": "array",
    "attributes": {
+    "_FillValue": "6oygOVk+KcY=",
     "long_name": "nitrogen dioxide fitted slant column uncertainty",
-    "units": "molecules/cm^2"
+    "units": "molecules/cm^2",
+    "coordinates": "time latitude longitude"
    },
    "shape": [
     1,
@@ -1594,7 +1638,9 @@
    "attributes": {
     "long_name": "nitrogen dioxide vertical column",
     "comment": "Smallest Level 2 pixel value contributing to the area-weighted Level 3 pixel value",
-    "units": "molecules/cm^2"
+    "units": "molecules/cm^2",
+    "_FillValue": "6oygOVk+KcY=",
+    "coordinates": "time longitude latitude"
    },
    "shape": [
     1,
@@ -1652,64 +1698,9 @@
    "attributes": {
     "long_name": "nitrogen dioxide vertical column",
     "comment": "Largest Level 2 pixel values contributing to the area-weighted Level 3 pixel value",
-    "units": "molecules/cm^2"
-   },
-   "shape": [
-    1,
-    2950,
-    7750
-   ],
-   "data_type": "float64",
-   "chunk_grid": {
-    "name": "regular",
-    "configuration": {
-     "chunk_shape": [
-      1,
-      738,
-      1938
-     ]
-    }
-   },
-   "chunk_key_encoding": {
-    "name": "default",
-    "configuration": {
-     "separator": "/"
-    }
-   },
-   "fill_value": -1e30,
-   "codecs": [
-    {
-     "name": "bytes",
-     "configuration": {
-      "endian": "little"
-     }
-    },
-    {
-     "name": "numcodecs.shuffle",
-     "configuration": {
-      "elementsize": 8
-     }
-    },
-    {
-     "name": "numcodecs.zlib",
-     "configuration": {
-      "level": 1
-     }
-    }
-   ],
-   "storage_transformers": [],
-   "dimension_names": [
-    "time",
-    "latitude",
-    "longitude"
-   ]
-  },
-  "vertical_column_total_uncertainty": {
-   "zarr_format": 3,
-   "node_type": "array",
-   "attributes": {
-    "long_name": "nitrogen dioxide vertical column uncertainty",
-    "units": "molecules/cm^2"
+    "units": "molecules/cm^2",
+    "_FillValue": "6oygOVk+KcY=",
+    "coordinates": "time longitude latitude"
    },
    "shape": [
     1,
@@ -1765,7 +1756,8 @@
    "zarr_format": 3,
    "node_type": "array",
    "attributes": {
-    "comment": "Number of Level 2 pixel values contributing to the area-weighted Level 3 pixel value"
+    "comment": "Number of Level 2 pixel values contributing to the area-weighted Level 3 pixel value",
+    "_FillValue": -1
    },
    "shape": [
     1,
@@ -1817,10 +1809,71 @@
     "longitude"
    ]
   },
+  "vertical_column_total_uncertainty": {
+   "zarr_format": 3,
+   "node_type": "array",
+   "attributes": {
+    "_FillValue": "6oygOVk+KcY=",
+    "long_name": "nitrogen dioxide vertical column uncertainty",
+    "units": "molecules/cm^2",
+    "coordinates": "time latitude longitude"
+   },
+   "shape": [
+    1,
+    2950,
+    7750
+   ],
+   "data_type": "float64",
+   "chunk_grid": {
+    "name": "regular",
+    "configuration": {
+     "chunk_shape": [
+      1,
+      738,
+      1938
+     ]
+    }
+   },
+   "chunk_key_encoding": {
+    "name": "default",
+    "configuration": {
+     "separator": "/"
+    }
+   },
+   "fill_value": -1e30,
+   "codecs": [
+    {
+     "name": "bytes",
+     "configuration": {
+      "endian": "little"
+     }
+    },
+    {
+     "name": "numcodecs.shuffle",
+     "configuration": {
+      "elementsize": 8
+     }
+    },
+    {
+     "name": "numcodecs.zlib",
+     "configuration": {
+      "level": 1
+     }
+    }
+   ],
+   "storage_transformers": [],
+   "dimension_names": [
+    "time",
+    "latitude",
+    "longitude"
+   ]
+  },
   "min_vertical_column_troposphere_sample": {
    "zarr_format": 3,
    "node_type": "array",
    "attributes": {
+    "_FillValue": "6oygOVk+KcY=",
+    "coordinates": "time longitude latitude",
     "long_name": "troposphere nitrogen dioxide vertical column",
     "units": "molecules/cm^2",
     "comment": "Smallest Level 2 pixel value contributing to the area-weighted Level 3 pixel value"
@@ -1879,7 +1932,69 @@
    "zarr_format": 3,
    "node_type": "array",
    "attributes": {
+    "_FillValue": "6oygOVk+KcY=",
+    "coordinates": "time longitude latitude",
     "long_name": "troposphere nitrogen dioxide vertical column",
+    "units": "molecules/cm^2",
+    "comment": "Largest Level 2 pixel values contributing to the area-weighted Level 3 pixel value"
+   },
+   "shape": [
+    1,
+    2950,
+    7750
+   ],
+   "data_type": "float64",
+   "chunk_grid": {
+    "name": "regular",
+    "configuration": {
+     "chunk_shape": [
+      1,
+      738,
+      1938
+     ]
+    }
+   },
+   "chunk_key_encoding": {
+    "name": "default",
+    "configuration": {
+     "separator": "/"
+    }
+   },
+   "fill_value": -1e30,
+   "codecs": [
+    {
+     "name": "bytes",
+     "configuration": {
+      "endian": "little"
+     }
+    },
+    {
+     "name": "numcodecs.shuffle",
+     "configuration": {
+      "elementsize": 8
+     }
+    },
+    {
+     "name": "numcodecs.zlib",
+     "configuration": {
+      "level": 1
+     }
+    }
+   ],
+   "storage_transformers": [],
+   "dimension_names": [
+    "time",
+    "latitude",
+    "longitude"
+   ]
+  },
+  "max_vertical_column_stratosphere_sample": {
+   "zarr_format": 3,
+   "node_type": "array",
+   "attributes": {
+    "_FillValue": "6oygOVk+KcY=",
+    "coordinates": "time longitude latitude",
+    "long_name": "stratosphere nitrogen dioxide vertical column",
     "units": "molecules/cm^2",
     "comment": "Largest Level 2 pixel values contributing to the area-weighted Level 3 pixel value"
    },
@@ -1937,6 +2052,8 @@
    "zarr_format": 3,
    "node_type": "array",
    "attributes": {
+    "_FillValue": "6oygOVk+KcY=",
+    "coordinates": "time latitude longitude",
     "long_name": "troposphere nitrogen dioxide vertical column uncertainty",
     "units": "molecules/cm^2"
    },
@@ -1994,7 +2111,8 @@
    "zarr_format": 3,
    "node_type": "array",
    "attributes": {
-    "comment": "Number of Level 2 pixel values contributing to the area-weighted Level 3 pixel value"
+    "comment": "Number of Level 2 pixel values contributing to the area-weighted Level 3 pixel value",
+    "_FillValue": -1
    },
    "shape": [
     1,
@@ -2050,67 +2168,11 @@
    "zarr_format": 3,
    "node_type": "array",
    "attributes": {
+    "_FillValue": "6oygOVk+KcY=",
+    "coordinates": "time longitude latitude",
     "long_name": "stratosphere nitrogen dioxide vertical column",
     "units": "molecules/cm^2",
     "comment": "Smallest Level 2 pixel value contributing to the area-weighted Level 3 pixel value"
-   },
-   "shape": [
-    1,
-    2950,
-    7750
-   ],
-   "data_type": "float64",
-   "chunk_grid": {
-    "name": "regular",
-    "configuration": {
-     "chunk_shape": [
-      1,
-      738,
-      1938
-     ]
-    }
-   },
-   "chunk_key_encoding": {
-    "name": "default",
-    "configuration": {
-     "separator": "/"
-    }
-   },
-   "fill_value": -1e30,
-   "codecs": [
-    {
-     "name": "bytes",
-     "configuration": {
-      "endian": "little"
-     }
-    },
-    {
-     "name": "numcodecs.shuffle",
-     "configuration": {
-      "elementsize": 8
-     }
-    },
-    {
-     "name": "numcodecs.zlib",
-     "configuration": {
-      "level": 1
-     }
-    }
-   ],
-   "storage_transformers": [],
-   "dimension_names": [
-    "time",
-    "latitude",
-    "longitude"
-   ]
-  },
-  "max_vertical_column_stratosphere_sample": {
-   "zarr_format": 3,
-   "node_type": "array",
-   "attributes": {
-    "long_name": "stratosphere nitrogen dioxide vertical column",
-    "units": "molecules/cm^2",
-    "comment": "Largest Level 2 pixel values contributing to the area-weighted Level 3 pixel value"
    },
    "shape": [
     1,
@@ -2166,7 +2228,8 @@
    "zarr_format": 3,
    "node_type": "array",
    "attributes": {
-    "comment": "Number of Level 2 pixel values contributing to the area-weighted Level 3 pixel value"
+    "comment": "Number of Level 2 pixel values contributing to the area-weighted Level 3 pixel value",
+    "_FillValue": -1
    },
    "shape": [
     1,
@@ -2218,13 +2281,15 @@
     "longitude"
    ]
   },
-  "min_vertical_column_troposphere_uncertainty_sample": {
+  "max_vertical_column_troposphere_uncertainty_sample": {
    "zarr_format": 3,
    "node_type": "array",
    "attributes": {
+    "_FillValue": "6oygOVk+KcY=",
+    "coordinates": "time longitude latitude",
     "long_name": "troposphere nitrogen dioxide vertical column uncertainty",
     "units": "molecules/cm^2",
-    "comment": "Smallest Level 2 pixel value contributing to the area-weighted Level 3 pixel value"
+    "comment": "Largest Level 2 pixel values contributing to the area-weighted Level 3 pixel value"
    },
    "shape": [
     1,
@@ -2276,13 +2341,15 @@
     "longitude"
    ]
   },
-  "max_vertical_column_troposphere_uncertainty_sample": {
+  "min_vertical_column_troposphere_uncertainty_sample": {
    "zarr_format": 3,
    "node_type": "array",
    "attributes": {
+    "_FillValue": "6oygOVk+KcY=",
+    "coordinates": "time longitude latitude",
     "long_name": "troposphere nitrogen dioxide vertical column uncertainty",
     "units": "molecules/cm^2",
-    "comment": "Largest Level 2 pixel values contributing to the area-weighted Level 3 pixel value"
+    "comment": "Smallest Level 2 pixel value contributing to the area-weighted Level 3 pixel value"
    },
    "shape": [
     1,
@@ -2338,7 +2405,8 @@
    "zarr_format": 3,
    "node_type": "array",
    "attributes": {
-    "comment": "Number of Level 2 pixel values contributing to the area-weighted Level 3 pixel value"
+    "comment": "Number of Level 2 pixel values contributing to the area-weighted Level 3 pixel value",
+    "_FillValue": -1
    },
    "shape": [
     1,

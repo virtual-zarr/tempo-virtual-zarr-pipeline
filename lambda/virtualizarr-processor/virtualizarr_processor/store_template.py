@@ -71,12 +71,12 @@ TEMPO_L3_VOLATILE_ATTRIBUTES: frozenset[str] = frozenset(
 )
 
 
-# Attributes that xarray's write path adds on the store side (a root
-# "coordinates" listing; _FillValue re-emitted from decode encoding on
-# loadable variables). Granules never carry them in .attrs, so templates
-# strip them and granule validation treats them as expected extras.
-# Array-level fill values are still checked via the zarr metadata
-# ``fill_value`` field.
+# Attributes that xarray's write path can add on the store side without the
+# granule carrying them in .attrs: a root "coordinates" listing, and
+# _FillValue re-emitted from decode encoding on loadable variables. Data
+# variables legitimately carry both (readers need _FillValue to mask
+# fills), so template generation drops these names only from nodes where
+# the reference granule does not carry them itself.
 WRITE_ARTIFACT_ATTRIBUTES: frozenset[str] = frozenset({"coordinates", "_FillValue"})
 
 

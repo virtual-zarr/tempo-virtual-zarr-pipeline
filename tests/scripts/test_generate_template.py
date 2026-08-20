@@ -69,8 +69,14 @@ def test_template_attribute_policy(
         "time_coverage_start_since_epoch",
     ):
         assert volatile not in root_attrs, volatile
-    # Variable attributes are declared too.
-    assert spec.to_flat()["/vertical_column"].attributes["units"] == "molecules/cm^2"
+    # Variable attributes are declared too, including the fill value
+    # readers need for masking; the copies xarray adds to the root group
+    # and the coordinate arrays are not.
+    variable_attrs = spec.to_flat()["/vertical_column"].attributes
+    assert variable_attrs["units"] == "molecules/cm^2"
+    assert "_FillValue" in variable_attrs
+    assert "_FillValue" not in spec.to_flat()["/time"].attributes
+    assert "coordinates" not in root_attrs
 
 
 def test_divergent_shared_attribute_is_a_hard_error(

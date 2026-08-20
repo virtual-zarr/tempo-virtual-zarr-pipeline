@@ -7,8 +7,7 @@ match the template's shared attributes, carry the bit-identical reference
 grid, agree with its own epoch attribute, and match exactly one slot on
 the store's time axis. Virtual references are stamped with
 ``last_updated_at`` so that reads fail if a source object is overwritten
-after ingest. See docs/superpowers/specs/
-2026-08-20-tempo-inventory-and-processor-design.md for the rationale.
+after ingest.
 
 Environment variables:
 
@@ -54,7 +53,6 @@ from virtualizarr_processor.granule import (
 from virtualizarr_processor.inventory import BackfillInventory, GranuleEntry
 from virtualizarr_processor.manifest import PendingLedger, StoreManifest
 from virtualizarr_processor.store_template import (
-    WRITE_ARTIFACT_ATTRIBUTES,
     GranuleValidationError,
     StoreValidationError,
     create_empty_store,
@@ -327,7 +325,7 @@ class Processor:
             self.template,
             vds,
             coordinates=self.coordinates,
-            volatile=self.config.volatile_attributes | WRITE_ARTIFACT_ATTRIBUTES,
+            volatile=self.config.volatile_attributes,
         )
         return vds.drop_vars(list(self.coordinates)), stamp
 

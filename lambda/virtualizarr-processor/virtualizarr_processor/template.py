@@ -18,9 +18,11 @@ collection config has to resolve explicitly.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import icechunk
 import numpy as np
+import xarray as xr
 import zarr
 from pydantic_zarr.v3 import GroupSpec
 
@@ -58,9 +60,8 @@ def build_template(
     session = repo.writable_session("main")
     reference.vz.to_icechunk(session.store, validate_containers=False)
     spec: AnyGroupSpec = GroupSpec.from_zarr(zarr.open_group(session.store, mode="r"))
-    spec = strip_attributes(
-        spec, config.volatile_attributes | WRITE_ARTIFACT_ATTRIBUTES
-    )
+    spec = strip_attributes(spec, config.volatile_attributes)
+    spec = _strip_write_artifacts(spec, reference)
 
     # Override the axis chunking: a one-granule store chunks time (1,), which
     # after resize would mean one tiny chunk per scan.
@@ -80,6 +81,31 @@ def build_template(
             spec,
             granule,
             coordinates=coordinates,
-            volatile=config.volatile_attributes | WRITE_ARTIFACT_ATTRIBUTES,
+            volatile=config.volatile_attributes,
         )
     return spec, coordinates
+
+
+def _strip_write_artifacts(spec: AnyGroupSpec, reference: "xr.Dataset") -> AnyGroupSpec:
+    """Drop attributes the write path added rather than the granule carrying.
+
+    ``WRITE_ARTIFACT_ATTRIBUTES`` are removed only from nodes where the
+    reference granule does not carry them itself. Data variables keep their
+    ``_FillValue`` (readers need it to mask fills) and ``coordinates``,
+    while the copies xarray synthesizes on the root group and the loadable
+    coordinate arrays are dropped, since granule validation would otherwise
+    demand attributes no granule has.
+    """
+    granule_attrs: dict[str, Any] = {"": reference.attrs}
+    for name, variable in reference.variables.items():
+        granule_attrs[f"/{name}"] = variable.attrs
+    flat = spec.to_flat()
+    for path, node in flat.items():
+        carried = granule_attrs.get(path, {})
+        attributes = {
+            key: value
+            for key, value in dict(node.attributes).items()
+            if key not in WRITE_ARTIFACT_ATTRIBUTES or key in carried
+        }
+        flat[path] = node.model_copy(update={"attributes": attributes})
+    return GroupSpec.from_flat(flat)
