@@ -15,7 +15,8 @@ atomically with it and cannot drift from it or race a concurrent writer.
 from __future__ import annotations
 
 import os
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping, Sequence
+from typing import cast
 
 import numpy as np
 import zarr
@@ -72,10 +73,11 @@ class StoreManifest:
         axis = np.asarray(zarr.open_array(store, path="time")[:])
         if meta is None or not axis.size:
             return None
-        urs = zarr.open_array(store, path=MANIFEST_ARRAYS[0])[:]
-        urls = zarr.open_array(store, path=MANIFEST_ARRAYS[1])[:]
+        meta_map = cast(Mapping[str, object], meta)
+        urs = np.asarray(zarr.open_array(store, path=MANIFEST_ARRAYS[0])[:])
+        urls = np.asarray(zarr.open_array(store, path=MANIFEST_ARRAYS[1])[:])
         return BackfillInventory.model_validate(
-            dict(meta)
+            dict(meta_map)
             | {
                 "granules": [
                     {"url": str(url), "granule_ur": str(ur), "time": float(t)}
@@ -113,7 +115,9 @@ class PendingLedger:
     @staticmethod
     def read(store: Store) -> tuple[GranuleEntry, ...]:
         raw = zarr.open_group(store, mode="r").attrs.get(PENDING_LEDGER_ATTRIBUTE, [])
-        return tuple(GranuleEntry.model_validate(item) for item in raw)
+        return tuple(
+            GranuleEntry.model_validate(item) for item in cast(Sequence[object], raw)
+        )
 
     @staticmethod
     def write(store: Store, entries: Iterable[GranuleEntry]) -> None:

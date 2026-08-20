@@ -3,6 +3,7 @@
 import icechunk
 import pytest
 import zarr
+import zarr.abc.store
 from virtualizarr_processor.inventory import BackfillInventory, GranuleEntry
 from virtualizarr_processor.manifest import (
     MANIFEST_ARRAYS,
@@ -17,7 +18,7 @@ def entry(i: int) -> GranuleEntry:
 
 def inventory(n: int) -> BackfillInventory:
     return BackfillInventory(
-        schema_id="tempo-backfill-inventory/1",
+        schema="tempo-backfill-inventory/1",
         collection="TEMPO_HCHO_L3",
         concept_id="C1",
         time_units="seconds since 1980-01-06",
@@ -32,12 +33,20 @@ def store() -> zarr.abc.store.Store:
     repo = icechunk.Repository.create(storage=icechunk.in_memory_storage())
     session = repo.writable_session("main")
     zarr.create_array(
-        session.store, name="time", shape=(0,), chunks=(8,), dtype="float64",
+        session.store,
+        name="time",
+        shape=(0,),
+        chunks=(8,),
+        dtype="float64",
         dimension_names=("time",),
     )
     for name in MANIFEST_ARRAYS:
         zarr.create_array(
-            session.store, name=name, shape=(0,), chunks=(8,), dtype="str",
+            session.store,
+            name=name,
+            shape=(0,),
+            chunks=(8,),
+            dtype="str",
             dimension_names=("time",),
         )
     return session.store
@@ -83,12 +92,20 @@ def test_state_rides_the_commit() -> None:
     repo = icechunk.Repository.create(storage=icechunk.in_memory_storage())
     session = repo.writable_session("main")
     zarr.create_array(
-        session.store, name="time", shape=(1,), chunks=(8,), dtype="float64",
+        session.store,
+        name="time",
+        shape=(1,),
+        chunks=(8,),
+        dtype="float64",
         dimension_names=("time",),
     )
     for name in MANIFEST_ARRAYS:
         zarr.create_array(
-            session.store, name=name, shape=(1,), chunks=(8,), dtype="str",
+            session.store,
+            name=name,
+            shape=(1,),
+            chunks=(8,),
+            dtype="str",
             dimension_names=("time",),
         )
     inv = inventory(1)
