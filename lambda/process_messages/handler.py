@@ -1,4 +1,4 @@
-"""SQS consumer: forward-process granules per the design spec §5 routing.
+"""SQS consumer: parse, validate, and route granules into the store.
 
 Messages come from the CMR poller (``{"url": "s3://..."}``) or, if an SNS
 subscription is ever wired up, from S3 object-created notifications. Each
@@ -29,7 +29,7 @@ batch_processor = BatchProcessor(event_type=EventType.SQS)
 
 
 def granule_url(message: Dict[str, Any]) -> Optional[str]:
-    """The granule's s3:// url from either supported message shape."""
+    """Extract the granule's s3:// url from either supported message shape."""
     if "url" in message:  # CMR poller message
         return str(message["url"])
     record = message.get("Records", [{}])[0].get("s3", {})
@@ -41,7 +41,7 @@ def granule_url(message: Dict[str, Any]) -> Optional[str]:
 
 
 def record_url(record: Dict[str, Any]) -> str:
-    """Best-effort url extraction from a raw SQS record, for batch sorting."""
+    """Extract the url from a raw SQS record for batch sorting, best effort."""
     try:
         message = json.loads(record["body"])
         if "Message" in message:  # SNS envelope

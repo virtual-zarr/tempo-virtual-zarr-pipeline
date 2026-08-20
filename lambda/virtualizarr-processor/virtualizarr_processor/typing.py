@@ -12,7 +12,7 @@ if TYPE_CHECKING:
 
 
 class ProcessOutcome(enum.Enum):
-    """What became of one forward-processed granule (design spec §5)."""
+    """What became of one forward-processed granule."""
 
     WRITTEN = "written"  # appended, or republication overwritten in place
     DEFERRED = "deferred"  # out of order: recorded in the pending ledger
@@ -54,7 +54,7 @@ class VirtualizarrProcessor(Protocol):
 
     def process_file(self, file_key: str, session: Session) -> ProcessOutcome:
         """
-        Parse, validate, and route one granule (design spec §5):
+        Parse, validate, and route one granule:
         append when its time is after the axis end; overwrite in place when
         its time already owns a slot and the granule UR matches the store
         manifest (republication / redelivery); defer to the pending ledger
@@ -95,14 +95,14 @@ class VirtualizarrProcessor(Protocol):
         return the base snapshot id.
 
         The store is declared at its full extent up front because backfill
-        writes disjoint regions via region writes rather than appending. The
-        time axis is written from the inventory's exact per-granule values
-        (read from the files at inventory build time) — that axis is what
-        `region="auto"` aligns each worker's granule against, so a granule
-        whose in-file time is not in the inventory fails loudly instead of
-        landing in a wrong slot. The session MUST have no uncommitted changes
-        after this returns, so that forks taken from a fresh session share
-        the committed branch-tip snapshot as their base.
+        writes disjoint regions rather than appending. The time axis is
+        written from the inventory's exact per-granule values, read from
+        the files at inventory build time. Workers match each granule
+        against that axis, so a granule missing from the inventory is
+        rejected rather than misplaced. The session must have no
+        uncommitted changes after this returns, so that forks taken from a
+        fresh session share the committed branch-tip snapshot as their
+        base.
 
         The `backfill` branch must not already exist. This method is intended
         to be called exactly once per backfill run.

@@ -1,15 +1,14 @@
 """Handler: fold the pending ledger into the store (the re-sort job).
 
 Merges the store manifest with the pending ledger into one sorted
-inventory (collisions abort loudly before any branch is touched), rewrites
-the axis on a ``resort`` branch, re-ingests every granule from the first
+inventory (collisions abort before any branch is touched), rewrites the
+axis on a ``resort`` branch, re-ingests every granule from the first
 shifted slot on, validates, fast-forwards ``main``, updates the store
 manifest, and clears the folded ledger entries.
 
-This inline implementation re-ingests the shifted suffix serially in one
-Lambda invocation, which covers the routine cases (adjacent-scan swaps
-shift only the tail; a daily drip-feed batch shifts more but stays
-bounded).
+The shifted suffix is re-ingested serially in one Lambda invocation,
+which covers the routine cases: adjacent-scan swaps shift only the tail,
+and a daily batch of historical arrivals stays bounded.
 """
 
 # ponytail: serial suffix rewrite in one invocation; if a deep resort ever
@@ -50,8 +49,8 @@ def handler(event: dict[str, Any], context: LambdaContext) -> dict[str, Any]:
     axis = np.asarray(
         zarr.open_array(repo.readonly_session("main").store, path="time")[:]
     )
-    # Trust boundary: the manifest must describe the store exactly before
-    # it is used to relocate existing granules.
+    # The manifest must describe the store exactly before it is used to
+    # relocate existing granules.
     StoreManifest.validate_against_axis(manifest, axis)
 
     merged = merge_pending(manifest, pending)  # collisions raise here

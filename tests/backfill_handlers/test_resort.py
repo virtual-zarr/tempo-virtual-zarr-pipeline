@@ -1,4 +1,4 @@
-"""End-to-end tests for the re-sort job (spec §5)."""
+"""End-to-end tests for the re-sort job."""
 
 import os
 import pickle

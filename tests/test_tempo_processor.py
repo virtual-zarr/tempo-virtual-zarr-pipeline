@@ -196,7 +196,7 @@ def test_real_backfill_two_granules(
         )
 
 
-# --- Forward processing (spec §5 routing) ---
+# --- Forward processing ---
 
 
 def backfilled(tiny: TinyCollection) -> Processor:

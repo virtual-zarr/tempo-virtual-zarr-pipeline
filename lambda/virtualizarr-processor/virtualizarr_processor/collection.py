@@ -76,7 +76,7 @@ def load_collection(name: str | None = None) -> CollectionConfig:
 
 
 def _artifact(filename: str, kind: str) -> Traversable:
-    """A packaged artifact, or a filesystem one when named by absolute path."""
+    """Locate an artifact, packaged or named by absolute filesystem path."""
     resource: Traversable = (
         Path(filename) if Path(filename).is_absolute() else _resource(filename)
     )
@@ -89,14 +89,14 @@ def _artifact(filename: str, kind: str) -> Traversable:
 
 
 def load_template(config: CollectionConfig) -> AnyGroupSpec:
-    """The collection's committed store template (single-granule shape)."""
+    """Load the collection's committed store template (single-granule shape)."""
     return GroupSpec.model_validate_json(
         _artifact(config.template_file, "Template").read_text()
     )
 
 
 def load_coordinates(config: CollectionConfig) -> dict[str, np.ndarray]:
-    """The committed reference coordinate arrays (bit-exact grid)."""
+    """Load the committed reference coordinate arrays."""
     with _artifact(config.coordinates_file, "Coordinates").open("rb") as f:
         with np.load(f) as data:
             return {name: data[name] for name in data.files}

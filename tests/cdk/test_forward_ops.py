@@ -1,4 +1,4 @@
-"""CDK assertions for the forward-processing operational pieces (spec §5)."""
+"""CDK assertions for the forward-processing operational pieces."""
 
 import aws_cdk as cdk
 from aws_cdk.assertions import Match, Template

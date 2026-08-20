@@ -6,9 +6,8 @@ so the cross-process test can run real `multiprocessing` spawn workers — moto'
 mocked S3 does not cross process boundaries. `run_worker` is the spawn target and
 must stay importable as a top-level module (no __init__.py in this directory).
 
-Origin: the fork/merge approach was first proven here as a spike; see
-docs/superpowers/specs/2026-06-17-backfill-fork-merge-spike-design.md. The
-production graduation lives in virtualizarr_processor (A) and backfill_handlers (B).
+The fork/merge approach was first proven here as a spike; the production
+implementation lives in virtualizarr_processor and backfill_handlers.
 """
 
 import multiprocessing as mp

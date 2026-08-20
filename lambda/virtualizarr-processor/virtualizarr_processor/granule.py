@@ -1,18 +1,16 @@
 """Parse one TEMPO L3 granule into the flat virtual dataset the store uses.
 
-``open_flat_granule`` runs the whole ingest transform declared by the
-collection config: virtualize with VirtualiZarr's ``HDFParser``, flatten
-the configured groups' variables to the root group (the layout proven with
-titiler-multidim; name collisions are an error), drop configured
+``open_flat_granule`` applies the transform declared by the collection
+config: virtualize with VirtualiZarr's ``HDFParser``, flatten the
+configured groups' variables to the root group, drop configured
 variables, and promote per-scan variables stored without a time dimension
-(``weight``) so concatenation cannot silently freeze one scan's values.
-Any data variable that still lacks the append dimension afterwards is a
-hard error for the same reason.
+(``weight``). A data variable that still lacks the append dimension
+afterwards is an error, because concatenating it would silently keep a
+single scan's values.
 
-``granule_time`` returns the granule's exact axis value and cross-checks
-it against the file's own ``time_coverage_start_since_epoch`` attribute
-(bit-equal in real TEMPO files) so an internally inconsistent file cannot
-define its own position on the axis.
+``granule_time`` returns the granule's exact axis value, cross-checked
+against the file's ``time_coverage_start_since_epoch`` attribute so an
+internally inconsistent file cannot define its own axis position.
 """
 
 from __future__ import annotations
@@ -39,12 +37,11 @@ EPOCH_ATTRIBUTE = "time_coverage_start_since_epoch"
 
 
 def make_registry(url: str) -> ObjectStoreRegistry:
-    """An object-store registry able to resolve ``url``.
+    """Build an object-store registry that can resolve ``url``.
 
-    ``file://`` for local granules (tests, the template generator),
-    ``s3://`` for in-region production access (credentials from the AWS
-    environment), and ``https://`` with an ``$EARTHDATA_TOKEN`` bearer
-    header for EDL-authed access.
+    Supports ``file://`` (tests, the template generator), ``s3://``
+    (in-region access with AWS credentials from the environment), and
+    ``https://`` with an ``$EARTHDATA_TOKEN`` bearer header.
     """
     parsed = urlparse(url)
     if parsed.scheme == "file":
@@ -70,13 +67,12 @@ def make_registry(url: str) -> ObjectStoreRegistry:
 def source_last_modified(
     url: str, registry: ObjectStoreRegistry | None = None
 ) -> datetime:
-    """The source object's last-modified time as observed right now.
+    """Return the source object's last-modified time as observed now.
 
-    Used (plus a one-second precision margin) as the ``last_updated_at``
-    checksum on every virtual ref written for the object, so a later
-    overwrite of the object makes reads of the stale refs fail loudly.
-    Anchoring the stamp to the object's own mtime rather than the worker's
-    clock keeps it immune to clock skew.
+    Used as the ``last_updated_at`` checksum on the object's virtual
+    references, so a later overwrite of the object makes reads of the
+    stale references fail. Using the object's own modification time keeps
+    the stamp independent of the worker's clock.
     """
     registry = registry or make_registry(url)
     store, path = registry.resolve(url)
@@ -90,9 +86,8 @@ def open_flat_granule(
 ) -> xr.Dataset:
     """Virtualize ``url`` and apply the config's flatten/drop/promote."""
     registry = registry or make_registry(url)
-    # decode_times=False: the pipeline is raw float64 seconds end to end —
-    # the store axis, the inventory, and region alignment all use the
-    # files' exact values, so nothing may round-trip through datetime64.
+    # decode_times=False: the pipeline works in raw float64 seconds
+    # throughout, so time values must not round-trip through datetime64.
     tree = HDFParser()(url=url, registry=registry).to_virtual_datatree(
         decode_times=False
     )
@@ -169,7 +164,7 @@ def open_flat_granule(
 
 
 def granule_time(vds: xr.Dataset) -> float:
-    """The granule's exact time-axis value, integrity-checked (spec V3)."""
+    """Return the granule's exact time-axis value after integrity checks."""
     if "time" not in vds.variables:
         raise GranuleValidationError(["granule has no 'time' variable"])
     values = np.asarray(vds["time"].values)
@@ -188,8 +183,8 @@ def granule_time(vds: xr.Dataset) -> float:
         raise GranuleValidationError(
             [
                 f"root attribute {EPOCH_ATTRIBUTE!r} ({attr_value!r}) does not "
-                f"equal /time[0] ({time_value!r}); refusing an internally "
-                "inconsistent granule"
+                f"equal /time[0] ({time_value!r}); the granule is internally "
+                "inconsistent"
             ]
         )
     return time_value

@@ -1,22 +1,19 @@
-"""The store manifest and pending ledger (design spec invariant I4).
+"""The store manifest and pending ledger.
 
-The **store manifest** is the store's living inventory — the same
-``BackfillInventory`` document, kept in S3 next to the repo. Backfill's
-promote writes it (equal to the backfill inventory); the forward consumer
-and the re-sort job update it. It is what maps each time slice back to
-its source granule, which the re-sort job and the QA sampler both need.
-``validate_against_axis`` is the trust boundary: every consumer checks it
-bit-exactly against the store's actual axis before relying on it.
+The store manifest is the store's current inventory: the same
+``BackfillInventory`` document, kept in S3 next to the repository. The
+backfill promote writes it, and the forward consumer and re-sort job keep
+it updated. It maps each time slice back to its source granule, which the
+re-sort job and the verification script need. Consumers must call
+``validate_against_axis`` before relying on it.
 
-The **pending ledger** holds granules that arrived out of order (the
-historical drip-feed, adjacent-scan swaps) and are waiting for the
-scheduled re-sort job to fold them in. Appends dedupe by granule UR, so
+The pending ledger holds granules that arrived out of order and are
+waiting for the scheduled re-sort job. Appends dedupe by granule UR, so
 at-least-once SQS delivery is harmless.
 
-URIs may be ``s3://bucket/key`` (boto3, imported lazily) or plain
-filesystem paths (tests, local runs). Both artifacts assume the
-single-writer discipline the deployment enforces (consumer at reserved
-concurrency 1; re-sort serialized with the consumer).
+URIs may be ``s3://bucket/key`` or plain filesystem paths. Both artifacts
+rely on the deployment's single-writer setup (consumer at reserved
+concurrency 1, re-sort serialized with the consumer).
 """
 
 from __future__ import annotations
@@ -48,7 +45,7 @@ def _s3_client() -> Any:
 
 
 def _read_bytes(uri: str) -> bytes | None:
-    """The object's bytes, or None if it does not exist."""
+    """Return the object's bytes, or None if it does not exist."""
     if _is_s3(uri):
         client = _s3_client()
         bucket, key = _split(uri)
@@ -70,7 +67,7 @@ def _write_bytes(uri: str, data: bytes) -> None:
 
 
 class StoreManifest:
-    """The store's living typed inventory at a URI."""
+    """Read and write the store's typed inventory at a URI."""
 
     @classmethod
     def read(cls, uri: str) -> BackfillInventory:
@@ -85,7 +82,7 @@ class StoreManifest:
 
     @staticmethod
     def validate_against_axis(inventory: BackfillInventory, axis: np.ndarray) -> None:
-        """Bit-exact agreement between the manifest and the store's axis."""
+        """Check that the manifest matches the store's time axis exactly."""
         expected = inventory.times()
         actual = np.asarray(axis, dtype=np.float64)
         if actual.shape != expected.shape or not np.array_equal(actual, expected):
@@ -93,7 +90,7 @@ class StoreManifest:
                 [
                     f"store manifest ({expected.shape[0]} granules) does not "
                     f"match the store time axis ({actual.shape[0]} steps) "
-                    "bit-exactly; refusing to trust the manifest"
+                    "exactly; the manifest does not describe this store"
                 ]
             )
 

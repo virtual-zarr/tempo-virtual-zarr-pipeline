@@ -2,18 +2,16 @@
 
 The inventory is a JSON document produced by
 ``exploration/build_backfill_inventory.py`` and consumed by the backfill
-Init and Partition steps. Each entry carries the granule's **exact**
-``/time[0]`` value as read from the file (equal to the granule's
-``time_coverage_start_since_epoch`` attribute) — not the CMR/filename
-timestamp, which differs from it. Init builds the store's time axis from
-these values; workers then align each granule against that axis with
-``to_icechunk(region="auto")``, so a granule whose in-file time is not in
-the inventory fails loudly instead of landing in the wrong slot.
+Init and Partition steps. Each entry carries the granule's exact
+``/time[0]`` value as read from the file, which differs from the CMR and
+filename timestamps. Init builds the store's time axis from these values,
+and workers match each granule against that axis exactly, so a granule
+missing from the inventory is rejected rather than misplaced.
 
-Validation here is what makes the fork/merge backfill safe: merge is
-last-writer-wins, so two granules on one time step would corrupt the store
-silently. The model rejects that (and unsorted or empty inventories) at
-parse time, on both the build and the consume side.
+The validators also protect the fork/merge backfill: merge is
+last-writer-wins, so two granules on one time step would corrupt the
+store silently. Empty, unsorted, or duplicate inventories are rejected at
+parse time on both the build and the consume side.
 """
 
 from __future__ import annotations
@@ -78,9 +76,9 @@ class BackfillInventory(BaseModel, frozen=True):
         return self.model_dump_json(by_alias=True, indent=1)
 
     def times(self) -> np.ndarray:
-        """The store's time axis values, in order."""
+        """Return the store's time axis values, in order."""
         return np.array([g.time for g in self.granules], dtype=np.float64)
 
     def urls(self) -> list[str]:
-        """The file keys in axis order (what partition manifests contain)."""
+        """Return the file keys in axis order, as partition manifests use them."""
         return [g.url for g in self.granules]

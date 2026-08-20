@@ -203,7 +203,7 @@ class TinyCollection:
 def build_tiny_collection(
     directory: Path, n: int = 3, spacing: float = 3600.0
 ) -> TinyCollection:
-    """Granules + config TOML + generated template/coords + typed inventory."""
+    """Build granules, a config TOML, generated artifacts, and an inventory."""
     from virtualizarr_processor.collection import load_collection
     from virtualizarr_processor.inventory import BackfillInventory, GranuleEntry
     from virtualizarr_processor.template import build_template

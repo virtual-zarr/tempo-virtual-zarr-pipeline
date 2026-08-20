@@ -1,4 +1,4 @@
-"""Tests for the store manifest and pending ledger (spec I4)."""
+"""Tests for the store manifest and pending ledger."""
 
 import pathlib
 from collections.abc import Iterator

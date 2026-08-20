@@ -1,6 +1,6 @@
 """Handler: validate the finished backfill store, then fast-forward main.
 
-The promote gate (spec §4) runs before the fast-forward: the store must
+The promote gate runs before the fast-forward: the store must
 match the resized template, the time axis must equal the inventory's
 values bit-exactly and be strictly increasing, and the native lat/lon
 chunks must equal the committed reference grid. A gate failure raises and

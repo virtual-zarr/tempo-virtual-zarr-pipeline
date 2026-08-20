@@ -1,19 +1,17 @@
 #!/usr/bin/env python3
-"""Post-promote QA: compare random store slices against the source files.
+"""Compare random store slices against the source files.
 
 Samples N time steps, maps each slice back to its source granule via the
-store manifest (validated bit-exactly against the axis first), and
-compares a random window of every data variable read *through the virtual
-store* against the same window read directly from the source file with
-h5py. Any mismatch, missing variable, or read failure — including
-icechunk's last_updated_at checksum error, which is exactly how a source
-object mutated under its refs presents — is reported and the script exits
-non-zero.
+store manifest, and compares a random window of every data variable read
+through the virtual store against the same window read directly from the
+source file with h5py. Any mismatch, missing variable, or read failure
+(including the checksum error a source object overwritten after ingest
+produces) is reported and the script exits non-zero.
 
-Environment: the same variables the processor Lambdas use
-(ICECHUNK_BUCKET/ICECHUNK_LOCAL_PATH, VIRTUAL_CHUNK_PREFIX,
+Uses the same environment variables as the processor Lambdas
+(ICECHUNK_BUCKET or ICECHUNK_LOCAL_PATH, VIRTUAL_CHUNK_PREFIX,
 TEMPO_COLLECTION, STORE_MANIFEST_URI). Reading s3:// sources requires
-Earthdata credentials (earthaccess).
+Earthdata credentials.
 
 Usage:
     uv run scripts/verify_store.py --samples 8 --window 5
@@ -39,7 +37,7 @@ COORDINATES = ("time", "latitude", "longitude")
 
 @contextmanager
 def open_source(url: str) -> Iterator[h5py.File]:
-    """The source granule as an h5py file (local path or via earthaccess)."""
+    """Open the source granule with h5py, locally or via earthaccess."""
     if url.startswith("file://"):
         with h5py.File(url.removeprefix("file://")) as h5:
             yield h5
@@ -52,7 +50,7 @@ def open_source(url: str) -> Iterator[h5py.File]:
 
 
 def _source_dataset(h5: h5py.File, name: str) -> h5py.Dataset | None:
-    """Find the (possibly group-nested) source dataset behind a flat name."""
+    """Find the source dataset behind a flattened variable name."""
     if name in h5:
         return h5[name]  # type: ignore[no-any-return]
     for item in h5.values():
@@ -70,7 +68,7 @@ def verify_store(
     seed: int = 0,
     open_source_file: Callable[[str], Any] = open_source,
 ) -> list[str]:
-    """Every discrepancy found, as human-readable lines (empty = clean)."""
+    """Return every discrepancy found, one line each; empty means clean."""
     session = repo.readonly_session("main")
     group = zarr.open_group(session.store, mode="r")
     axis = np.asarray(zarr.open_array(session.store, path="time")[:])
@@ -116,7 +114,7 @@ def verify_store(
                             f"{x0}:{x0 + window}] differs from source "
                             f"{entry.granule_ur}"
                         )
-        except Exception as error:  # read failures are findings, not crashes
+        except Exception as error:  # a read failure is a finding, not a crash
             problems.append(
                 f"slot {index}: reading {entry.granule_ur} failed: "
                 f"{type(error).__name__}: {error}"

@@ -13,21 +13,19 @@
 """Build the typed backfill inventory for the selected TEMPO L3 collection.
 
 Produces the ``tempo-backfill-inventory/1`` JSON document the backfill
-pipeline consumes (``virtualizarr_processor.inventory.BackfillInventory``):
-one entry per granule with its ``.nc`` data link, its granule UR (the
-filename stem — the convention the forward consumer's routing relies on),
-and the granule's **exact** in-file ``/time[0]`` value.
+pipeline consumes: one entry per granule with its ``.nc`` data link, its
+granule UR (the filename stem, the convention the forward consumer relies
+on), and the granule's exact in-file ``/time[0]`` value.
 
-The exact times matter: TEMPO's in-file scan time differs from the
-CMR/filename timestamp (e.g. ...T174200Z has /time = 17:42:18.02), and the
-store's time axis — which region writes align against and users read — is
-built from these values at Init. There is no metadata-only source for
-them, so this script opens every granule's header (a few KB each) over
-in-region S3 or EDL-authed HTTPS with bounded concurrency and backoff.
+The exact times matter. TEMPO's in-file scan time differs from the CMR
+and filename timestamps (...T174200Z has /time = 17:42:18.02), and the
+store's time axis is built from these values at Init. There is no
+metadata-only source for them, so this script opens every granule's
+header (a few KB each) with bounded concurrency and backoff.
 
 Republished granules (same UR, new revision) are deduped keeping the
-newest revision. The pydantic model validates the result (non-empty,
-strictly increasing unique times, unique URs) before anything is written.
+newest revision. The pydantic model validates the result before anything
+is written.
 
 Requires Earthdata credentials (``~/.netrc`` or ``$EARTHDATA_TOKEN``) for
 the per-granule reads; run in us-west-2 with ``--access direct`` for the
@@ -93,11 +91,11 @@ def build_inventory(
     concept_id: str,
     workers: int = 4,
 ) -> BackfillInventory:
-    """The validated typed inventory for ``granules``.
+    """Build the validated typed inventory for ``granules``.
 
-    ``read_time(url) -> float`` supplies each granule's exact in-file time
-    (injectable so the pure logic tests offline). Raises
-    :class:`InventoryError` / ``pydantic.ValidationError`` on any set that
+    ``read_time(url) -> float`` supplies each granule's exact in-file
+    time; it is injectable so the logic can be tested offline. Raises
+    ``InventoryError`` or ``pydantic.ValidationError`` for any set that
     cannot form a valid axis.
     """
     if not granules:
@@ -130,7 +128,7 @@ def build_inventory(
 
 
 def read_time_via_earthaccess(url: str) -> float:
-    """The granule's exact /time[0], read from a few KB of its header."""
+    """Read the granule's exact /time[0] from its header."""
     import earthaccess
     import h5py
 

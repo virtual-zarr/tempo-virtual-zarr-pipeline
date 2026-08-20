@@ -48,8 +48,8 @@ def test_clean_store_verifies(tiny: TinyCollection) -> None:
 
 
 def test_mutated_source_object_is_detected(tiny: TinyCollection) -> None:
-    """Overwriting a source file after ingest must surface loudly — either
-    as icechunk's checksum failure or as a value mismatch."""
+    """Overwriting a source file after ingest must be detected, either as
+    icechunk's checksum failure or as a value mismatch."""
     processor = backfill_and_promote(tiny)
     # The producer rewrites granule 1's file with different data after the
     # refs were written (a republication the pipeline never processed).

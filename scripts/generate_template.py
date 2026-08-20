@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 """Generate the committed per-collection store templates and coordinates.
 
-Builds each collection's declarative store template (pydantic-zarr
-``GroupSpec`` JSON) and the shared reference coordinate arrays (npz) from
-local reference granules via ``virtualizarr_processor.template
-.build_template`` (see its docstring for the guarantees), and writes them
-into ``virtualizarr_processor/collections/``.
+Builds each collection's store template (pydantic-zarr ``GroupSpec`` JSON)
+and the shared reference coordinate arrays (npz) from local reference
+granules, via ``virtualizarr_processor.template.build_template``, and
+writes them into ``virtualizarr_processor/collections/``.
 
 Usage:
     uv run scripts/generate_template.py            # both collections

@@ -1,28 +1,28 @@
 """The TEMPO L3 VirtualizarrProcessor.
 
-Config-driven (``virtualizarr_processor.collection``): the deployed
-instance selects its collection via ``$TEMPO_COLLECTION`` and creates /
-validates the store from the committed declarative artifacts (template
-JSON + reference coordinates). Every granule insertion runs the layered
-validation from the design spec (docs/superpowers/specs/
-2026-08-20-tempo-inventory-and-processor-design.md): shared-attribute
-template check, bit-exact reference grid, in-file time integrity, and
-exact-match axis slot lookup — a granule that fails any check is
-rejected loudly and nothing is written for it. All virtual references are
-stamped with ``last_updated_at`` so a source object that is overwritten
-after ingest fails reads instead of returning bytes from a changed file.
+The deployed instance selects its collection via ``$TEMPO_COLLECTION``
+and builds the store from the committed artifacts (template JSON and
+reference coordinates). Before anything is written, each granule must
+match the template's shared attributes, carry the bit-identical reference
+grid, agree with its own epoch attribute, and match exactly one slot on
+the store's time axis. Virtual references are stamped with
+``last_updated_at`` so that reads fail if a source object is overwritten
+after ingest. See docs/superpowers/specs/
+2026-08-20-tempo-inventory-and-processor-design.md for the rationale.
 
-Repository/storage environment contract (Lambda and tests):
+Environment variables:
 
-- ``ICECHUNK_BUCKET`` / ``ICECHUNK_PREFIX`` / ``ICECHUNK_REGION`` — S3
-  repo storage (IAM creds from the environment); or
-  ``ICECHUNK_LOCAL_PATH`` — local filesystem repo (tests).
-- ``VIRTUAL_CHUNK_PREFIX`` — url prefix of the virtual chunk container
-  (default ``s3://asdc-prod-protected/``; tests use ``file:///...``).
-  S3 containers are registered credential-less: readers authorize with
+- ``ICECHUNK_BUCKET`` / ``ICECHUNK_PREFIX`` / ``ICECHUNK_REGION``: S3
+  repository storage, or ``ICECHUNK_LOCAL_PATH`` for a local repository
+  in tests.
+- ``VIRTUAL_CHUNK_PREFIX``: virtual chunk container prefix (default
+  ``s3://asdc-prod-protected/``; tests use ``file:///...``). S3
+  containers are registered without credentials; readers authorize with
   temporary ASDC credentials at open time.
-- ``VIRTUAL_CHUNK_REGION`` — region of the s3 container (default
+- ``VIRTUAL_CHUNK_REGION``: region of the S3 container (default
   ``us-west-2``).
+- ``STORE_MANIFEST_URI`` / ``PENDING_LEDGER_URI``: forward-processing
+  state artifacts.
 """
 
 from __future__ import annotations
@@ -80,23 +80,29 @@ def _pending_ledger_uri() -> str:
 
 
 def _granule_ur(file_key: str) -> str:
-    """The granule UR as derived from the file key (TEMPO filenames are the
-    granule UR plus ``.nc``; the inventory builder keeps this consistent)."""
+    """Derive the granule UR from the file key.
+
+    TEMPO filenames are the granule UR plus ``.nc``; the inventory builder
+    follows the same convention.
+    """
     return file_key.rsplit("/", 1)[-1].removesuffix(".nc")
 
 
 class Processor:
+    """TEMPO implementation of the VirtualizarrProcessor protocol."""
+
     def __init__(self, config: CollectionConfig | None = None) -> None:
         self.config = config or load_collection()
         self.template = load_template(self.config)
         self.coordinates = load_coordinates(self.config)
-        # Forward-processing batch state (spec §5); reset per session.
+        # Forward-processing batch state, reset per session.
         self._appended: list[GranuleEntry] = []
         self._replaced: dict[int, GranuleEntry] = {}
 
     # -- repository ---------------------------------------------------------
 
     def open_backfill_repo(self) -> Repository:
+        """Open or create the repository per the environment contract above."""
         bucket = os.environ.get("ICECHUNK_BUCKET")
         if bucket:
             storage = icechunk.s3_storage(
@@ -145,7 +151,7 @@ class Processor:
     def initialize_backfill_store(
         self, repo: Repository, inventory: BackfillInventory
     ) -> str:
-        """Create the full-shape store on a clean `backfill` branch (spec §2)."""
+        """Create the full-shape store on a clean ``backfill`` branch."""
         if inventory.collection != self.config.collection_shortname:
             raise StoreValidationError(
                 [
@@ -194,14 +200,13 @@ class Processor:
     def initialize_resort_store(
         self, repo: Repository, merged: BackfillInventory
     ) -> str:
-        """Prepare the `resort` branch for the re-sort job (spec §5).
+        """Prepare the ``resort`` branch for the re-sort job.
 
-        Branches (or resets) `resort` off the current `main` tip, resizes
+        Branch (or reset) ``resort`` off the current ``main`` tip, resize
         every array carrying the append dimension to the merged inventory's
-        length, rewrites the time axis to the merged values, validates, and
-        commits the clean base the rewrite workers build on. Slots at or
+        length, rewrite the time axis, validate, and commit. Slots at or
         after the first shifted index hold stale references until the job
-        rewrites all of them; promote only happens after it has.
+        rewrites them, which it must do before promoting.
         """
         if merged.collection != self.config.collection_shortname:
             raise StoreValidationError(
@@ -235,15 +240,18 @@ class Processor:
         )
 
     def process_resort_file(self, file_key: str, session: Session) -> bool:
-        """Rewrite one granule's slot on the resort branch (no commit)."""
-        # Identical to the backfill worker path; only the session type
-        # differs, and just the .store attribute is used.
+        """Rewrite one granule's slot on the resort branch without committing."""
+        # Same as the backfill worker path; only the session type differs,
+        # and only the .store attribute is used.
         return self.process_backfill_file(file_key, session)  # type: ignore[arg-type]
 
     def validate_backfill_store(
         self, repo: Repository, inventory: BackfillInventory, *, branch: str
     ) -> None:
-        """The promote gate (spec §4): template, axis, and grid, bit-exact."""
+        """Check a finished branch against template, inventory, and grid.
+
+        This is the gate that runs before promoting to ``main``.
+        """
         session = repo.readonly_session(branch)
         group = zarr.open_group(session.store, mode="r")
         template = resize(
@@ -268,16 +276,15 @@ class Processor:
     def _write_region(
         self, vds: xr.Dataset, store: object, index: int, stamp: datetime
     ) -> None:
-        """Write one validated granule's refs into axis slot ``index``.
+        """Write one validated granule's references into axis slot ``index``.
 
-        The slot was located by exact raw-float match and the region is
-        passed explicitly; region="auto" would CF-decode the store axis and
-        compare in datetime64 space — a precision seam this pipeline forbids
-        — and rewrite the shared native time chunk from every worker.
-        Dropping `time` leaves the init-written axis untouched. Root attrs
-        come solely from the template at init; per-granule attrs must not
-        land in the store, and differing group-attr updates from parallel
-        forks make the merge conflict.
+        The region is passed as an explicit slice rather than
+        ``region="auto"``: xarray's auto-detection CF-decodes the store axis
+        and compares in datetime64 space, while this pipeline works in raw
+        seconds throughout. Dropping ``time`` leaves the axis written at
+        init untouched, and clearing the granule attributes keeps store
+        attributes template-only (differing group-attribute updates from
+        parallel forks would also fail the merge).
         """
         vds = vds.drop_vars("time")
         vds.attrs = {}
@@ -289,7 +296,7 @@ class Processor:
         )
 
     def _axis_index(self, store: object, time_value: float) -> int:
-        """The unique axis slot whose value equals ``time_value`` bit-exactly."""
+        """Return the unique axis slot whose value equals ``time_value``."""
         axis = np.asarray(zarr.open_array(store, path="time")[:])  # type: ignore[arg-type]
         matches = np.nonzero(axis == time_value)[0]
         if matches.size != 1:
@@ -305,14 +312,14 @@ class Processor:
     # -- shared parsing/validation ------------------------------------------
 
     def _parse_and_validate(self, file_key: str) -> tuple[xr.Dataset, datetime]:
-        """Parse + validate one granule; returns the writable vds (reference
-        coordinates validated then dropped — they are native, written once at
-        init) and the `last_updated_at` stamp for its refs.
+        """Parse and validate one granule.
 
-        The stamp anchors to the source object's own observed mtime (plus a
-        one-second checksum-precision margin, matching virtualizarr's own
-        default margin) so overwritten objects fail reads without depending
-        on the worker's clock."""
+        Returns the dataset ready for writing (reference coordinates are
+        validated, then dropped, since they are written once at init) and
+        the ``last_updated_at`` stamp for its references. The stamp is the
+        source object's observed modification time plus a one-second
+        precision margin, so it does not depend on the worker's clock.
+        """
         stamp = source_last_modified(file_key) + timedelta(seconds=1)
         vds = self._open_with_retry(file_key)
         granule_time(vds)
@@ -325,8 +332,11 @@ class Processor:
         return vds.drop_vars(list(self.coordinates)), stamp
 
     def _open_with_retry(self, file_key: str) -> xr.Dataset:
-        """Parse with backoff on transient (non-validation) errors; object-store
-        throttling under backfill concurrency must not fail the whole batch."""
+        """Parse the granule, retrying transient errors with backoff.
+
+        Validation errors are not retried. The retries keep object-store
+        throttling under backfill concurrency from failing a whole batch.
+        """
         for attempt in range(PARSE_ATTEMPTS):
             try:
                 return open_flat_granule(file_key, self.config)
@@ -351,7 +361,7 @@ class Processor:
     # -- forward processing --------------------------------------------------
 
     def initialize_repo(self) -> Repository:
-        """Open the repo; create an empty (time=0) templated store if new."""
+        """Open the repository, creating an empty templated store if new."""
         repo = self.open_backfill_repo()
         session = repo.writable_session("main")
         group = zarr.open_group(session.store, mode="a")
@@ -372,7 +382,7 @@ class Processor:
         return repo.writable_session("main")
 
     def process_file(self, file_key: str, session: Session) -> ProcessOutcome:
-        """Route one granule per the design spec §5 table."""
+        """Validate one granule and route it: append, overwrite, defer, or reject."""
         try:
             vds, stamp = self._parse_and_validate(file_key)
         except Exception:
@@ -390,8 +400,8 @@ class Processor:
                 index = int(occupied[0])
                 known = self._manifest_entry_at(index, axis)
                 if known.granule_ur != entry.granule_ur:
-                    # Two distinct granules claiming one time step is a data
-                    # inconsistency to investigate, never to write.
+                    # A different granule claiming an occupied time step is a
+                    # data inconsistency; never overwrite.
                     logger.error(
                         "process_file: slot %d (time %r) belongs to %s, "
                         "refusing to overwrite it with %s",
@@ -408,7 +418,7 @@ class Processor:
                 return ProcessOutcome.WRITTEN
 
             if not axis.size or time_value > float(axis[-1]):
-                vds.attrs = {}  # store attrs come solely from the template
+                vds.attrs = {}  # store attributes come from the template only
                 vds.vz.to_icechunk(
                     session.store,
                     append_dim=self.config.append_dim,
@@ -418,9 +428,8 @@ class Processor:
                 self._appended.append(entry)
                 return ProcessOutcome.WRITTEN
 
-            # Out of order (historical drip-feed or an adjacent-scan swap):
-            # not appendable without breaking axis monotonicity. Record it
-            # for the scheduled re-sort job and consume the message.
+            # Out of order: appending would break axis monotonicity. Record
+            # it for the scheduled re-sort job and consume the message.
             PendingLedger.append(_pending_ledger_uri(), [entry])
             logger.info(
                 "process_file: deferred out-of-order granule %s (time %r) "
@@ -436,10 +445,9 @@ class Processor:
     def commit_processed_files(self, session: Session) -> str:
         """Commit the batch, then update the store manifest to match.
 
-        The updated manifest is validated bit-exactly against the session's
-        (about-to-be-committed) axis *before* committing, so a manifest/axis
-        divergence fails the whole batch loudly instead of committing state
-        the manifest cannot describe.
+        The updated manifest is validated against the session's axis before
+        the commit, so a divergence fails the batch rather than committing
+        state the manifest cannot describe.
         """
         entries = list(self._manifest_entries())
         for index, entry in self._replaced.items():
@@ -465,7 +473,7 @@ class Processor:
         return snapshot
 
     def _manifest_entries(self) -> tuple[GranuleEntry, ...]:
-        """The store manifest's granules; absent manifest = empty store only."""
+        """Read the store manifest's granules; a missing manifest is empty."""
         try:
             manifest = StoreManifest.read(_store_manifest_uri())
         except FileNotFoundError:
@@ -480,7 +488,8 @@ class Processor:
         return manifest.granules
 
     def _manifest_entry_at(self, index: int, axis: np.ndarray) -> GranuleEntry:
-        """The manifest entry owning axis slot ``index``, trust-checked."""
+        """Return the manifest entry for slot ``index`` after checking that
+        the manifest actually describes the axis."""
         entries = self._manifest_entries()
         if len(entries) != axis.size or entries[index].time != float(axis[index]):
             raise StoreValidationError(

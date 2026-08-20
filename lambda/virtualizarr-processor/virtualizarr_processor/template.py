@@ -3,16 +3,16 @@
 Used by ``scripts/generate_template.py`` to produce the committed
 artifacts, and by tests to build tiny templates from synthetic granules.
 
-The template is generated **through the actual ingest path**: each granule
-is virtualized and transformed by ``open_flat_granule``, the first one is
-written to a throwaway in-memory Icechunk store with ``to_icechunk`` (so
-the captured dtypes/chunks/codecs are exactly what backfill workers will
-region-write into), and the spec is read back with ``GroupSpec.from_zarr``
-and stripped of volatile and write-artifact attributes. Every remaining
-granule is then validated against the candidate template: an attribute
-that varies and is not declared volatile, or a coordinate grid that
-differs, is a hard error — divergence must be classified explicitly in the
-collection config, never absorbed silently.
+The template is generated through the actual ingest path: each granule is
+virtualized and transformed by ``open_flat_granule``, the first one is
+written to a throwaway in-memory Icechunk store with ``to_icechunk``, and
+the spec is read back with ``GroupSpec.from_zarr`` and stripped of
+volatile and write-artifact attributes. Going through the write path
+guarantees the captured dtypes, chunks, and codecs are exactly what the
+backfill workers will write into. Every remaining granule is validated
+against the candidate template; an attribute that varies without being
+declared volatile, or a coordinate grid that differs, is an error the
+collection config has to resolve explicitly.
 """
 
 from __future__ import annotations
@@ -37,9 +37,9 @@ from virtualizarr_processor.store_template import (
 def build_template(
     paths: list[Path], config: CollectionConfig
 ) -> tuple[AnyGroupSpec, dict[str, np.ndarray]]:
-    """The collection's store template and reference coordinates.
+    """Build the collection's store template and reference coordinates.
 
-    Raises :class:`GranuleValidationError` when the granules disagree on
+    Raises ``GranuleValidationError`` when the granules disagree on
     anything not declared volatile.
     """
     if not paths:

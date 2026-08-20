@@ -11,9 +11,8 @@ from backfill_handlers.config import parse_s3_uri, s3_client
 def read_inventory(uri: str) -> BackfillInventory:
     """Read and validate the typed inventory document from S3.
 
-    Parse-time validation (non-empty, strictly increasing unique times,
-    unique granule URs) runs again here on the consume side, so a
-    hand-edited or corrupted inventory fails the run before any write.
+    The model validators run again on the consume side, so a hand-edited
+    or corrupted inventory fails the run before anything is written.
     """
     bucket, key = parse_s3_uri(uri)
     body = s3_client().get_object(Bucket=bucket, Key=key)["Body"].read()
