@@ -220,13 +220,8 @@ def test_real_backfill_two_granules(
 
 def backfilled(tiny: TinyCollection) -> Processor:
     """A promoted store with its manifest, ready for forward processing."""
-    import os
-
-    from virtualizarr_processor.manifest import StoreManifest
-
     processor = Processor()
     run_backfill(processor, tiny)
-    StoreManifest.write(os.environ["STORE_MANIFEST_URI"], tiny.inventory)
     return processor
 
 
@@ -234,16 +229,15 @@ def forward(processor: Processor, urls: list[str]) -> list[ProcessOutcome]:
     repo = processor.open_backfill_repo()
     session = processor.initialize_session(repo)
     outcomes = [processor.process_file(url, session) for url in urls]
-    if any(o is ProcessOutcome.WRITTEN for o in outcomes):
+    # DEFERRED writes the pending ledger through the session too, so it
+    # needs a commit just like WRITTEN; an all-REJECTED batch leaves the
+    # session untouched and skips committing (nothing changed to commit).
+    if any(o is not ProcessOutcome.REJECTED for o in outcomes):
         processor.commit_processed_files(session)
     return outcomes
 
 
 def test_forward_appends_in_order(tiny: TinyCollection) -> None:
-    import os
-
-    from virtualizarr_processor.manifest import StoreManifest
-
     processor = backfilled(tiny)
     new_time = tiny.times[-1] + 3600.0
     new = write_tempo_granule(
@@ -261,9 +255,10 @@ def test_forward_appends_in_order(tiny: TinyCollection) -> None:
         np.asarray(group["vertical_column"][-1]),
         expected_vertical_column(new_time)[0],
     )
-    manifest = StoreManifest.read(os.environ["STORE_MANIFEST_URI"])
-    assert manifest.urls()[-1] == f"file://{new}"
-    StoreManifest.validate_against_axis(manifest, axis)
+    from virtualizarr_processor.manifest import StoreManifest
+
+    manifest = StoreManifest.read(repo.readonly_session("main").store)
+    assert manifest is not None and manifest.urls()[-1] == f"file://{new}"
 
 
 def test_forward_redelivery_is_idempotent(tiny: TinyCollection) -> None:
@@ -295,8 +290,6 @@ def test_forward_rejects_conflicting_granule(tiny: TinyCollection) -> None:
 
 
 def test_forward_defers_out_of_order_granule(tiny: TinyCollection) -> None:
-    import os
-
     from virtualizarr_processor.manifest import PendingLedger
 
     processor = backfilled(tiny)
@@ -306,12 +299,46 @@ def test_forward_defers_out_of_order_granule(tiny: TinyCollection) -> None:
     )
     assert forward(processor, [f"file://{historical}"]) == [ProcessOutcome.DEFERRED]
 
-    ledger = PendingLedger.read(os.environ["PENDING_LEDGER_URI"])
+    repo = processor.open_backfill_repo()
+    ledger = PendingLedger.read(repo.readonly_session("main").store)
     assert [entry.granule_ur for entry in ledger] == ["historical"]
     assert ledger[0].time == historical_time
-    repo = processor.open_backfill_repo()
     group = zarr.open_group(repo.readonly_session("main").store, mode="r")
     np.testing.assert_array_equal(np.asarray(group["time"][:]), tiny.times)
+
+
+def test_forward_all_deferred_batch_commits(tiny: TinyCollection) -> None:
+    """A batch of only out-of-order granules must still commit (the ledger
+    write is a session change), not raise NoChangesToCommitError."""
+    from virtualizarr_processor.manifest import PendingLedger
+
+    processor = backfilled(tiny)
+    between = write_tempo_granule(
+        tiny.granule_paths[0].parent / "between.nc",
+        time_value=tiny.times[0] + 1800.0,
+    )
+    assert forward(processor, [f"file://{between}"]) == [ProcessOutcome.DEFERRED]
+    repo = processor.open_backfill_repo()
+    assert [
+        e.granule_ur for e in PendingLedger.read(repo.readonly_session("main").store)
+    ] == ["between"]
+
+
+def test_forward_rejects_republication_with_moved_timestamp(
+    tiny: TinyCollection,
+) -> None:
+    """Same UR as an ingested granule, shifted time: reject loudly instead of
+    poisoning the pending ledger with a UR the manifest already owns."""
+    from virtualizarr_processor.manifest import PendingLedger
+
+    processor = backfilled(tiny)
+    moved = write_tempo_granule(
+        tiny.granule_paths[0].parent / f"{tiny.granule_paths[1].stem}.nc",
+        time_value=tiny.times[1] + 7.0,  # off-axis, before the end
+    )
+    assert forward(processor, [f"file://{moved}"]) == [ProcessOutcome.REJECTED]
+    repo = processor.open_backfill_repo()
+    assert PendingLedger.read(repo.readonly_session("main").store) == ()
 
 
 def test_forward_republication_overwrites_in_place(tiny: TinyCollection) -> None:

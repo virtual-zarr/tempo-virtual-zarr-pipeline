@@ -20,8 +20,9 @@ Environment variables:
   temporary ASDC credentials at open time.
 - ``VIRTUAL_CHUNK_REGION``: region of the S3 container (default
   ``us-west-2``).
-- ``STORE_MANIFEST_URI`` / ``PENDING_LEDGER_URI``: forward-processing
-  state artifacts.
+
+The store manifest and pending ledger live inside the store itself (see
+``manifest.py``), so they commit atomically with the data they describe.
 """
 
 from __future__ import annotations
@@ -56,6 +57,7 @@ from virtualizarr_processor.inventory import BackfillInventory, GranuleEntry
 from virtualizarr_processor.manifest import (
     MANIFEST_ARRAYS,
     PIPELINE_STATE_ATTRIBUTES,
+    STORE_META_ATTRIBUTE,
     PendingLedger,
     StoreManifest,
 )
@@ -75,18 +77,6 @@ logger = logging.getLogger(__name__)
 DEFAULT_VIRTUAL_CHUNK_PREFIX = "s3://asdc-prod-protected/"
 PARSE_ATTEMPTS = 3
 PARSE_BACKOFF_SECONDS = (5, 15)
-
-
-def _store_manifest_uri() -> str:
-    return os.environ.get("STORE_MANIFEST_URI") or manifest_module.default_state_uri(
-        "store-manifest.json"
-    )
-
-
-def _pending_ledger_uri() -> str:
-    return os.environ.get("PENDING_LEDGER_URI") or manifest_module.default_state_uri(
-        "pending-ledger.json"
-    )
 
 
 def _granule_ur(file_key: str) -> str:
@@ -495,6 +485,15 @@ class Processor:
             create_empty_store(template, session.store)
             for axis, values in self.coordinates.items():
                 zarr.open_array(session.store, path=axis)[:] = values
+            root = zarr.open_group(session.store, mode="a")
+            root.attrs[STORE_META_ATTRIBUTE] = {
+                "schema": "tempo-backfill-inventory/1",
+                "collection": self.config.collection_shortname,
+                "concept_id": self.config.concept_id,
+                "time_units": self.config.time_units,
+                "built_at": datetime.now(timezone.utc).isoformat(),
+            }
+            PendingLedger.write(session.store, ())
             validate_store(
                 template,
                 zarr.open_group(session.store, mode="r"),
@@ -526,8 +525,8 @@ class Processor:
 
             if occupied.size == 1:
                 index = int(occupied[0])
-                known = self._manifest_entry_at(index, axis)
-                if known.granule_ur != entry.granule_ur:
+                known_ur = str(zarr.open_array(session.store, path="granule_ur")[index])
+                if known_ur != entry.granule_ur:
                     # A different granule claiming an occupied time step is a
                     # data inconsistency; never overwrite.
                     logger.error(
@@ -535,7 +534,7 @@ class Processor:
                         "refusing to overwrite it with %s",
                         index,
                         time_value,
-                        known.granule_ur,
+                        known_ur,
                         entry.granule_ur,
                     )
                     return ProcessOutcome.REJECTED
@@ -556,9 +555,28 @@ class Processor:
                 self._appended.append(entry)
                 return ProcessOutcome.WRITTEN
 
-            # Out of order: appending would break axis monotonicity. Record
-            # it for the scheduled re-sort job and consume the message.
-            PendingLedger.append(_pending_ledger_uri(), [entry])
+            # Out of order: appending would break axis monotonicity.
+            owned = {
+                str(v)
+                for v in np.asarray(
+                    zarr.open_array(session.store, path="granule_ur")[:]
+                )
+            }
+            if entry.granule_ur in owned:
+                # Same granule, shifted time: folding it in would give the
+                # manifest a duplicate UR and wedge every future re-sort.
+                # Reject to the DLQ for operator review instead.
+                logger.error(
+                    "process_file: %s already owns a slot but its time %r no "
+                    "longer matches the axis; rejecting republication with a "
+                    "moved timestamp",
+                    entry.granule_ur,
+                    time_value,
+                )
+                return ProcessOutcome.REJECTED
+            # Record it for the scheduled re-sort job; the ledger update is
+            # part of this session and commits with the batch.
+            PendingLedger.append(session.store, [entry])
             logger.info(
                 "process_file: deferred out-of-order granule %s (time %r) "
                 "to the pending ledger",
@@ -571,62 +589,38 @@ class Processor:
             return ProcessOutcome.REJECTED
 
     def commit_processed_files(self, session: Session) -> str:
-        """Commit the batch, then update the store manifest to match.
+        """Update the manifest arrays for the batch's writes, then commit.
 
-        The updated manifest is validated against the session's axis before
-        the commit, so a divergence fails the batch rather than committing
-        state the manifest cannot describe.
+        The manifest is re-read (running the full inventory validation)
+        before the commit, so duplicate URs or a non-monotonic axis fail
+        the batch rather than committing state the store cannot describe.
+        An all-DEFERRED batch commits too: the ledger attribute update is
+        itself a session change.
         """
-        entries = list(self._manifest_entries())
-        for index, entry in self._replaced.items():
-            entries[index] = entry
-        entries += self._appended
-        axis = np.asarray(zarr.open_array(session.store, path="time")[:])
-        manifest = None
-        if entries:
-            manifest = BackfillInventory(
-                schema="tempo-backfill-inventory/1",  # type: ignore[call-arg]
-                collection=self.config.collection_shortname,
-                concept_id=self.config.concept_id,
-                time_units=self.config.time_units,
-                built_at=datetime.now(timezone.utc).isoformat(),
-                granules=tuple(entries),
-            )
-            StoreManifest.validate_against_axis(manifest, axis)
+        if self._appended or self._replaced:
+            axis_size = zarr.open_array(session.store, path="time").shape[0]
+            ur_array = zarr.open_array(session.store, path="granule_ur")
+            url_array = zarr.open_array(session.store, path="granule_url")
+            ur_array.resize((axis_size,))
+            url_array.resize((axis_size,))
+            start = axis_size - len(self._appended)
+            for offset, entry in enumerate(self._appended):
+                ur_array[start + offset] = entry.granule_ur
+                url_array[start + offset] = entry.url
+            for index, entry in self._replaced.items():
+                ur_array[index] = entry.granule_ur
+                url_array[index] = entry.url
+            if StoreManifest.read(session.store) is None:
+                raise StoreValidationError(
+                    [
+                        "store carries no manifest metadata; run the backfill "
+                        "or the initialize Lambda first"
+                    ]
+                )
         snapshot = cast(str, session.commit(f"Append to {session.snapshot_id}"))
-        if manifest is not None and (self._appended or self._replaced):
-            StoreManifest.write(_store_manifest_uri(), manifest)
         self._appended = []
         self._replaced = {}
         return snapshot
-
-    def _manifest_entries(self) -> tuple[GranuleEntry, ...]:
-        """Read the store manifest's granules; a missing manifest is empty."""
-        try:
-            manifest = StoreManifest.read(_store_manifest_uri())
-        except FileNotFoundError:
-            return ()
-        if manifest.collection != self.config.collection_shortname:
-            raise StoreValidationError(
-                [
-                    f"store manifest is for {manifest.collection!r}, this "
-                    f"deployment processes {self.config.collection_shortname!r}"
-                ]
-            )
-        return manifest.granules
-
-    def _manifest_entry_at(self, index: int, axis: np.ndarray) -> GranuleEntry:
-        """Return the manifest entry for slot ``index`` after checking that
-        the manifest actually describes the axis."""
-        entries = self._manifest_entries()
-        if len(entries) != axis.size or entries[index].time != float(axis[index]):
-            raise StoreValidationError(
-                [
-                    "store manifest does not describe the store axis "
-                    f"(slot {index}); refusing to route against it"
-                ]
-            )
-        return entries[index]
 
     def garbage_collect(self, expiry_time: datetime) -> icechunk.GCSummary:
         repo = self.open_backfill_repo()

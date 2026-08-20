@@ -106,9 +106,9 @@ def handler(event: Any, context: LambdaContext) -> PartialItemFailureResponse:
         snapshot_id = virtualizarr_processor.commit_processed_files(session=session)
         logger.info(f"Committed to {snapshot_id}")
     except Exception:
-        # All records retry, including DEFERRED ones whose pending-ledger
-        # write persisted; safe only because PendingLedger.append dedupes
-        # by granule UR on redelivery.
+        # The pending-ledger write lives in this same session, so a failed
+        # commit persists nothing for DEFERRED records either; all records,
+        # including DEFERRED ones, simply retry and re-defer cleanly.
         logger.exception("Commit failed, marking all records as failed")
         return {
             "batchItemFailures": [
