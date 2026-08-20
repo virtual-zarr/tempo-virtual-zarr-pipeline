@@ -23,7 +23,7 @@ from urllib.parse import urlparse
 import numpy as np
 import xarray as xr
 from obspec_utils.registry import ObjectStoreRegistry
-from obstore.store import HTTPStore, LocalStore, from_url
+from obstore.store import ClientConfig, HTTPStore, LocalStore, from_url
 from virtualizarr.parsers.hdf import HDFParser
 
 from virtualizarr_processor.collection import CollectionConfig
@@ -49,7 +49,7 @@ def make_registry(url: str) -> ObjectStoreRegistry:
     if parsed.scheme == "https":
         base = f"https://{parsed.netloc}"
         token = os.environ.get("EARTHDATA_TOKEN")
-        client_options = (
+        client_options: ClientConfig | None = (
             {"default_headers": {"Authorization": f"Bearer {token}"}} if token else None
         )
         return ObjectStoreRegistry(
@@ -87,7 +87,9 @@ def open_flat_granule(
     }
     collisions = []
     for group in config.flatten_groups:
-        for name, array in tree[group].to_dataset(inherit=False).data_vars.items():
+        for name, array in (
+            tree.children[group].to_dataset(inherit=False).data_vars.items()
+        ):
             if str(name) in variables or name in root.coords:
                 collisions.append(
                     f"variable {name!r} in group {group!r} collides with "
