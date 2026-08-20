@@ -114,6 +114,8 @@ Settings live in [`cdk/settings.py`](./cdk/settings.py) and a `.env` file ([samp
 | `EARTHDATA_SECRET_ARN` | — | Secrets Manager secret with EDL credentials for source reads |
 | `GARBAGE_COLLECTION_FREQUENCY` | — | days between Icechunk GC runs (needs `VPC_ID`) |
 
+The Lambda images install against [`lambda/constraints.txt`](./lambda/constraints.txt), an export of the repo's `uv.lock`, so deploys run the dependency versions the test suite ran. Regenerate it with the command in its header whenever the lock changes. A backfill run that fails can simply be restarted with a new execution name: the Init step resets the leftover `backfill` branch (don't run two backfills concurrently).
+
 ![Backfill](./docs/backfill-fork-merge-dark.png#gh-dark-mode-only)
 ![Backfill](./docs/backfill-fork-merge.png#gh-light-mode-only)
 

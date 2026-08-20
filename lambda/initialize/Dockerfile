@@ -12,12 +12,15 @@ ENV UV_LINK_MODE=copy \
 # Copy workspace packages maintaining the directory structure
 # The build context is 'lambda/', so we copy relative to that
 WORKDIR /build/lambda
+# constraints.txt pins the whole dependency tree to the repo's tested
+# uv.lock; regenerate with the command in its header when the lock changes.
+COPY constraints.txt ./
 COPY virtualizarr-processor ./virtualizarr-processor
 COPY initialize ./initialize
 
 # Install using uv with workspace support
 WORKDIR /build/lambda/initialize
-RUN uv pip install --python /var/lang/bin/python3.12 --target /var/task --no-cache .
+RUN uv pip install -c /build/lambda/constraints.txt --python /var/lang/bin/python3.12 --target /var/task --no-cache .
 
 # Runtime stage
 FROM public.ecr.aws/lambda/python:3.12

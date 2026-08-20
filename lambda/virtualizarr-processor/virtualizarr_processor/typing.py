@@ -118,8 +118,10 @@ class VirtualizarrProcessor(Protocol):
         fresh session share the committed branch-tip snapshot as their
         base.
 
-        The `backfill` branch must not already exist. This method is intended
-        to be called exactly once per backfill run.
+        A `backfill` branch left behind by a failed run is reset to the
+        current `main` tip, so a run can simply be restarted. Backfill runs
+        must not execute concurrently; this method is intended to be called
+        exactly once per run.
 
         Parameters
         ----------

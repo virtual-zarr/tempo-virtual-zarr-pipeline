@@ -163,7 +163,13 @@ class Processor:
             self.template, {self.config.append_dim: len(inventory.granules)}
         )
         main_tip = repo.lookup_branch("main")
-        repo.create_branch("backfill", main_tip)
+        # A leftover branch from a failed run is reset so a re-run needs no
+        # manual surgery (same pattern as initialize_resort_store). Runs are
+        # serialized by operation, not by this branch: start one at a time.
+        if "backfill" in repo.list_branches():
+            repo.reset_branch("backfill", main_tip)
+        else:
+            repo.create_branch("backfill", main_tip)
         session = repo.writable_session("backfill")
         create_empty_store(template, session.store)
 

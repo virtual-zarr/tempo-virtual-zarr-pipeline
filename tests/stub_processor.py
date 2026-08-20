@@ -174,7 +174,11 @@ class Processor:
 
     def initialize_backfill_store(self, repo: Repository) -> BranchInit:
         main_tip = repo.lookup_branch("main")
-        repo.create_branch("backfill", main_tip)
+        # Reset a leftover branch from a failed run, per the protocol.
+        if "backfill" in repo.list_branches():
+            repo.reset_branch("backfill", main_tip)
+        else:
+            repo.create_branch("backfill", main_tip)
         session = repo.writable_session("backfill")
         create_empty_store(BACKFILL_TEMPLATE, session.store)
         time_coord = zarr.open_array(session.store, path="time")

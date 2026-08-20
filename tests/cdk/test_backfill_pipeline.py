@@ -118,3 +118,16 @@ def test_init_and_promote_receive_the_inventory_uri() -> None:
     store against it, so both states need the execution's inventory_uri."""
     asl = _state_machine_asl()
     assert asl.count('"inventory_uri.$":"$.inventory_uri"') >= 3  # partition too
+
+
+def test_promote_receives_the_cas_expectation() -> None:
+    """Promote's compare-and-swap needs the main tip Init branched from."""
+    asl = _state_machine_asl()
+    assert '"branched_from.$":"$.initResult.branched_from"' in asl
+
+
+def test_worker_retries_transient_failures() -> None:
+    """One object-store hiccup must not fail a multi-hour run outright."""
+    asl = _state_machine_asl()
+    assert '"ErrorEquals":["States.ALL"]' in asl
+    assert '"MaxAttempts":2' in asl

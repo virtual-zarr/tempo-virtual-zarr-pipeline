@@ -161,6 +161,18 @@ class BackfillPipeline(Construct):
             ),
             payload_response_only=True,
         )
+        # An object-store hiccup outliving the in-code parse retries would
+        # otherwise fail the whole run. Deterministic failures (validation)
+        # just fail again quickly and still fail the run before promote. A
+        # retried worker that already saved its fork writes a second one —
+        # harmless, since both carry identical region writes and merge is
+        # last-writer-wins over the same data.
+        worker.add_retry(
+            errors=[sfn.Errors.ALL],
+            interval=Duration.seconds(30),
+            backoff_rate=2,
+            max_attempts=2,
+        )
 
         inner_map = sfn.DistributedMap(
             self,
