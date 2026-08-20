@@ -57,6 +57,8 @@ class CollectionConfig(BaseModel, frozen=True):
     promote_to_time: tuple[str, ...]
     drop_variables: tuple[str, ...]
     volatile_attributes: frozenset[str]   # base list ∪ TOML extras
+    time_chunk_size: int           # axis chunk override (16384); a 1-granule
+                                   # template would otherwise chunk time (1,)
     template_file: str             # e.g. "hcho_template.json"
     coordinates_file: str          # "coordinates.npz"
 
@@ -186,17 +188,21 @@ def build_template(paths: list[Path], config: CollectionConfig)
         -> tuple[AnyGroupSpec, dict[str, np.ndarray]]
     # virtualize each via open_flat_granule(file://...), write first to
     # in-memory icechunk (to_icechunk, validate_containers=False),
-    # GroupSpec.from_zarr, strip_attributes(volatile). Cross-check: for the
-    # remaining granules run validate_granule(template, vds, coordinates=...,
-    # volatile=...) — any divergence is a hard error naming the attribute.
+    # GroupSpec.from_zarr, strip_attributes(volatile), then override the
+    # time array's chunk grid to config.time_chunk_size (spec §5: a
+    # 1-granule template would otherwise ship a (1,)-chunked axis).
+    # Cross-check: for the remaining granules run validate_granule(template,
+    # vds, coordinates=..., volatile=...) — any divergence is a hard error
+    # naming the attribute.
 # CLI: uv run scripts/generate_template.py [--data-dir ...] writes artifacts
 # into the package and prints a summary.
 ```
 
 - [ ] Step 1: failing tests with synthetic fixtures — template contains all
   root vars at full-granule shape with `time` dim; volatile attrs absent;
-  shared attrs present; a granule set with a divergent non-volatile attr
-  fails with that attr named; determinism (two runs → identical JSON).
+  shared attrs present; the `time` array's chunk shape equals
+  `(config.time_chunk_size,)`; a granule set with a divergent non-volatile
+  attr fails with that attr named; determinism (two runs → identical JSON).
 - [ ] Step 2: implement.
 - [ ] Step 3: run against `/workspace/context/data` and commit the three
   real artifacts; Task 1's `load_template`/`load_coordinates` tests flip to
@@ -234,7 +240,8 @@ class Processor:  # virtualizarr_processor.processor
     def process_backfill_file(self, file_key: str, fork: ForkSession) -> bool
         # open_flat_granule → granule_time → validate_granule(template, vds,
         # coordinates={lat,lon}, volatile) → drop lat/lon →
-        # to_icechunk(fork.store, region="auto", validate_containers=False)
+        # to_icechunk(fork.store, region="auto", validate_containers=False,
+        #             last_updated_at=<parse start, UTC>)   # spec I3 stamping
         # any failure: log + return False (worker raises → run fails)
 ```
 
@@ -256,41 +263,135 @@ class Processor:  # virtualizarr_processor.processor
   `inventory_uri`; partition slices urls).
 - [ ] Step 6: green + lint + commit.
 
-### Task 7: Forward-processing methods
+### Task 7: Store manifest & pending ledger
+
+The two forward-processing state artifacts from spec §5 (I4). Both reuse
+the Task 2 models; S3 I/O mirrors `backfill_handlers.inventory` (boto3,
+`parse_s3_uri`), with local paths for tests.
 
 **Files:**
-- Modify: `lambda/virtualizarr-processor/virtualizarr_processor/processor.py`
-- Test: extend `tests/test_tempo_processor.py`
+- Create: `lambda/virtualizarr-processor/virtualizarr_processor/manifest.py`
+- Test: `tests/test_manifest.py` (moto for the S3 side)
 
 **Interfaces (Produces):**
 ```python
+class StoreManifest:  # thin wrapper over BackfillInventory at a URI
+    @classmethod
+    def read(cls, uri: str) -> BackfillInventory        # s3:// or file path
+    @staticmethod
+    def write(uri: str, inventory: BackfillInventory) -> None
+    @staticmethod
+    def validate_against_axis(inventory: BackfillInventory,
+                              axis: np.ndarray) -> None
+        # bit-exact equality of times, else StoreValidationError (spec I4)
+
+class PendingLedger:  # JSON list[GranuleEntry] at a URI; duplicates deduped
+    @classmethod
+    def read(cls, uri: str) -> tuple[GranuleEntry, ...]  # () when absent
+    @staticmethod
+    def append(uri: str, entries: Iterable[GranuleEntry]) -> None
+    @staticmethod
+    def remove(uri: str, granule_urs: Collection[str]) -> None
+```
+
+- [ ] Step 1: failing tests — round trips (file + moto-S3); absent ledger
+  reads as empty; append dedupes by `granule_ur`;
+  `validate_against_axis` passes on exact match, raises on one differing
+  bit and on length mismatch.
+- [ ] Step 2: implement; green + lint + commit.
+
+### Task 8: Forward-processing consumer (routing rules)
+
+**Files:**
+- Modify: `lambda/virtualizarr-processor/virtualizarr_processor/processor.py`,
+  `.../typing.py` (`process_file` returns `ProcessOutcome`)
+- Modify: `lambda/process_messages/handler.py` (batch pre-sort by parsed
+  time; treat `DEFERRED` as success; metrics/log per outcome)
+- Test: extend `tests/test_tempo_processor.py`, `tests/test_handler.py`
+
+**Interfaces (Produces):**
+```python
+class ProcessOutcome(enum.Enum):
+    WRITTEN = "written"      # appended or overwritten in place
+    DEFERRED = "deferred"    # recorded in the pending ledger
+    REJECTED = "rejected"    # validation failure — SQS retry → DLQ
+
 def initialize_repo(self) -> Repository      # open_or_create; if empty store,
-    # create template at time=0 length via resize(template, {"time": 0}) + commit
+    # create template at time=0 via resize(template, {"time": 0}), write
+    # lat/lon, commit, and write an empty-granule store manifest
 def initialize_session(self, repo) -> Session  # writable "main"
-def process_file(self, file_key: str, session: Session) -> bool
-    # parse+validate as backfill V1–V3, then: granule_time > store max time
-    # (strictly) else reject; to_icechunk(append_dim="time")
+def process_file(self, file_key: str, session: Session) -> ProcessOutcome
+    # parse + validate V1–V3, then route on t vs axis (spec §5 table):
+    #   t in axis & same granule_ur in manifest → region="auto" overwrite
+    #   t in axis & different granule_ur       → REJECTED (hard)
+    #   t > axis max                           → append_dim="time"
+    #   t <= axis max, t not in axis           → PendingLedger.append; DEFERRED
+    # every write passes last_updated_at=<parse start> (spec I3)
 def commit_processed_files(self, session) -> str
+    # commit, then StoreManifest.write with the appended/overwritten entries
 def garbage_collect(self, expiry_time) -> GCSummary
 ```
 
-- [ ] Step 1: failing tests — append two fixtures in order then read back;
-  out-of-order third granule rejected (False) and store unchanged;
-  duplicate time rejected.
-- [ ] Step 2: implement; green + lint + commit.
+- [ ] Step 1: failing tests — in-order append of two fixtures reads back
+  exactly; redelivered duplicate (same UR, same time) → WRITTEN and store
+  values unchanged (idempotent); same time + different UR → REJECTED and
+  store unchanged; historical granule → DEFERRED, ledger contains it,
+  axis unchanged; republication (same UR/time, changed source values) →
+  WRITTEN and read-back shows the new values.
+- [ ] Step 2: implement processor + handler changes.
+- [ ] Step 3: green + lint + commit.
 
-### Task 8: CDK wiring for typed inventory init
+### Task 9: Re-sort job (scheduled insertion)
 
 **Files:**
-- Modify: `cdk/stack.py` (Init state payload gains
-  `inventory_uri.$: $$.Execution.Input.inventory_uri` or equivalent)
-- Test: `tests/cdk/` state-machine assertions updated
+- Create: `lambda/backfill/backfill_handlers/resort.py`
+- Modify: `lambda/virtualizarr-processor/virtualizarr_processor/processor.py`
+  (add `initialize_resort_store`)
+- Test: `tests/test_resort.py`
 
-- [ ] Step 1: adjust CDK test expecting Init payload to include
-  `inventory_uri`; run `uv run pytest tests/cdk` to see it fail.
-- [ ] Step 2: implement; green + lint + commit.
+**Interfaces (Produces):**
+```python
+def merge_pending(manifest: BackfillInventory,
+                  pending: tuple[GranuleEntry, ...]) -> BackfillInventory
+    # sorted union; model validators reject collisions loudly
+def first_shifted_index(manifest: BackfillInventory,
+                        merged: BackfillInventory) -> int   # earliest insert
+class Processor:
+    def initialize_resort_store(self, repo,
+                                merged: BackfillInventory) -> str
+        # on branch "resort" off main: resize time-bearing arrays by +k,
+        # rewrite the axis to merged.times(), validate, commit clean base
+# resort.py handler: merged inventory → suffix urls (index ≥ s) →
+# reuse partition/fork/worker/reduce over them → promote(main ← resort) →
+# StoreManifest.write(merged) → PendingLedger.remove(folded URs)
+```
 
-### Task 9: Inventory builder upgrade
+- [ ] Step 1: failing end-to-end test — store of 3 in-order fixtures
+  (via Task 8 appends) + ledger of 2 (one adjacent swap, one deep
+  historical) → run resort → axis strictly increasing and equals merged
+  inventory; every scan's `vertical_column` matches h5py ground truth
+  (both moved and unmoved slices); ledger empty; manifest matches axis.
+- [ ] Step 2: collision test — pending granule whose time equals an
+  existing slot with a different UR → job aborts before any branch write.
+- [ ] Step 3: implement; green + lint + commit.
+
+### Task 10: CDK wiring
+
+**Files:**
+- Modify: `cdk/stack.py`, `cdk/settings.py`
+- Test: `tests/cdk/` assertions
+
+Changes: Init state payload gains `inventory_uri` (from execution input);
+forward consumer Lambda gets reserved concurrency 1 (spec §5 —
+single-writer appends; SQS `max_concurrency` cannot go below 2);
+`RESORT_SCHEDULE` (EventBridge rule, default daily, disabled when
+backfill-only) triggering the resort job; `STORE_MANIFEST_URI` /
+`PENDING_LEDGER_URI` env for the Lambdas.
+
+- [ ] Step 1: failing CDK assertions for each; Step 2: implement;
+  Step 3: green + lint + commit.
+
+### Task 11: Inventory builder upgrade
 
 **Files:**
 - Modify: `exploration/build_backfill_inventory.py`
@@ -306,29 +407,37 @@ time (not CMR time), duplicate-time failure, model round-trip.
 
 - [ ] Step 1: failing tests; Step 2: implement; Step 3: green + lint + commit.
 
-### Task 10: Post-promote QA script, docs, full gate
+### Task 12: Post-promote QA script, docs, full gate
 
 **Files:**
-- Create: `scripts/verify_store.py` — sample N random time steps, compare a
+- Create: `scripts/verify_store.py` — sample N random time steps, map each
+  slice to its source URL via the store manifest (Task 7), compare a
   configurable slice of each variable read through the store against h5py
   reads of the source file; exit non-zero on any mismatch.
 - Modify: `README.md` (processor status section: config, artifacts,
-  inventory format, how to run generator/builder/verify)
+  inventory format, forward routing rules, how to run
+  generator/builder/resort/verify)
 - Test: `tests/test_verify_store.py` (fixture store with one corrupted
   reference → non-zero; clean store → zero)
 
 - [ ] Step 1: tests; Step 2: implement; Step 3: README.
 - [ ] Step 4: full gate — `uv run pytest`, `uv run ruff check . && uv run
-  ruff format --check .`, `uv run mypy .`; fix all; final commit.
+  ruff format --check .`, `uv run mypy`; fix all; final commit.
 
 ## Self-review notes
 
-- Spec §1 → Tasks 2, 9; §2 → Tasks 6, 8; §3 → Tasks 1, 5, 6, 7; §4 → Tasks
-  4, 6, 7, 10; limitations documented in spec only (no code) — deliberate.
+- Spec §1 → Tasks 2, 11; §2 → Tasks 6, 10; §3 → Tasks 1, 5, 6, 8; §4 →
+  Tasks 4, 6, 8, 12; §5 (forward) → Tasks 7, 8, 9, 10; limitations
+  documented in spec only (no code) — deliberate.
 - Names used across tasks: `CollectionConfig`, `load_collection`,
   `load_template`, `load_coordinates`, `BackfillInventory`, `GranuleEntry`,
-  `open_flat_granule`, `granule_time`, `make_registry`, `write_tempo_granule`
-  — consistent.
+  `open_flat_granule`, `granule_time`, `make_registry`,
+  `write_tempo_granule`, `StoreManifest`, `PendingLedger`,
+  `ProcessOutcome`, `merge_pending`, `first_shifted_index`,
+  `initialize_resort_store` — consistent.
 - Known risk (called out for the implementer): whether xarray region writes
   require dropping `latitude`/`longitude` from the vds — Task 6's e2e test
   settles it either way; drop-after-validate is the default.
+- Task 1 was implemented before `time_chunk_size` was added; folding the
+  field into `CollectionConfig` + both TOMLs is the first step when
+  implementation resumes (Task 5 consumes it).

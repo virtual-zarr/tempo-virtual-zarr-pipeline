@@ -215,19 +215,103 @@ Store-level:
   granules, compare a data slice read through the virtual store against
   the same slice read directly from the source file with h5py.
 
-Forward path (`process_file`): same V1–V3 + append-specific checks — the
-appended granule's time must be strictly greater than the current store
-maximum (out-of-order historical arrivals are *rejected to the queue/DLQ*
-rather than appended out of order; see limitations).
+Forward path (`process_file`): same V1–V3, then the routing rules of §5.
 
-## 5. Limitations / deferred
+## 5. Forward processing
 
-- **Out-of-order historical drip-feed** (fact 8): appending them would
-  make the time axis non-monotonic; rejecting them keeps the store
-  correct but leaves gaps until a maintenance path exists. Deferred: a
-  periodic re-sort/insert job (cheap in principle — virtual manifests
-  permute without touching data) or a follow-up backfill run over the
-  gap window. The DLQ keeps the work list.
+Forward processing cannot be "append per SQS message" for TEMPO: fact 8
+says ~7% of adjacent new scans arrive swapped and the historical archive
+is drip-feeding *years*-old granules interleaved with new ones. Appending
+whatever arrives would make the time axis non-monotonic — xarray then
+raises on `sel(time=slice(...))` and titiler's time handling degrades —
+while rejecting everything out of order would shunt a large, growing
+fraction of the collection into a dead letter queue with no way back in.
+
+### Invariants (shared with backfill)
+
+- **I1** `main`'s time axis is strictly increasing with no fill values.
+- **I2** Each slice's axis value equals the in-file `/time` of the granule
+  whose references occupy it.
+- **I3** Every virtual ref is stamped with `last_updated_at` (supported by
+  `to_icechunk` and checked by icechunk at read): if a source object is
+  overwritten after ingest — exactly what a republication does — reads of
+  stale refs **fail loudly** instead of returning bytes from a changed
+  file. This closes the one silent-wrong-data hole validation-at-insert
+  cannot see.
+- **I4** A **store manifest** — the same `BackfillInventory` document,
+  now a living artifact in S3 next to the repo — enumerates
+  `(url, granule_ur, time)` for every slice, in axis order. Backfill's
+  promote writes it (= the backfill inventory); the forward consumer and
+  the re-sort job update it; every consumer of it first validates it
+  against the store's actual axis (bit-exact) and aborts on divergence.
+  It is what maps a slice back to its source file — needed by the
+  re-sort job and the QA sampler.
+
+### Consumer routing rules
+
+The SQS consumer parses + validates each granule (V1–V3), sorts the batch
+by time, dedupes, then routes each granule with time `t` against the
+store axis (max `T`):
+
+| Case | Action |
+|------|--------|
+| `t` ∈ axis, manifest entry has same `granule_ur` | **Overwrite in place** via `region="auto"`: republication of a known scan, or an at-least-once redelivery. Idempotent; refreshes refs and their `last_updated_at` stamp. |
+| `t` ∈ axis, different `granule_ur` | **Hard reject** — two distinct granules claiming one time step is a data inconsistency to investigate, never to write. |
+| `t > T` | **Append** (`append_dim="time"`), then update the store manifest. |
+| `t ≤ T`, `t` ∉ axis | **Defer**: record `(url, granule_ur, time)` in the *pending ledger* (S3 JSON, `GranuleEntry` list) and consume the message successfully. The re-sort job folds it in. |
+
+At-least-once SQS delivery is safe by construction: a redelivered
+already-appended granule hits the overwrite case; a redelivered deferral
+is deduped by the ledger. The consumer must be effectively single-writer
+(Lambda reserved concurrency 1 — concurrent appends conflict on the
+array resize and on the manifest update; note SQS `max_concurrency`
+cannot go below 2, so reserved concurrency is the mechanism).
+
+### The re-sort job (scheduled insertion)
+
+A scheduled job (e.g. daily, plus on-demand) folds the pending ledger in:
+
+1. Merge store manifest + ledger into one typed inventory (its validators
+   enforce strict monotonicity — a collision aborts loudly).
+2. On a `resort` branch: resize every time-bearing array by +k, rewrite
+   the time axis to the merged values, and compute the first shifted
+   index `s` (earliest inserted time).
+3. Re-virtualize and region-write **every granule with index ≥ s** — the
+   pending ones and the existing ones whose slots shifted — from their
+   manifest URLs, through the *same* worker path as backfill
+   (fork/merge partitions; the Step Functions machinery already scales
+   for a deep `s`).
+4. `validate_store` + axis == merged inventory, fast-forward `main`,
+   write the new store manifest, clear the folded ledger entries.
+
+Adjacent-scan swaps (the routine case) give `s` near the axis end —
+pennies. The historical drip-feed gives a deep `s` once per scheduled
+run — a bounded partial backfill, not a per-arrival cost. Re-keying by
+copying existing refs (no re-parse) is a possible optimization, but
+re-virtualizing from source reuses the proven path and re-stamps I3
+checksums; a full re-backfill into a fresh branch remains the recovery
+hammer.
+
+### Design consequences for the rest of the pipeline
+
+- **Time-axis chunking**: a template generated naively from a one-granule
+  store would chunk `time` as `(1,)` — after resize, 13.6k eight-byte
+  chunks and a pathological open for every reader, plus a per-batch
+  axis read in the consumer. The collection config therefore declares
+  `time_chunk_size` (default 16384: one chunk covers years) and the
+  template generator overrides the axis chunk grid accordingly. This
+  fixes backfill too, and was found only by planning forward processing.
+- **Stamping everywhere**: backfill workers, the consumer, and the
+  re-sort job all pass `last_updated_at` (the worker's parse start time)
+  to `to_icechunk`.
+- **`process_file` outcome** is three-way (`written | deferred |
+  rejected`), not a bool — deferral is success to SQS but must be
+  visible in logs/metrics.
+- The protocol's dormant `cron_processing` hook becomes the re-sort
+  entry point.
+
+## 6. Limitations / deferred
+
 - Reading ~13.6k file headers at inventory build (~minutes in-region) is
   accepted as the price of an exact axis; there is no metadata-only
   source for the exact values (fact 1).
@@ -235,3 +319,10 @@ rather than appended out of order; see limitations).
   if ASDC upgrades their writer, granules will be *rejected* until the
   volatile list or template is updated. Strict-by-default is intentional;
   rejection is loud, wrong data is silent.
+- Between a republication landing in S3 and its SNS message being
+  consumed, readers of the affected slice get I3 failures (loud, not
+  wrong). Accepted: the window is minutes and the alternative (no
+  stamping) is silent corruption.
+- The re-sort job serializes with forward consumption (pause the queue
+  consumer during promote, or accept one rebase retry); the CDK task
+  gates the event source mapping during a resort run.
