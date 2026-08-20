@@ -18,12 +18,16 @@ define its own position on the axis.
 from __future__ import annotations
 
 import os
+from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
 import numpy as np
 import xarray as xr
 from obspec_utils.registry import ObjectStoreRegistry
-from obstore.store import ClientConfig, HTTPStore, LocalStore, from_url
+from obstore.store import HTTPStore, LocalStore, from_url
+
+if TYPE_CHECKING:  # ClientConfig is a stub-only TypedDict in obstore
+    from obstore.store import ClientConfig
 from virtualizarr.parsers.hdf import HDFParser
 
 from virtualizarr_processor.collection import CollectionConfig
