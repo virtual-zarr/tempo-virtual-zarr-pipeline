@@ -111,3 +111,10 @@ def test_state_machine_shape() -> None:
     assert '"forks_out_prefix.$":"$.forkResult.forks_out_prefix"' in asl
     # run_prefix derives from the execution name
     assert "Execution.Name" in asl
+
+
+def test_init_and_promote_receive_the_inventory_uri() -> None:
+    """Init builds the axis from the typed inventory and promote gates the
+    store against it, so both states need the execution's inventory_uri."""
+    asl = _state_machine_asl()
+    assert asl.count('"inventory_uri.$":"$.inventory_uri"') >= 3  # partition too

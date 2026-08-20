@@ -42,6 +42,22 @@ class StackSettings(BaseSettings):
     # Freguency in days to run garbage collection.
     GARBAGE_COLLECTION_FREQUENCY: int | None = None
 
+    # TEMPO collection this instance processes ("hcho" or "no2"); reaches every
+    # processor Lambda as $TEMPO_COLLECTION. One repo per collection.
+    TEMPO_COLLECTION: str | None = None
+    # Virtual chunk container prefix (defaults inside the processor to
+    # s3://asdc-prod-protected/).
+    VIRTUAL_CHUNK_PREFIX: str | None = None
+    # Forward-processing state artifacts (spec §5 / I4). When unset they default
+    # to s3://<icechunk bucket>/<prefix>state/<name>.json, derived in the stack.
+    STORE_MANIFEST_URI: str | None = None
+    PENDING_LEDGER_URI: str | None = None
+    POLL_WATERMARK_URI: str | None = None
+    # Scheduled forward-processing jobs; deployed only when the forward queue is
+    # enabled. None disables the individual schedule.
+    RESORT_SCHEDULE_HOURS: int | None = 24
+    POLL_SCHEDULE_MINUTES: int | None = 30
+
     VPC_ID: str | None = None
     # AWS Batch cluster reference to SSM parameter describing the AMI _or_ the AMI ID
     # If using SSM to resolve the AMI ID, prefix with `resolve:ssm`.

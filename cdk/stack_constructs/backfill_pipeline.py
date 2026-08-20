@@ -35,6 +35,7 @@ class BackfillPipeline(Construct):
         partition_size: int,
         max_items_per_batch: int,
         max_concurrency: int,
+        extra_env: dict[str, str] | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)
@@ -50,6 +51,9 @@ class BackfillPipeline(Construct):
             env["ICECHUNK_PREFIX"] = icechunk_prefix
         if earthdata_secret_arn:
             env["EARTHDATA_SECRET_ARN"] = earthdata_secret_arn
+        # Collection selection, virtual chunk container, and the state
+        # artifacts (promote writes the initial store manifest).
+        env.update(extra_env or {})
 
         earthdata_secret = (
             secretsmanager.Secret.from_secret_complete_arn(
@@ -127,7 +131,9 @@ class BackfillPipeline(Construct):
             self,
             "InitTask",
             lambda_function=self.functions["init"],
-            payload=sfn.TaskInput.from_object({}),
+            payload=sfn.TaskInput.from_object(
+                {"inventory_uri": sfn.JsonPath.string_at("$.inventory_uri")}
+            ),
             payload_response_only=True,
             result_path="$.initResult",
         )
@@ -215,7 +221,9 @@ class BackfillPipeline(Construct):
             self,
             "PromoteTask",
             lambda_function=self.functions["promote"],
-            payload=sfn.TaskInput.from_object({}),
+            payload=sfn.TaskInput.from_object(
+                {"inventory_uri": sfn.JsonPath.string_at("$.inventory_uri")}
+            ),
             payload_response_only=True,
         )
 

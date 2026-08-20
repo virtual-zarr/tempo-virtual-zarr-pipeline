@@ -1,3 +1,4 @@
+from pathlib import Path
 from typing import Any
 
 from aws_cdk import (
@@ -47,6 +48,21 @@ from aws_cdk import custom_resources as cr
 from constructs import Construct
 from settings import StackSettings  # type: ignore[import-not-found]
 from stack_constructs import BackfillPipeline, BatchInfra, BatchJob
+
+
+def _concept_id(collection_name: str) -> str:
+    """The CMR concept id from the collection's declarative TOML."""
+    import tomllib
+
+    path = (
+        Path(__file__).parent.parent
+        / "lambda"
+        / "virtualizarr-processor"
+        / "virtualizarr_processor"
+        / "collections"
+        / f"{collection_name}.toml"
+    )
+    return str(tomllib.loads(path.read_text())["concept_id"])
 
 
 class VirtualizarrSqsStack(Stack):
@@ -99,13 +115,35 @@ class VirtualizarrSqsStack(Stack):
             "(the partition Lambda has read access to this bucket).",
         )
 
+        # Forward-processing state artifacts live next to the repo unless
+        # overridden (spec §5 / I4).
+        state_prefix = (
+            f"s3://{self.icechunk_bucket.bucket_name}/"
+            f"{settings.ICECHUNK_PREFIX or ''}state/"
+        )
+        self.store_manifest_uri = (
+            settings.STORE_MANIFEST_URI or f"{state_prefix}store-manifest.json"
+        )
+        self.pending_ledger_uri = (
+            settings.PENDING_LEDGER_URI or f"{state_prefix}pending-ledger.json"
+        )
+        self.poll_watermark_uri = (
+            settings.POLL_WATERMARK_URI or f"{state_prefix}cmr-watermark.json"
+        )
+
         # Shared processor env: resolved by virtualizarr_processor at runtime to
         # open the icechunk store (ICECHUNK_BUCKET set => S3) and to read protected
-        # GES DISC granules via Earthdata (EARTHDATA_SECRET_ARN).
+        # granules via Earthdata (EARTHDATA_SECRET_ARN).
         self.processor_env = {
             "ICECHUNK_BUCKET": self.icechunk_bucket.bucket_name,
             "ICECHUNK_REGION": settings.ACCOUNT_REGION,
+            "STORE_MANIFEST_URI": self.store_manifest_uri,
+            "PENDING_LEDGER_URI": self.pending_ledger_uri,
         }
+        if settings.TEMPO_COLLECTION:
+            self.processor_env["TEMPO_COLLECTION"] = settings.TEMPO_COLLECTION
+        if settings.VIRTUAL_CHUNK_PREFIX:
+            self.processor_env["VIRTUAL_CHUNK_PREFIX"] = settings.VIRTUAL_CHUNK_PREFIX
         if settings.ICECHUNK_PREFIX:
             self.processor_env["ICECHUNK_PREFIX"] = settings.ICECHUNK_PREFIX
         if settings.EARTHDATA_SECRET_ARN:
@@ -145,6 +183,10 @@ class VirtualizarrSqsStack(Stack):
             timeout=Duration.minutes(5),
             memory_size=2048,
             environment=dict(self.processor_env),
+            # Single-writer: concurrent consumers conflict on the append
+            # resize and the store-manifest update, and SQS max_concurrency
+            # cannot go below 2 (spec §5).
+            reserved_concurrent_executions=1,
         )
 
         self.queue.grant_consume_messages(self.process_messages_lambda)
@@ -176,6 +218,9 @@ class VirtualizarrSqsStack(Stack):
                 enabled=settings.FORWARD_QUEUE_ENABLED,
             )
         )
+
+        if settings.FORWARD_QUEUE_ENABLED:
+            self._forward_ops(settings)
 
         # When backfill is enabled, initialize_backfill_store (the Step Functions
         # Init step) is the sole store bootstrap. Skipping the deploy-time seed
@@ -293,6 +338,85 @@ class VirtualizarrSqsStack(Stack):
                 )
             )
 
+        self._build_backfill(settings)
+
+    def _forward_ops(self, settings: StackSettings) -> None:
+        """The scheduled forward-processing jobs (spec §5): the re-sort job
+        that folds the pending ledger in, and the CMR poller that feeds the
+        queue (ASDC publishes no SNS topic)."""
+        if settings.RESORT_SCHEDULE_HOURS:
+            self.resort_lambda = _lambda.DockerImageFunction(
+                self,
+                f"{settings.STACK_NAME}-resort-lambda",
+                code=_lambda.DockerImageCode.from_image_asset(
+                    directory="lambda",
+                    file="backfill/Dockerfile",
+                    platform=ecr_assets.Platform.LINUX_AMD64,
+                    cmd=["backfill_handlers.resort.handler"],
+                ),
+                architecture=_lambda.Architecture.X86_64,
+                timeout=Duration.minutes(15),
+                memory_size=2048,
+                environment=dict(self.processor_env),
+            )
+            self.icechunk_bucket.grant_read_write(self.resort_lambda)
+            if self.earthdata_secret is not None:
+                self.earthdata_secret.grant_read(self.resort_lambda)
+            if settings.DATA_BUCKET_NAME:
+                # The re-sort re-virtualizes shifted granules from source.
+                self.resort_lambda.add_to_role_policy(
+                    iam.PolicyStatement(
+                        actions=["s3:GetObject", "s3:ListBucket"],
+                        resources=[
+                            f"arn:aws:s3:::{settings.DATA_BUCKET_NAME}/*",
+                            f"arn:aws:s3:::{settings.DATA_BUCKET_NAME}",
+                        ],
+                    )
+                )
+            events.Rule(
+                self,
+                "ResortSchedule",
+                schedule=events.Schedule.rate(
+                    Duration.hours(settings.RESORT_SCHEDULE_HOURS)
+                ),
+                targets=[targets.LambdaFunction(self.resort_lambda)],
+            )
+
+        if settings.POLL_SCHEDULE_MINUTES:
+            poller_env = {
+                "QUEUE_URL": self.queue.queue_url,
+                "POLL_WATERMARK_URI": self.poll_watermark_uri,
+            }
+            if settings.TEMPO_COLLECTION:
+                # Resolved at synth from the collection's declarative TOML so
+                # the lightweight poller image needs no processor package.
+                poller_env["CONCEPT_ID"] = _concept_id(settings.TEMPO_COLLECTION)
+            self.cmr_poller_lambda = _lambda.DockerImageFunction(
+                self,
+                f"{settings.STACK_NAME}-cmr-poller-lambda",
+                code=_lambda.DockerImageCode.from_image_asset(
+                    directory="lambda",
+                    file="cmr_poller/Dockerfile",
+                    platform=ecr_assets.Platform.LINUX_AMD64,
+                ),
+                architecture=_lambda.Architecture.X86_64,
+                timeout=Duration.minutes(10),
+                memory_size=512,
+                environment=poller_env,
+            )
+            self.queue.grant_send_messages(self.cmr_poller_lambda)
+            # The watermark lives in the icechunk bucket's state prefix.
+            self.icechunk_bucket.grant_read_write(self.cmr_poller_lambda)
+            events.Rule(
+                self,
+                "CmrPollSchedule",
+                schedule=events.Schedule.rate(
+                    Duration.minutes(settings.POLL_SCHEDULE_MINUTES)
+                ),
+                targets=[targets.LambdaFunction(self.cmr_poller_lambda)],
+            )
+
+    def _build_backfill(self, settings: StackSettings) -> None:
         if settings.BACKFILL_ENABLED:
             if settings.DATA_BUCKET_NAME is None:
                 raise ValueError(
@@ -309,6 +433,16 @@ class VirtualizarrSqsStack(Stack):
                 max_items_per_batch=settings.BACKFILL_MAX_ITEMS_PER_BATCH,
                 max_concurrency=settings.BACKFILL_MAX_CONCURRENCY,
                 earthdata_secret_arn=settings.EARTHDATA_SECRET_ARN,
+                extra_env={
+                    key: self.processor_env[key]
+                    for key in (
+                        "TEMPO_COLLECTION",
+                        "VIRTUAL_CHUNK_PREFIX",
+                        "STORE_MANIFEST_URI",
+                        "PENDING_LEDGER_URI",
+                    )
+                    if key in self.processor_env
+                },
             )
 
             CfnOutput(
