@@ -182,17 +182,3 @@ class VirtualizarrProcessor(Protocol):
         GCSummary
         """
         ...
-
-    # def cron_processing(self, store: IcechunkStore) -> str:
-    # """
-    # Variable level operations that need to be run periodically and then
-    # released as a tag.
-
-    # Parameters
-    # ----------
-    # store: And Icechunk store.
-    # Returns
-    # -------
-    # str
-    # """
-    # ...

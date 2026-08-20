@@ -49,7 +49,7 @@ def make_sqs_event(
 def test_handler_processes_all_records_sorted(MockProcessor: MagicMock) -> None:
     mock_processor = MockProcessor.return_value
     mock_session = MagicMock()
-    mock_processor.initialize_repo.return_value = MagicMock()
+    mock_processor.open_initialized_repo.return_value = MagicMock()
     mock_processor.initialize_session.return_value = mock_session
     mock_processor.process_file.return_value = ProcessOutcome.WRITTEN
     mock_processor.commit_processed_files.return_value = "snapshot-123"
@@ -77,7 +77,7 @@ def test_handler_processes_all_records_sorted(MockProcessor: MagicMock) -> None:
 @patch("process_messages.handler.Processor")
 def test_handler_accepts_s3_notification_shape(MockProcessor: MagicMock) -> None:
     mock_processor = MockProcessor.return_value
-    mock_processor.initialize_repo.return_value = MagicMock()
+    mock_processor.open_initialized_repo.return_value = MagicMock()
     mock_processor.initialize_session.return_value = MagicMock()
     mock_processor.process_file.return_value = ProcessOutcome.WRITTEN
     mock_processor.commit_processed_files.return_value = "snapshot-123"
@@ -93,7 +93,7 @@ def test_handler_accepts_s3_notification_shape(MockProcessor: MagicMock) -> None
 @patch("process_messages.handler.Processor")
 def test_handler_deferred_is_successful_consumption(MockProcessor: MagicMock) -> None:
     mock_processor = MockProcessor.return_value
-    mock_processor.initialize_repo.return_value = MagicMock()
+    mock_processor.open_initialized_repo.return_value = MagicMock()
     mock_processor.initialize_session.return_value = MagicMock()
     mock_processor.process_file.return_value = ProcessOutcome.DEFERRED
     mock_processor.commit_processed_files.return_value = "snapshot-123"
@@ -108,7 +108,7 @@ def test_handler_deferred_is_successful_consumption(MockProcessor: MagicMock) ->
 def test_handler_raises_when_entire_batch_fails(MockProcessor: MagicMock) -> None:
     """If all records are rejected, BatchProcessor raises BatchProcessingError."""
     mock_processor = MockProcessor.return_value
-    mock_processor.initialize_repo.return_value = MagicMock()
+    mock_processor.open_initialized_repo.return_value = MagicMock()
     mock_processor.initialize_session.return_value = MagicMock()
     mock_processor.process_file.return_value = ProcessOutcome.REJECTED
 
@@ -122,7 +122,7 @@ def test_handler_raises_when_entire_batch_fails(MockProcessor: MagicMock) -> Non
 def test_handler_partial_failure(MockProcessor: MagicMock) -> None:
     """If some records are rejected, only those appear in batchItemFailures."""
     mock_processor = MockProcessor.return_value
-    mock_processor.initialize_repo.return_value = MagicMock()
+    mock_processor.open_initialized_repo.return_value = MagicMock()
     mock_processor.initialize_session.return_value = MagicMock()
     mock_processor.process_file.side_effect = [
         ProcessOutcome.WRITTEN,
@@ -142,7 +142,7 @@ def test_handler_partial_failure(MockProcessor: MagicMock) -> None:
 def test_handler_fails_all_on_commit_error(MockProcessor: MagicMock) -> None:
     """If commit fails, all records should be marked as failed."""
     mock_processor = MockProcessor.return_value
-    mock_processor.initialize_repo.return_value = MagicMock()
+    mock_processor.open_initialized_repo.return_value = MagicMock()
     mock_processor.initialize_session.return_value = MagicMock()
     mock_processor.process_file.return_value = ProcessOutcome.WRITTEN
     mock_processor.commit_processed_files.side_effect = Exception("Commit failed")

@@ -9,7 +9,6 @@ snapshot.
 """
 
 import pickle
-from typing import cast
 
 from icechunk import Repository
 
@@ -39,9 +38,7 @@ def merge_and_commit(
     session = repo.writable_session(branch)
     forks = [pickle.loads(b) for b in child_fork_bytes]
     session.merge(*forks)
-    # cast: pre-commit mypy runs without icechunk, so commit() is Any there and
-    # warn_return_any flags a bare return. Do not remove.
-    return cast(str, session.commit(message))
+    return session.commit(message)
 
 
 def promote(

@@ -1,10 +1,7 @@
-import os
 from typing import Any, Literal
 
 from pydantic import model_validator
 from pydantic_settings import BaseSettings
-
-print("STAGE from env:", os.getenv("STAGE"))
 
 
 def include_trailing_slash(value: Any) -> Any:
@@ -25,7 +22,7 @@ class StackSettings(BaseSettings):
     # us-west-2, and deploying elsewhere makes every worker read a
     # cross-region transfer (the largest avoidable backfill cost).
     ACCOUNT_REGION: str = "us-west-2"
-    ICECHUNK_BUCKET_NAME: str = "icechunk-outuput"
+    ICECHUNK_BUCKET_NAME: str = "icechunk-output"
     # Optional existing bucket for the Icechunk store and per-run backfill
     # artifacts. It must be in the stack's region; deployment checks its
     # actual region and fails otherwise.
@@ -51,8 +48,16 @@ class StackSettings(BaseSettings):
     # access to the source bucket.
     EARTHDATA_SECRET_ARN: str | None = None
 
-    # Freguency in days to run garbage collection.
+    # Frequency in days to run garbage collection (requires VPC_ID).
     GARBAGE_COLLECTION_FREQUENCY: int | None = None
+    # Snapshots older than this are expired by a GC run. Also the rollback
+    # window: a bad promote can only be reset to a snapshot younger than this.
+    GC_EXPIRY_DAYS: int = 30
+
+    # Email for CloudWatch alarm notifications (DLQ depth, scheduled-job
+    # failures). The alarms exist regardless; without an email they are
+    # visible in the console only.
+    ALARM_EMAIL: str | None = None
 
     # TEMPO collection this instance processes ("hcho" or "no2"); reaches every
     # processor Lambda as $TEMPO_COLLECTION. One repo per collection.

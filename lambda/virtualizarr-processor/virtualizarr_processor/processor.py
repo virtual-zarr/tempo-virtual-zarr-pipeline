@@ -444,6 +444,30 @@ class Processor:
 
     # -- forward processing --------------------------------------------------
 
+    def open_initialized_repo(self) -> Repository:
+        """Open the repository, refusing to run against an uninitialized store.
+
+        The forward consumer uses this instead of :meth:`initialize_repo`:
+        creating the store is a deliberate act (the backfill Init step, or
+        the initialize Lambda in forward-only deployments), and a consumer
+        quietly bootstrapping an empty store on ``main`` ahead of a planned
+        backfill would collide with that backfill's Init.
+        """
+        repo = self.open_backfill_repo()
+        try:
+            group = zarr.open_group(repo.readonly_session("main").store, mode="r")
+            initialized = "time" in group
+        except FileNotFoundError:  # no root group: a brand-new repository
+            initialized = False
+        if not initialized:
+            raise StoreValidationError(
+                [
+                    "store is not initialized on `main`; run the backfill or "
+                    "the initialize Lambda before consuming granules"
+                ]
+            )
+        return repo
+
     def initialize_repo(self) -> Repository:
         """Open the repository, creating an empty templated store if new."""
         repo = self.open_backfill_repo()

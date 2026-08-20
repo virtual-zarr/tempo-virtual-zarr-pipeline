@@ -124,3 +124,35 @@ def test_s3_prefix_scopes_state_env_and_run_artifact_lifecycle() -> None:
             }
         ),
     )
+
+
+def test_alarms_cover_dlq_consumer_and_scheduled_jobs() -> None:
+    """Wedge states are fail-safe but silent; the alarms make them visible."""
+    # Forward deployment: DLQ depth, consumer, re-sort, and poller errors.
+    _template().resource_count_is("AWS::CloudWatch::Alarm", 4)
+    # Backfill-only deployment: no scheduled forward jobs to watch.
+    _template(BACKFILL_ENABLED=True).resource_count_is("AWS::CloudWatch::Alarm", 2)
+
+
+def test_alarm_email_wires_an_sns_topic() -> None:
+    _template().resource_count_is("AWS::SNS::Topic", 0)
+    with_email = _template(ALARM_EMAIL="ops@example.com")
+    with_email.resource_count_is("AWS::SNS::Topic", 1)
+    with_email.has_resource_properties(
+        "AWS::SNS::Subscription",
+        Match.object_like({"Protocol": "email", "Endpoint": "ops@example.com"}),
+    )
+
+
+def test_forward_queue_requires_a_data_bucket() -> None:
+    import pytest
+
+    with pytest.raises(ValueError, match="DATA_BUCKET_NAME"):
+        _template(DATA_BUCKET_NAME=None)
+
+
+def test_gc_requires_a_vpc() -> None:
+    import pytest
+
+    with pytest.raises(ValueError, match="VPC_ID"):
+        _template(GARBAGE_COLLECTION_FREQUENCY=2)

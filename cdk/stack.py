@@ -11,6 +11,12 @@ from aws_cdk import (
     Tags,
 )
 from aws_cdk import (
+    aws_cloudwatch as cloudwatch,
+)
+from aws_cdk import (
+    aws_cloudwatch_actions as cloudwatch_actions,
+)
+from aws_cdk import (
     aws_ec2 as ec2,
 )
 from aws_cdk import (
@@ -100,6 +106,22 @@ class VirtualizarrSqsStack(Stack):
         # per-execution debris under <S3_PREFIX>/backfill/<execution>/.
         s3_prefix = settings.s3_key_prefix
         run_artifact_prefix = f"{s3_prefix}/backfill/" if s3_prefix else "backfill/"
+
+        # Wedge states in this pipeline are fail-safe but silent (rejected
+        # granules, failing scheduled jobs); alarms make them visible.
+        self.alarm_topic: sns.Topic | None = None
+        if settings.ALARM_EMAIL:
+            self.alarm_topic = sns.Topic(self, "AlarmTopic")
+            self.alarm_topic.add_subscription(
+                subscriptions.EmailSubscription(settings.ALARM_EMAIL)
+            )
+        self._alarm(
+            "DlqMessagesAlarm",
+            self.dlq.metric_approximate_number_of_messages_visible(
+                period=Duration.minutes(5), statistic="Maximum"
+            ),
+            "Granules were rejected to the dead-letter queue",
+        )
 
         if settings.ICECHUNK_BUCKET:
             self.icechunk_bucket = s3.Bucket.from_bucket_name(
@@ -211,23 +233,37 @@ class VirtualizarrSqsStack(Stack):
             reserved_concurrent_executions=1,
         )
 
+        self._alarm(
+            "ConsumerErrorsAlarm",
+            self.process_messages_lambda.metric_errors(period=Duration.minutes(5)),
+            "The forward-processing consumer failed",
+        )
+
         self.queue.grant_consume_messages(self.process_messages_lambda)
         if self.earthdata_secret is not None:
             self.earthdata_secret.grant_read(self.process_messages_lambda)
 
-        # Grant Lambda permission to read the source data files from S3.
-        self.process_messages_lambda.add_to_role_policy(
-            iam.PolicyStatement(
-                actions=[
-                    "s3:GetObject",
-                    "s3:ListBucket",
-                ],
-                resources=[
-                    f"arn:aws:s3:::{settings.DATA_BUCKET_NAME}/*",
-                    f"arn:aws:s3:::{settings.DATA_BUCKET_NAME}",
-                ],
+        # The consumer parses source granules, so a deployment that enables
+        # the forward queue must name the source bucket (an unset name would
+        # otherwise synthesize a policy for the literal bucket "None").
+        if settings.FORWARD_QUEUE_ENABLED and not settings.DATA_BUCKET_NAME:
+            raise ValueError(
+                "DATA_BUCKET_NAME must be set when the forward queue is "
+                "enabled; the consumer reads source granules from it"
             )
-        )
+        if settings.DATA_BUCKET_NAME:
+            self.process_messages_lambda.add_to_role_policy(
+                iam.PolicyStatement(
+                    actions=[
+                        "s3:GetObject",
+                        "s3:ListBucket",
+                    ],
+                    resources=[
+                        f"arn:aws:s3:::{settings.DATA_BUCKET_NAME}/*",
+                        f"arn:aws:s3:::{settings.DATA_BUCKET_NAME}",
+                    ],
+                )
+            )
 
         self.icechunk_bucket.grant_read_write(self.process_messages_lambda)
 
@@ -310,6 +346,11 @@ class VirtualizarrSqsStack(Stack):
                 self.bucket_custom_resource.node.add_dependency(self.icechunk_bucket)
 
         if settings.GARBAGE_COLLECTION_FREQUENCY:
+            if not settings.VPC_ID:
+                raise ValueError(
+                    "VPC_ID must be set when GARBAGE_COLLECTION_FREQUENCY is "
+                    "set; the GC Batch cluster runs inside a VPC"
+                )
             self.vpc = ec2.Vpc.from_lookup(self, "VPC", vpc_id=settings.VPC_ID)
 
             self.gc_image_asset = ecr_assets.DockerImageAsset(
@@ -337,7 +378,10 @@ class VirtualizarrSqsStack(Stack):
                 image_asset=self.gc_image_asset,
                 memory_mb=2000,
                 retry_attempts=1,
-                environment=dict(self.processor_env),
+                environment=dict(
+                    self.processor_env,
+                    GC_EXPIRY_DAYS=str(settings.GC_EXPIRY_DAYS),
+                ),
             )
             self.icechunk_bucket.grant_read_write(self.gc_job.role)
             if self.earthdata_secret is not None:
@@ -409,6 +453,12 @@ class VirtualizarrSqsStack(Stack):
                 ),
                 targets=[targets.LambdaFunction(self.resort_lambda)],
             )
+            # A failing re-sort otherwise just lets the pending ledger grow.
+            self._alarm(
+                "ResortErrorsAlarm",
+                self.resort_lambda.metric_errors(period=Duration.hours(1)),
+                "The scheduled re-sort job failed",
+            )
 
         if settings.POLL_SCHEDULE_MINUTES:
             poller_env = {
@@ -448,6 +498,12 @@ class VirtualizarrSqsStack(Stack):
                 ),
                 targets=[targets.LambdaFunction(self.cmr_poller_lambda)],
             )
+            # A failing poller silently stops feeding the queue.
+            self._alarm(
+                "PollerErrorsAlarm",
+                self.cmr_poller_lambda.metric_errors(period=Duration.hours(1)),
+                "The scheduled CMR poller failed",
+            )
 
     def _build_backfill(self, settings: StackSettings) -> None:
         if settings.BACKFILL_ENABLED:
@@ -486,6 +542,24 @@ class VirtualizarrSqsStack(Stack):
                 description="Start a backfill with: aws stepfunctions start-execution "
                 '--state-machine-arn <this> --input \'{"inventory_uri": "s3://..."}\'',
             )
+
+    def _alarm(
+        self, construct_id: str, metric: cloudwatch.IMetric, description: str
+    ) -> cloudwatch.Alarm:
+        """An "anything above zero" alarm, wired to the alarm topic if any."""
+        alarm = cloudwatch.Alarm(
+            self,
+            construct_id,
+            metric=metric,
+            threshold=0,
+            comparison_operator=(cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD),
+            evaluation_periods=1,
+            treat_missing_data=cloudwatch.TreatMissingData.NOT_BREACHING,
+            alarm_description=description,
+        )
+        if self.alarm_topic is not None:
+            alarm.add_alarm_action(cloudwatch_actions.SnsAction(self.alarm_topic))
+        return alarm
 
     def _validate_bucket_region(self, settings: StackSettings) -> None:
         """Fail the deploy if the existing Icechunk bucket is in another region.

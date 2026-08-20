@@ -20,7 +20,10 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import TYPE_CHECKING, Any, Callable, Optional
+
+if TYPE_CHECKING:
+    from mypy_boto3_sqs.type_defs import SendMessageBatchRequestEntryTypeDef
 
 from aws_lambda_powertools import Logger
 
@@ -131,19 +134,38 @@ def _write_bytes(uri: str, data: bytes) -> None:
 
 
 def enqueue(queue_url: str, urls: list[str]) -> int:
+    """Enqueue every url, or raise.
+
+    ``send_message_batch`` is not all-or-nothing: individual entries can
+    fail while the call succeeds. Failed entries are retried once; if any
+    still fail, raise so the handler exits without advancing the
+    watermark — the next poll then re-covers the same window. Silently
+    dropping them would lose the granules for good once their revision
+    date fell behind the watermark's overlap.
+    """
     import boto3
 
     client = boto3.client("sqs")
     sent = 0
     for start in range(0, len(urls), 10):
         batch = urls[start : start + 10]
-        client.send_message_batch(
-            QueueUrl=queue_url,
-            Entries=[
-                {"Id": str(i), "MessageBody": json.dumps({"url": url})}
-                for i, url in enumerate(batch)
-            ],
-        )
+        entries: "list[SendMessageBatchRequestEntryTypeDef]" = [
+            {"Id": str(i), "MessageBody": json.dumps({"url": url})}
+            for i, url in enumerate(batch)
+        ]
+        for attempt in range(2):
+            failed = client.send_message_batch(QueueUrl=queue_url, Entries=entries).get(
+                "Failed", []
+            )
+            if not failed:
+                break
+            failed_ids = {item["Id"] for item in failed}
+            entries = [entry for entry in entries if entry["Id"] in failed_ids]
+        if failed:
+            raise RuntimeError(
+                f"{len(failed)} messages failed to enqueue after a retry "
+                f"(first: {failed[0]}); leaving the watermark unadvanced"
+            )
         sent += len(batch)
     return sent
 

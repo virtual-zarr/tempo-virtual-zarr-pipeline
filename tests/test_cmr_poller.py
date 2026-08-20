@@ -144,3 +144,56 @@ def test_first_poll_starts_from_the_store_manifest(
 
     expected = datetime.fromisoformat(built_at) - poller.OVERLAP
     assert datetime.fromisoformat(since_seen[0]) == expected
+
+
+class _FlakySqs:
+    """send_message_batch stub that fails one entry for the first N calls."""
+
+    def __init__(self, failures: int) -> None:
+        self.failures = failures
+        self.calls: list[list[str]] = []
+
+    def send_message_batch(self, QueueUrl: str, Entries: list[dict]) -> dict:
+        self.calls.append([e["Id"] for e in Entries])
+        if len(self.calls) <= self.failures:
+            return {"Failed": [{"Id": Entries[0]["Id"], "Code": "InternalError"}]}
+        return {}
+
+
+def test_enqueue_retries_partial_batch_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """send_message_batch is not all-or-nothing; failed entries are retried."""
+    stub = _FlakySqs(failures=1)
+    monkeypatch.setattr(boto3, "client", lambda service: stub)
+
+    sent = poller.enqueue("queue-url", [f"s3://b/{i}.nc" for i in range(3)])
+
+    assert sent == 3
+    assert stub.calls == [["0", "1", "2"], ["0"]]  # only the failed entry retried
+
+
+def test_enqueue_raises_when_failures_persist(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(boto3, "client", lambda service: _FlakySqs(failures=2))
+    with pytest.raises(RuntimeError, match="failed to enqueue"):
+        poller.enqueue("queue-url", ["s3://b/0.nc"])
+
+
+def test_watermark_not_advanced_when_enqueue_fails(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed enqueue must leave the watermark alone so the next poll
+    re-covers the same window instead of dropping the granules for good."""
+    watermark_uri = str(tmp_path / "watermark.json")
+    monkeypatch.setenv("CONCEPT_ID", "C")
+    monkeypatch.setenv("QUEUE_URL", "queue-url")
+    monkeypatch.setenv("POLL_WATERMARK_URI", watermark_uri)
+    monkeypatch.setattr(poller, "_http_fetch", lambda *a: ([granule_item("g1")], None))
+    monkeypatch.setattr(boto3, "client", lambda service: _FlakySqs(failures=2))
+
+    with pytest.raises(RuntimeError):
+        poller.handler({}, MagicMock())
+
+    assert poller.read_watermark(watermark_uri) is None

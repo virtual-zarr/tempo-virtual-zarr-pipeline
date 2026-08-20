@@ -136,6 +136,8 @@ Settings live in [`cdk/settings.py`](./cdk/settings.py) and a `.env` file ([samp
 | `RESORT_MAX_FOLD` | 500 | max pending granules parsed per re-sort run |
 | `EARTHDATA_SECRET_ARN` | — | Secrets Manager secret with EDL credentials for source reads |
 | `GARBAGE_COLLECTION_FREQUENCY` | — | days between Icechunk GC runs (needs `VPC_ID`) |
+| `GC_EXPIRY_DAYS` | 30 | snapshot expiry for GC runs — also the store's rollback window |
+| `ALARM_EMAIL` | — | notification email for the DLQ-depth and scheduled-job-failure alarms |
 
 The Lambda images install against [`lambda/constraints.txt`](./lambda/constraints.txt), an export of the repo's `uv.lock`, so deploys run the dependency versions the test suite ran. Regenerate it with the command in its header whenever the lock changes. A backfill run that fails can simply be restarted with a new execution name: the Init step resets the leftover `backfill` branch (don't run two backfills concurrently).
 

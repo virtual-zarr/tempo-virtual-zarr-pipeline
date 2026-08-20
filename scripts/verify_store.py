@@ -43,7 +43,7 @@ import urllib.parse
 import urllib.request
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Iterator, Optional
+from typing import Any, Callable, Iterator, Optional, cast
 
 import h5py
 import numpy as np
@@ -174,7 +174,9 @@ def verify_store(
     """
     session = repo.readonly_session("main")
     group = zarr.open_group(session.store, mode="r")
-    decoded = xr.open_dataset(session.store, engine="zarr", consolidated=False)
+    decoded = xr.open_dataset(
+        cast(Any, session.store), engine="zarr", consolidated=False
+    )
     axis = np.asarray(zarr.open_array(session.store, path="time")[:])
     StoreManifest.validate_against_axis(manifest, axis)
 
@@ -220,21 +222,26 @@ def verify_store(
                             f"slot {index}: variable {name!r} missing from source {url}"
                         )
                         continue
-                    ny, nx = group[name].shape[1], group[name].shape[2]
+                    array = cast(zarr.Array, group[name])
+                    ny, nx = array.shape[1], array.shape[2]
                     y0 = int(rng.integers(0, max(1, ny - window)))
                     x0 = int(rng.integers(0, max(1, nx - window)))
                     win = np.s_[y0 : y0 + window, x0 : x0 + window]
                     source = np.asarray(
                         dataset[0][win] if dataset.ndim == 3 else dataset[win]
                     )
-                    stored = np.asarray(group[name][index][win])
+                    # Index the window directly so only its chunks are read.
+                    stored = np.asarray(array[(index, *win)])
                     if not np.array_equal(stored, source):
                         problems.append(
                             f"slot {index}: {name}[{y0}:{y0 + window},"
                             f"{x0}:{x0 + window}] raw bytes differ from {url}"
                         )
                         continue
-                    read = np.asarray(decoded[name].isel(time=index).values[win])
+                    # Window before loading: .values on the full slice would
+                    # fetch every chunk of a 2950x7750 decoded field to
+                    # compare a tiny window.
+                    read = np.asarray(decoded[name].isel(time=index)[win].values)
                     if not _values_match(read, _mask_fill(source, dataset)):
                         problems.append(
                             f"slot {index}: {name}[{y0}:{y0 + window},"

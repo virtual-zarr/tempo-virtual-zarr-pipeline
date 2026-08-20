@@ -310,3 +310,14 @@ def test_forward_republication_overwrites_in_place(tiny: TinyCollection) -> None
         np.asarray(group["weight"][1]),
         expected_weight(tiny.times[1], weight_scale=42.0),
     )
+
+
+def test_consumer_refuses_uninitialized_store(tiny: TinyCollection) -> None:
+    """Bootstrapping the store is the backfill's (or the initialize
+    Lambda's) job, never a side effect of consuming a message."""
+    processor = Processor()
+    with pytest.raises(StoreValidationError, match="not initialized"):
+        processor.open_initialized_repo()
+
+    run_backfill(processor, tiny)
+    assert processor.open_initialized_repo() is not None
