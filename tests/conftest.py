@@ -120,3 +120,24 @@ def backfill_repo(tmp_path: pathlib.Path) -> icechunk.Repository:
     zarr.open_group(session.store, mode="a").create_group("placeholder")
     session.commit("init main")
     return repo
+
+
+REAL_DATA_DIR = pathlib.Path(
+    os.environ.get("TEMPO_TEST_DATA", "/workspace/context/data")
+)
+
+
+@pytest.fixture(scope="session")
+def real_data_dir() -> pathlib.Path:
+    """Directory of real TEMPO granules; skips dependents when absent."""
+    if not REAL_DATA_DIR.is_dir():
+        pytest.skip(f"real TEMPO granules not available at {REAL_DATA_DIR}")
+    return REAL_DATA_DIR
+
+
+@pytest.fixture()
+def tempo_granule_dir(tmp_path: pathlib.Path) -> pathlib.Path:
+    """Empty per-test directory for synthetic TEMPO granules."""
+    directory = tmp_path / "granules"
+    directory.mkdir()
+    return directory
