@@ -306,11 +306,15 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    from virtualizarr_processor.manifest import default_state_uri
     from virtualizarr_processor.processor import Processor
 
     processor = Processor()
     repo = processor.open_backfill_repo()
-    manifest = StoreManifest.read(os.environ["STORE_MANIFEST_URI"])
+    manifest_uri = os.environ.get("STORE_MANIFEST_URI") or default_state_uri(
+        "store-manifest.json"
+    )
+    manifest = StoreManifest.read(manifest_uri)
     lookup = None if args.offline else cmr_lookup_for(processor.config.concept_id)
     problems = verify_store(
         repo,
@@ -321,12 +325,10 @@ def main() -> int:
         cmr_lookup=lookup,
     )
     if args.completeness:
-        ledger_uri = os.environ.get("PENDING_LEDGER_URI")
-        ledger_urs = (
-            {entry.granule_ur for entry in PendingLedger.read(ledger_uri)}
-            if ledger_uri
-            else set()
+        ledger_uri = os.environ.get("PENDING_LEDGER_URI") or default_state_uri(
+            "pending-ledger.json"
         )
+        ledger_urs = {entry.granule_ur for entry in PendingLedger.read(ledger_uri)}
         problems += verify_completeness(
             processor.config.concept_id, manifest, ledger_urs
         )

@@ -121,7 +121,11 @@ def main() -> int:
         zarr.open_array(repo.readonly_session("main").store, path="time")[:]
     )
 
-    manifest_uri = os.environ["STORE_MANIFEST_URI"]
+    from virtualizarr_processor.manifest import default_state_uri
+
+    manifest_uri = os.environ.get("STORE_MANIFEST_URI") or default_state_uri(
+        "store-manifest.json"
+    )
     try:
         old_manifest: BackfillInventory | None = StoreManifest.read(manifest_uri)
     except FileNotFoundError:
@@ -129,9 +133,10 @@ def main() -> int:
     sources: list[tuple[str, Iterable[GranuleEntry]]] = []
     if old_manifest is not None:
         sources.append(("manifest", old_manifest.granules))
-    ledger_uri = os.environ.get("PENDING_LEDGER_URI")
-    if ledger_uri:
-        sources.append(("ledger", PendingLedger.read(ledger_uri)))
+    ledger_uri = os.environ.get("PENDING_LEDGER_URI") or default_state_uri(
+        "pending-ledger.json"
+    )
+    sources.append(("ledger", PendingLedger.read(ledger_uri)))
     inventory = None
     if args.inventory:
         inventory = StoreManifest.read(args.inventory)

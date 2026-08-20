@@ -19,6 +19,7 @@ concurrency 1, re-sort serialized with the consumer).
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Collection, Iterable
 from pathlib import Path
 from typing import Any
@@ -27,6 +28,42 @@ import numpy as np
 
 from virtualizarr_processor.inventory import BackfillInventory, GranuleEntry
 from virtualizarr_processor.store_template import StoreValidationError
+
+
+def storage_prefix() -> str | None:
+    """The repository's S3 key prefix: $S3_PREFIX and $ICECHUNK_PREFIX joined.
+
+    Deployed Lambdas receive the already-combined value as $ICECHUNK_PREFIX;
+    local runs against a per-collection env file carry the two parts, combined
+    here exactly as the CDK stack combines them.
+    """
+    return (
+        "/".join(
+            part.strip("/")
+            for part in (os.environ.get("S3_PREFIX"), os.environ.get("ICECHUNK_PREFIX"))
+            if part and part.strip("/")
+        )
+        or None
+    )
+
+
+def default_state_uri(filename: str) -> str:
+    """The deployment-default URI for a state artifact next to the repo.
+
+    Mirrors the CDK stack's derivation
+    (``s3://<bucket>/<prefix>/state/<filename>``) so local script runs with
+    only a per-collection env file resolve the same artifacts the Lambdas
+    were deployed with. Explicit ``$STORE_MANIFEST_URI``-style variables take
+    precedence at the call sites.
+    """
+    bucket = os.environ.get("ICECHUNK_BUCKET")
+    if not bucket:
+        raise ValueError(
+            f"cannot derive the default URI for {filename}: ICECHUNK_BUCKET is "
+            "not set (set the explicit *_URI variable instead)"
+        )
+    prefix = storage_prefix()
+    return f"s3://{bucket}/{prefix + '/' if prefix else ''}state/{filename}"
 
 
 def _is_s3(uri: str) -> bool:

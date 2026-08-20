@@ -40,6 +40,7 @@ import zarr
 from icechunk import ForkSession, Repository, Session
 from pydantic_zarr.v3 import ArraySpec
 
+from virtualizarr_processor import manifest as manifest_module
 from virtualizarr_processor.collection import (
     CollectionConfig,
     load_collection,
@@ -72,11 +73,15 @@ PARSE_BACKOFF_SECONDS = (5, 15)
 
 
 def _store_manifest_uri() -> str:
-    return os.environ["STORE_MANIFEST_URI"]
+    return os.environ.get("STORE_MANIFEST_URI") or manifest_module.default_state_uri(
+        "store-manifest.json"
+    )
 
 
 def _pending_ledger_uri() -> str:
-    return os.environ["PENDING_LEDGER_URI"]
+    return os.environ.get("PENDING_LEDGER_URI") or manifest_module.default_state_uri(
+        "pending-ledger.json"
+    )
 
 
 def _granule_ur(file_key: str) -> str:
@@ -107,7 +112,9 @@ class Processor:
         if bucket:
             storage = icechunk.s3_storage(
                 bucket=bucket,
-                prefix=os.environ.get("ICECHUNK_PREFIX"),
+                # $S3_PREFIX + $ICECHUNK_PREFIX, combined like the CDK stack
+                # (deployed Lambdas carry the pre-combined ICECHUNK_PREFIX).
+                prefix=manifest_module.storage_prefix(),
                 region=os.environ.get("ICECHUNK_REGION"),
                 from_env=True,
             )

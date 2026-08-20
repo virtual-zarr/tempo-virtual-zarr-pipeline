@@ -84,3 +84,37 @@ def test_pending_ledger_remove(tmp_path: pathlib.Path) -> None:
     PendingLedger.append(uri, [entry(0), entry(1), entry(2)])
     PendingLedger.remove(uri, ["granule_0", "granule_2"])
     assert PendingLedger.read(uri) == (entry(1),)
+
+
+def test_storage_prefix_combines_like_the_cdk_stack(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from virtualizarr_processor.manifest import storage_prefix
+
+    monkeypatch.delenv("S3_PREFIX", raising=False)
+    monkeypatch.delenv("ICECHUNK_PREFIX", raising=False)
+    assert storage_prefix() is None
+
+    monkeypatch.setenv("ICECHUNK_PREFIX", "hcho-v04/")
+    assert storage_prefix() == "hcho-v04"
+
+    monkeypatch.setenv("S3_PREFIX", "/tempo/")
+    assert storage_prefix() == "tempo/hcho-v04"
+
+
+def test_default_state_uri_matches_the_deployed_layout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from virtualizarr_processor.manifest import default_state_uri
+
+    monkeypatch.setenv("ICECHUNK_BUCKET", "ice")
+    monkeypatch.setenv("S3_PREFIX", "tempo")
+    monkeypatch.setenv("ICECHUNK_PREFIX", "hcho-v04")
+    assert (
+        default_state_uri("store-manifest.json")
+        == "s3://ice/tempo/hcho-v04/state/store-manifest.json"
+    )
+
+    monkeypatch.delenv("ICECHUNK_BUCKET")
+    with pytest.raises(ValueError, match="ICECHUNK_BUCKET"):
+        default_state_uri("store-manifest.json")

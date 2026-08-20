@@ -89,11 +89,31 @@ Out-of-order arrivals are common: TEMPO's historical archive is still being back
 
 ## Deploying and running
 
-1. Set `BACKFILL_ENABLED=true` and deploy. Forward processing (consumer, poller, re-sort job) stays undeployed while the backfill runs.
-2. Build and upload the inventory: `uv run exploration/build_backfill_inventory.py --s3-uri s3://<bucket>/inventory/....json`
-3. Start the backfill: `./scripts/start_backfill.sh <execution-name> <inventory-uri>`
-4. When it has promoted, set `FORWARD_QUEUE_ENABLED=true` and redeploy. The poller's first run starts from the inventory's build time, so granules published while the backfill ran are picked up; the re-sort job folds in anything that arrived out of order.
-5. Run `uv run scripts/verify_store.py` after the promote (and periodically) to spot-check the store against its sources.
+Each collection deploys as its own stack from a committed env file —
+[`.env_hcho`](./.env_hcho) and [`.env_no2`](./.env_no2). Fill in `ACCOUNT_ID`
+and `ICECHUNK_BUCKET` (one shared bucket in us-west-2; create it once with
+`aws s3 mb s3://<bucket> --region us-west-2` — `S3_PREFIX` plus the
+per-collection `ICECHUNK_PREFIX` keep the stacks' output separate). Both files
+ship backfill-first: forward processing (consumer, poller, re-sort job) stays
+undeployed while the backfill runs.
+
+Per collection, hcho shown:
+
+1. Deploy: `uv run --env-file .env_hcho cdk deploy`
+2. Build and upload the inventory: `uv run exploration/build_backfill_inventory.py --collection hcho --s3-uri s3://<bucket>/tempo/inventory/hcho.json`
+3. Start the backfill: `./scripts/start_backfill.sh -e .env_hcho hcho-backfill-<date> s3://<bucket>/tempo/inventory/hcho.json` (a failed run can be restarted under a new execution name; Init resets the leftover branch)
+4. When it has promoted, set `FORWARD_QUEUE_ENABLED=true` in `.env_hcho` and redeploy. The poller's first run starts from the inventory's build time, so granules published while the backfill ran are picked up; the re-sort job folds in anything that arrived out of order.
+5. Run `uv run --env-file .env_hcho scripts/verify_store.py` after the promote (and periodically) to spot-check the store against its sources.
+
+Then repeat with `.env_no2` for the second stack:
+
+```bash
+uv run --env-file .env_no2 cdk deploy
+uv run exploration/build_backfill_inventory.py --collection no2 \
+  --s3-uri s3://<bucket>/tempo/inventory/no2.json
+./scripts/start_backfill.sh -e .env_no2 no2-backfill-<date> \
+  s3://<bucket>/tempo/inventory/no2.json
+```
 
 Settings live in [`cdk/settings.py`](./cdk/settings.py) and a `.env` file ([sample](./.env.sample)). The ones that matter most:
 
