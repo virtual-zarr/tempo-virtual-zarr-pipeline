@@ -137,9 +137,9 @@ class VirtualizarrProcessor(Protocol):
 
     def process_backfill_file(self, file_key: str, fork: ForkSession) -> bool:
         """
-        Write a per-file virtual dataset into the fork's store via
-        `vz.to_icechunk(store, region="auto")`, which aligns the dataset to its
-        target position by coordinate. Must NOT commit.
+        Write a per-file virtual dataset into the fork's store with an
+        explicit region write, locating the target slot by exact match of
+        the granule's time value against the store axis. Must NOT commit.
 
         Parameters
         ----------

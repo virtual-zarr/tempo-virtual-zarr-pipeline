@@ -46,10 +46,14 @@ profiling in `context/findings.txt` (20-granule HCHO sweep):
    `(time, latitude, longitude)` via `expand_dims` (zero-copy on
    `ManifestArray`) or a reader silently gets scan 1's weights for every
    scan.
-7. `to_icechunk(..., region="auto")` locates the target slice by looking
-   the granule's loaded `time` coordinate up in the store's `time` index
-   (exact match, via xarray). Wrong/unknown time ⇒ hard error, never a
-   silent misplacement.
+7. Each granule's target slice is located by looking its loaded `time`
+   value up in the store's axis with an **exact raw-float match**, and the
+   region write is passed the explicit slice. (`region="auto"` was
+   rejected during implementation: xarray's auto-detection CF-decodes the
+   store axis and compares in datetime64 space — a precision seam this
+   pipeline forbids — and would rewrite the shared native time chunk from
+   every worker.) Wrong/unknown time ⇒ hard error, never a silent
+   misplacement.
 8. CMR publishes out of order (~7% of adjacent pairs), republishes rarely
    (0.4%, short-window corrective), and the V04 historical archive is
    still being drip-fed backwards. An inventory goes stale within days;
@@ -63,7 +67,7 @@ profiling in `context/findings.txt` (20-granule HCHO sweep):
 `exploration/build_backfill_inventory.py` emits a bare JSON array of URLs
 ordered by CMR `BeginningDateTime`. Because of fact 1, init cannot build
 the store's time axis from that file, and the axis is the linchpin of the
-whole backfill: `region="auto"` aligns each granule against it, and its
+whole backfill: each granule's slot is located against it, and its
 values are what users read as the time coordinate.
 
 ### New format: a typed granule manifest
@@ -137,7 +141,8 @@ TEMPO-specific bindings:
 - **Partition** slices `inventory.granules` into manifests of bare URLs —
   the worker contract (`file_keys: list[str]`) is unchanged; workers do
   not need manifest times because the file itself carries the same value
-  (fact 2) and `region="auto"` enforces agreement with the store axis.
+  (fact 2) and the exact-match slot lookup enforces agreement with the
+  store axis.
 - **Worker** (`process_backfill_file`): parse → transform → validate →
   region-write; never commits. Any failure raises: the Step Functions run
   fails before promote rather than shipping a hole.
@@ -200,7 +205,7 @@ Per granule (worker, before writing):
 | V1 | `validate_granule(template, vds, volatile=...)`: every shared attribute the template declares must match; structure mismatches (dtype/chunks/shape) surface as `to_icechunk` errors against the fixed store arrays | a structurally divergent granule (reprocessed with different chunking/compression) written where readers decode with the wrong codec |
 | V2 | `coordinates=` reference lat/lon: bit-exact `np.array_equal` against the committed artifact | a regridded/shifted granule silently landing on the standard grid |
 | V3 | time integrity: granule has exactly one time step and `/time[0] == time_coverage_start_since_epoch` (fact 2) | a corrupt/inconsistent file defining its own position |
-| V4 | `region="auto"`: the granule's time must exist in the store axis (built from the manifest) — a granule whose time is unknown or already differs errors out | misplacement; a stale inventory entry vs. a republished file with a changed time |
+| V4 | exact-match axis slot lookup (fact 7): the granule's time must equal exactly one store-axis value (built from the manifest) or the write errors out | misplacement; a stale inventory entry vs. a republished file with a changed time |
 | V5 | `weight` promotion is applied before write | per-scan weights silently frozen at scan 1 |
 
 Store-level:
@@ -219,10 +224,9 @@ them (they are never `ManifestArray`s) and they live in the store as
 **native** chunks, not virtual references — written once by init (axis
 from the manifest, grid from the artifact). Workers validate lat/lon
 against the artifact and then drop them before writing (both the
-region-write and the forward append paths), so the only native chunk a
-worker ever touches is its identical-valued rewrite of the time chunk
-that `region="auto"` requires — a pattern the backfill mechanics tests
-already prove safe under fork/merge.
+region-write and the forward append paths), so workers drop `time` too
+after using it for the slot lookup (fact 7), so no worker ever touches a
+native chunk at all.
 - Post-promote QA (script, sample-based): open the store, pick random
   granules, compare a data slice read through the virtual store against
   the same slice read directly from the source file with h5py.
@@ -294,7 +298,7 @@ store axis (max `T`):
 
 | Case | Action |
 |------|--------|
-| `t` ∈ axis, manifest entry has same `granule_ur` | **Overwrite in place** via `region="auto"`: republication of a known scan, or an at-least-once redelivery. Idempotent; refreshes refs and their `last_updated_at` stamp. |
+| `t` ∈ axis, manifest entry has same `granule_ur` | **Overwrite in place** via an explicit region write to the slot: republication of a known scan, or an at-least-once redelivery. Idempotent; refreshes refs and their `last_updated_at` stamp. |
 | `t` ∈ axis, different `granule_ur` | **Hard reject** — two distinct granules claiming one time step is a data inconsistency to investigate, never to write. |
 | `t > T` | **Append** (`append_dim="time"`), then update the store manifest. |
 | `t ≤ T`, `t` ∉ axis | **Defer**: record `(url, granule_ur, time)` in the *pending ledger* (S3 JSON, `GranuleEntry` list) and consume the message successfully. The re-sort job folds it in. |
