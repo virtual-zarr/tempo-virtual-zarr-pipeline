@@ -19,7 +19,7 @@ This repository was instantiated from the [virtualizarr-data-pipelines](https://
 - [`combine_twenty_spread_virtual.py`](./exploration/combine_twenty_spread_virtual.py) — the same end-to-end flow for N granules (default 20) spread evenly across the collection's temporal extent, with throttle-aware retries.
 - [`build_titiler_test_store.py`](./exploration/build_titiler_test_store.py) — builds a small persistent local Icechunk store (12 most recent granules, flattened to the root group, credential-less HTTP virtual chunk container) for each collection, feeding the titiler-multidim smoke test below.
 - [`build_s3_test_store.py`](./exploration/build_s3_test_store.py) — builds a more realistic S3-hosted Icechunk store at `s3://nasa-eodc-scratch/icechunk/<concept-id>`: 100 most recent granules, `s3://asdc-prod-protected` virtual chunk references, and a credential-less S3 virtual chunk container that readers authorize with temporary ASDC credentials at open time. Must run on in-region compute (e.g. a us-west-2 JupyterHub) with write access to the store bucket.
-- [`build_backfill_inventory.py`](./exploration/build_backfill_inventory.py) — builds the backfill inventory file: queries CMR for every granule of the collection (optionally windowed with `--start`/`--end`), validates that each granule has a `.nc` link and owns a distinct time step, and writes the chronologically ordered JSON array of keys that the pipeline's partition step consumes. Reads only CMR metadata, so it needs no Earthdata credentials; `--s3-uri` also uploads the file so its URI can be passed straight to `scripts/start_backfill.sh`.
+- [`build_backfill_inventory.py`](./exploration/build_backfill_inventory.py) — builds the typed backfill inventory (`tempo-backfill-inventory/1`): queries CMR for every granule of the collection (optionally windowed with `--start`/`--end`), dedupes republications keeping the newest revision, reads each granule's **exact in-file `/time[0]`** from a few KB of its header (needs Earthdata credentials; run in-region with `--access direct`), and writes the validated JSON document the pipeline's partition/init steps consume. `--s3-uri` also uploads the file so its URI can be passed straight to `scripts/start_backfill.sh`.
 
 Findings so far: both collections share the same 2950×7750 grid, the same group layout (`product`, `geolocation`, `support_data`, `qa_statistics`), and the same shuffle + deflate(level 1) filter pipeline, with chunk shape (1, 738, 1938) for float64 variables and (1, 984, 2584) for float32/int16 variables. ASDC's CloudFront distribution rate-limits bursts of HTTPS range requests (403 "Request blocked"), so bulk virtualization should use in-region S3 access, or low concurrency with retries over HTTPS.
 
@@ -156,7 +156,50 @@ rely on **forward processing** to keep the store current as new files land.
 
 ### Pipeline status :rocket:
 
-The TEMPO-specific processor has not been written yet — the template's sample processor is still in place, and the exploration scripts above are informing its design. The sections below are the template's documentation for building the processor and deploying the infrastructure.
+The TEMPO-specific processor is implemented (design:
+[`docs/superpowers/specs/2026-08-20-tempo-inventory-and-processor-design.md`](./docs/superpowers/specs/2026-08-20-tempo-inventory-and-processor-design.md)).
+The moving parts:
+
+- **Declarative collection config** — `virtualizarr_processor/collections/{hcho,no2}.toml`
+  (pydantic `CollectionConfig`; instance selected via `$TEMPO_COLLECTION`) declares the
+  flatten/promote/drop transforms, the volatile-attribute set, the time-axis chunk size,
+  and the names of two generated artifacts: the store template (pydantic-zarr
+  `GroupSpec` JSON, produced through the actual `to_icechunk` write path) and the
+  bit-exact reference `latitude`/`longitude` arrays. Regenerate with
+  `uv run scripts/generate_template.py` — any reference granule that diverges on a
+  non-volatile attribute or the grid fails generation loudly.
+- **Typed backfill inventory** (`tempo-backfill-inventory/1`), built by
+  `uv run exploration/build_backfill_inventory.py`: one entry per granule with its
+  `.nc` link, its granule UR (filename stem), and its **exact in-file `/time[0]`**
+  (which differs from the CMR/filename timestamp — e.g. `...T174200Z` has
+  `/time` = 17:42:18.02). Init builds the store's axis from these values; workers
+  locate each granule's slot by exact raw-float match, so a granule not in the
+  inventory is rejected, never misplaced. Validators reject empty/unsorted/
+  duplicate-time/duplicate-UR sets on both the build and consume side.
+- **Validation on insertion** — every granule must match the template's shared
+  attributes, carry the bit-exact reference grid, and agree with its own
+  `time_coverage_start_since_epoch`; failures reject the granule and (in backfill)
+  fail the run before promote. The promote gate re-validates the store, the axis
+  against the inventory, and the native coordinates against the artifact. All
+  virtual refs carry a `last_updated_at` checksum anchored to the source object's
+  observed mtime, so a source file overwritten after ingest fails reads loudly
+  instead of serving bytes from a changed file.
+- **Forward processing** routes each granule: append when after the axis end;
+  overwrite in place when its time slot and granule UR match the **store manifest**
+  (republications; makes at-least-once SQS delivery idempotent); hard-reject a
+  different granule claiming an occupied slot; defer out-of-order arrivals (the
+  ongoing historical back-fill, adjacent-scan swaps) to a **pending ledger**. A
+  scheduled **re-sort job** folds the ledger in by rewriting the shifted suffix on
+  a `resort` branch and fast-forwarding `main`. The queue is fed by the scheduled
+  **CMR poller** (see the TEMPO/ASDC note above). The consumer runs at reserved
+  concurrency 1; the store manifest, ledger, and poll watermark live under
+  `s3://<icechunk bucket>/<prefix>state/`.
+- **Post-promote QA** — `uv run scripts/verify_store.py` samples random time steps,
+  maps them to their source granules via the store manifest, and compares windows
+  read through the virtual store against h5py reads of the source; any mismatch or
+  checksum failure exits non-zero.
+
+The sections below are the template's documentation for building a processor and deploying the infrastructure.
 
 ### Creating a processor :package:
 The first step is building your own dataset specific processor module. There is a sample
