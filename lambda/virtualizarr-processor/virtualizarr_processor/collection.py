@@ -37,6 +37,10 @@ class CollectionConfig(BaseModel, frozen=True):
     promote_to_time: tuple[str, ...]
     drop_variables: tuple[str, ...]
     volatile_attributes: frozenset[str]
+    # Chunk size for the native time axis. A template generated from a
+    # single-granule store would otherwise chunk time as (1,), which after
+    # resize means one tiny chunk per scan for every reader to fetch.
+    time_chunk_size: int
     template_file: str
     coordinates_file: str
 

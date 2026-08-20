@@ -13,5 +13,6 @@ extra_volatile_attributes = [
     "geospatial_lon_min",
     "geospatial_lon_max",
 ]
+time_chunk_size = 16384
 template_file = "no2_template.json"
 coordinates_file = "coordinates.npz"

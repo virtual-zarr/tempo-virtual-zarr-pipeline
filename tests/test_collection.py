@@ -116,3 +116,8 @@ def test_coordinates_missing_file_names_it() -> None:
 def test_configs_declare_distinct_templates() -> None:
     assert load_collection("hcho").template_file != load_collection("no2").template_file
     assert isinstance(load_collection("hcho"), CollectionConfig)
+
+
+def test_time_chunk_size_declared() -> None:
+    assert load_collection("hcho").time_chunk_size == 16384
+    assert load_collection("no2").time_chunk_size == 16384
