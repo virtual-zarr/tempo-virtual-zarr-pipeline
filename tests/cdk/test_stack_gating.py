@@ -104,8 +104,8 @@ def test_prod_bucket_is_retained() -> None:
 
 
 def test_bucket_expires_backfill_run_artifacts() -> None:
-    """Fork pickles and partition manifests under backfill/<execution>/ are
-    per-run debris; a lifecycle rule keeps repeated runs from accumulating."""
+    """Fork pickles and partition manifests under backfill/<execution>/
+    are per-run scratch; a lifecycle rule expires them."""
     from aws_cdk.assertions import Match
 
     _template(backfill=True).has_resource_properties(

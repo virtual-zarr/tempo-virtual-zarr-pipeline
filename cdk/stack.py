@@ -102,13 +102,13 @@ class VirtualizarrSqsStack(Stack):
                 queue=self.dlq,
             ),
         )
-        # Backfill run artifacts (fork pickles, partition manifests) are
-        # per-execution debris under <S3_PREFIX>/backfill/<execution>/.
+        # Backfill run artifacts (fork pickles, partition manifests) live
+        # under <S3_PREFIX>/backfill/<execution>/ and are per-run scratch.
         s3_prefix = settings.s3_key_prefix
         run_artifact_prefix = f"{s3_prefix}/backfill/" if s3_prefix else "backfill/"
 
-        # Wedge states in this pipeline are fail-safe but silent (rejected
-        # granules, failing scheduled jobs); alarms make them visible.
+        # Failure states here are fail-safe but silent (rejected granules,
+        # failing scheduled jobs); alarms make them visible.
         self.alarm_topic: sns.Topic | None = None
         if settings.ALARM_EMAIL:
             self.alarm_topic = sns.Topic(self, "AlarmTopic")
@@ -136,7 +136,7 @@ class VirtualizarrSqsStack(Stack):
                 self,
                 f"{settings.STACK_NAME}-bucket",
                 bucket_name=settings.ICECHUNK_BUCKET_NAME,
-                # Expire the run artifacts so repeated runs don't accumulate.
+                # Expire run artifacts so repeated runs do not accumulate.
                 lifecycle_rules=[
                     s3.LifecycleRule(
                         prefix=run_artifact_prefix, expiration=Duration.days(30)
@@ -243,9 +243,8 @@ class VirtualizarrSqsStack(Stack):
         if self.earthdata_secret is not None:
             self.earthdata_secret.grant_read(self.process_messages_lambda)
 
-        # The consumer parses source granules, so a deployment that enables
-        # the forward queue must name the source bucket (an unset name would
-        # otherwise synthesize a policy for the literal bucket "None").
+        # The consumer reads source granules; without a bucket name the
+        # policy below would target the literal bucket "None".
         if settings.FORWARD_QUEUE_ENABLED and not settings.DATA_BUCKET_NAME:
             raise ValueError(
                 "DATA_BUCKET_NAME must be set when the forward queue is "

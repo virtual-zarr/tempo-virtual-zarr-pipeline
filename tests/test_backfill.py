@@ -25,9 +25,8 @@ def test_initialize_backfill_store_creates_full_shape(
     session = backfill_repo.readonly_session("backfill")
     arr = zarr.open_group(session.store, mode="r")["foo"]
     assert arr.shape == (6, 2, 3)
-    # chunk geometry + dtype are load-bearing for process_backfill_file's
-    # chunk-key and byte-offset arithmetic; assert them here to catch a
-    # geometry regression before the Task 3 round-trip.
+    # Chunk geometry and dtype feed process_backfill_file's chunk-key and
+    # byte-offset arithmetic; assert them to catch geometry regressions.
     assert arr.chunks == (1, 2, 3)
     assert arr.dtype == np.dtype("int32")
     time_coord = zarr.open_group(session.store, mode="r")["time"]
@@ -72,8 +71,8 @@ def test_full_backfill_round_trip(backfill_repo: icechunk.Repository) -> None:
 
 
 def test_promote_refuses_when_main_moved(backfill_repo: icechunk.Repository) -> None:
-    """A commit landing on main mid-run fails the promote instead of being
-    silently discarded (the compare-and-swap that guards H1)."""
+    """A commit landing on main mid-run fails the promote instead of
+    being discarded."""
     processor = Processor()
     init = processor.initialize_backfill_store(backfill_repo)
     child = _worker(backfill.create_fork(backfill_repo), ["0"])

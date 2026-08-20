@@ -11,9 +11,9 @@ tracer = Tracer()
 @logger.inject_lambda_context()
 @tracer.capture_lambda_handler
 def handler(event: Any, context: LambdaContext) -> None:
-    # No exception handling: this runs as a CloudFormation custom resource,
-    # and swallowing a failure here would report a successful deploy with an
-    # uninitialized store.
+    # Exceptions must propagate: this runs as a CloudFormation custom
+    # resource, and a swallowed failure would report a successful deploy
+    # with an uninitialized store.
     virtualizarr_processor = Processor()
     virtualizarr_processor.initialize_repo()
     logger.info("Icechunk initialized")

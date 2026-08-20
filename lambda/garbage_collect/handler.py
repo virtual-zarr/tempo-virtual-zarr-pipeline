@@ -10,9 +10,9 @@ DEFAULT_EXPIRY_DAYS = 30
 
 
 def handler() -> None:
-    # No exception handling: this runs as a Batch job, and swallowing a
-    # failure would exit 0, defeating both the job's retry policy and any
-    # failure monitoring.
+    # Exceptions must propagate: this runs as a Batch job, and a swallowed
+    # failure would exit 0, defeating the job's retry policy and any
+    # monitoring.
     virtualizarr_processor = Processor()
     expiry_days = int(os.environ.get("GC_EXPIRY_DAYS", DEFAULT_EXPIRY_DAYS))
     expiry_time = datetime.now(timezone.utc) - timedelta(days=expiry_days)

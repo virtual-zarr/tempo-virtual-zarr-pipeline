@@ -74,7 +74,7 @@ def _skip_unless_artifact(config: CollectionConfig, filename: str) -> None:
 
     resource = files("virtualizarr_processor") / "collections" / filename
     if not resource.is_file():
-        pytest.skip(f"template artifact {filename} not generated yet (Task 5)")
+        pytest.skip(f"template artifact {filename} not generated yet")
 
 
 def test_load_template_returns_group_spec() -> None:

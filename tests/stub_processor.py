@@ -174,7 +174,7 @@ class Processor:
 
     def initialize_backfill_store(self, repo: Repository) -> BranchInit:
         main_tip = repo.lookup_branch("main")
-        # Reset a leftover branch from a failed run, per the protocol.
+        # Reset a leftover branch from a failed run.
         if "backfill" in repo.list_branches():
             repo.reset_branch("backfill", main_tip)
         else:

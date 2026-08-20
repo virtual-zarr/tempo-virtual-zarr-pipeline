@@ -13,7 +13,8 @@ at-least-once SQS delivery is harmless.
 
 URIs may be ``s3://bucket/key`` or plain filesystem paths. Both artifacts
 rely on the deployment's single-writer setup (consumer at reserved
-concurrency 1, re-sort serialized with the consumer).
+concurrency 1); a re-sort racing the consumer is caught by the promote's
+compare-and-swap before either artifact is rewritten.
 """
 
 from __future__ import annotations
@@ -33,9 +34,9 @@ from virtualizarr_processor.store_template import StoreValidationError
 def storage_prefix() -> str | None:
     """The repository's S3 key prefix: $S3_PREFIX and $ICECHUNK_PREFIX joined.
 
-    Deployed Lambdas receive the already-combined value as $ICECHUNK_PREFIX;
-    local runs against a per-collection env file carry the two parts, combined
-    here exactly as the CDK stack combines them.
+    Deployed Lambdas receive the combined value as $ICECHUNK_PREFIX; local
+    runs with a per-collection env file carry the two parts, joined here
+    exactly as the CDK stack joins them.
     """
     return (
         "/".join(
@@ -50,11 +51,9 @@ def storage_prefix() -> str | None:
 def default_state_uri(filename: str) -> str:
     """The deployment-default URI for a state artifact next to the repo.
 
-    Mirrors the CDK stack's derivation
-    (``s3://<bucket>/<prefix>/state/<filename>``) so local script runs with
-    only a per-collection env file resolve the same artifacts the Lambdas
-    were deployed with. Explicit ``$STORE_MANIFEST_URI``-style variables take
-    precedence at the call sites.
+    Mirrors the CDK stack's ``s3://<bucket>/<prefix>/state/<filename>``
+    derivation so local script runs resolve the same artifacts the Lambdas
+    were deployed with. Explicit ``*_URI`` variables win at the call sites.
     """
     bucket = os.environ.get("ICECHUNK_BUCKET")
     if not bucket:

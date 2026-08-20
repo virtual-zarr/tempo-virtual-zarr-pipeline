@@ -1,8 +1,8 @@
 """Stack-owned Lambda log groups.
 
-Lambda's implicitly created ``/aws/lambda/<fn>`` log groups are
-never-expire and survive ``cdk destroy``; giving every function an
-explicit log group bounds retention and makes teardown complete.
+Lambda's implicit ``/aws/lambda/<fn>`` log groups never expire and
+survive ``cdk destroy``; explicit log groups bound retention and make
+teardown complete.
 """
 
 from aws_cdk import RemovalPolicy

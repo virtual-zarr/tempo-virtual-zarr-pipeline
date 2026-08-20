@@ -58,7 +58,7 @@ Points worth knowing:
 
 **Backfill inventory.** `uv run exploration/build_backfill_inventory.py` produces the input for a backfill: a validated JSON document with one entry per granule — its `.nc` link, its granule UR, and its exact in-file `/time[0]`. The in-file time differs from the CMR and filename timestamps (`...T174200Z` has `/time` = 17:42:18.02), and the store's time axis is built from these exact values, so the builder reads a few KB of every granule's header. The document is rejected if it is empty, unsorted, or contains duplicate times or granule URs — checked again when the pipeline reads it.
 
-**Backfill.** The Step Functions run partitions the inventory, creates the full-shape store on a `backfill` branch (metadata plus the native coordinates, nothing else), and fans out workers. Each worker parses its granule, validates it, finds its slot by matching the granule's time against the axis exactly, and writes its references into a disjoint region of an Icechunk fork; a reducer merges each partition's forks into one commit. Any worker failure fails the run before anything reaches `main`. The final promote step re-validates the store against the template, the axis against the inventory, and the coordinates against the reference arrays, then moves `main` to the backfill tip with a compare-and-swap against the tip the branch was created from — a commit that landed on `main` mid-run fails the promote loudly instead of being discarded — and writes the store manifest.
+**Backfill.** The Step Functions run partitions the inventory, creates the full-shape store on a `backfill` branch (metadata plus the native coordinates, nothing else), and fans out workers. Each worker parses its granule, validates it, finds its slot by matching the granule's time against the axis exactly, and writes its references into a disjoint region of an Icechunk fork; a reducer merges each partition's forks into one commit. Any worker failure fails the run before anything reaches `main`. The final promote step re-validates the store against the template, the axis against the inventory, and the coordinates against the reference arrays, then moves `main` to the backfill tip and writes the store manifest. The move is a compare-and-swap against the tip the branch was created from, so a commit that landed on `main` mid-run fails the promote instead of being discarded.
 
 **Validation.** A granule is written only if it matches the template's shared attributes, carries the bit-identical reference grid, and its `/time[0]` equals its own `time_coverage_start_since_epoch` attribute. Every virtual reference is stamped with the source object's observed modification time, so if a source file is later overwritten, reads of the stale references fail instead of returning bytes from a changed file.
 
@@ -71,13 +71,13 @@ Points worth knowing:
 | time occupies a slot, different granule UR | reject to the DLQ |
 | time is out of order | record in the pending ledger, consume the message |
 
-Out-of-order arrivals are common: TEMPO's historical archive is still being back-filled, and about 7% of adjacent scans publish swapped. A scheduled re-sort job merges the pending ledger into the store on a `resort` branch: already-ingested slots at or after the earliest insertion are relocated with a metadata-only chunk reindex (icechunk `reindex_array` — no source file is re-read, so deep historical insertions are cheap), only the inserted granules are parsed, and `main` moves by the same compare-and-swap as the backfill promote. One run folds at most `RESORT_MAX_FOLD` pending granules (earliest first) and promotes that as durable partial progress; the remainder drains on subsequent runs. The consumer runs at reserved concurrency 1 because concurrent appends conflict. The store manifest (which granule owns which slot), the pending ledger, and the poll watermark live under `s3://<icechunk bucket>/<prefix>state/`.
+Out-of-order arrivals are common: TEMPO's historical archive is still being back-filled, and about 7% of adjacent scans publish swapped. A scheduled re-sort job merges the pending ledger into the store on a `resort` branch. Already-ingested slots at or after the earliest insertion are relocated with icechunk's `reindex_array`, a metadata-only move that never re-reads a source file, so deep historical insertions are cheap; only the inserted granules are parsed. `main` moves by the same compare-and-swap as the backfill promote. One run folds at most `RESORT_MAX_FOLD` pending granules, earliest first, and promotes that as durable partial progress; the rest drain on later runs. The consumer runs at reserved concurrency 1 because concurrent appends conflict. The store manifest (which granule owns which slot), the pending ledger, and the poll watermark live under `s3://<icechunk bucket>/<prefix>state/`.
 
 **Verification.** `uv run scripts/verify_store.py` samples random time steps and, for each, asks CMR for the granule nearest that time, independently of the pipeline's own bookkeeping. The file CMR points at must match the store's axis time exactly, and random windows of every variable are compared both raw (store bytes against h5py reads) and CF-decoded (the read path users take). Because the URL comes from CMR, a store still referencing a superseded revision is caught even when the old object is intact. `--completeness` diffs CMR's granule listing against the manifest and pending ledger; `--offline` falls back to manifest-provided URLs. Any mismatch or read failure exits non-zero.
 
-**Recovery.** An Icechunk commit and the store-manifest write are two separate writes, so a crash between them can leave the pair divergent: redeliveries of the committed granules get rejected against the stale manifest, and the re-sort job fails its axis check. The manifest is derivable state — `uv run scripts/rebuild_manifest.py` reconstructs it from the store's own axis, resolving each slot from the old manifest, the pending ledger, `--inventory`, and CMR, and validating the result against the axis before `--write` replaces it (dry-run by default; run `verify_store.py` afterwards). A promote rejected by the compare-and-swap needs no repair: nothing was consumed, so the next scheduled run retries against the new `main` tip.
+**Recovery.** An Icechunk commit and the store-manifest write are separate, so a crash between them can leave the pair divergent: redeliveries get rejected against the stale manifest and the re-sort job fails its axis check. The manifest is derivable state. `uv run scripts/rebuild_manifest.py` reconstructs it from the store's axis, resolving each slot from the old manifest, the pending ledger, `--inventory`, and CMR, and validates the result against the axis before `--write` replaces it (dry-run by default; run `verify_store.py` afterwards). A promote rejected by the compare-and-swap needs no repair: nothing was consumed, and the next scheduled run retries against the new `main` tip.
 
-**Source credentials.** Workers read granules with temporary Earthdata credentials when EDL material is configured — `EARTHDATA_TOKEN`, `EARTHDATA_USERNAME`/`EARTHDATA_PASSWORD`, or a Secrets Manager secret at `EARTHDATA_SECRET_ARN` (JSON with `token` or `username`+`password`) — exchanging it at the DAAC's `s3credentials` endpoint per bucket (override with `EARTHDATA_S3_CREDENTIALS_ENDPOINT`). With no EDL material configured, reads fall back to the Lambda role's ambient IAM access, which only works when the deployment account has a bucket-policy grant on the source bucket.
+**Source credentials.** When Earthdata Login material is configured (`EARTHDATA_TOKEN`, `EARTHDATA_USERNAME`/`EARTHDATA_PASSWORD`, or a Secrets Manager secret at `EARTHDATA_SECRET_ARN` holding JSON with `token` or `username`+`password`), workers exchange it for temporary S3 credentials at the bucket's `s3credentials` endpoint (`EARTHDATA_S3_CREDENTIALS_ENDPOINT` overrides). Without it, reads use the Lambda role's ambient IAM access, which requires a bucket-policy grant on the source bucket.
 
 > **Feeding the queue:** ASDC does not publish an SNS notification topic for
 > `asdc-prod-protected`, so this pipeline polls CMR instead. Duplicate
@@ -89,11 +89,11 @@ Out-of-order arrivals are common: TEMPO's historical archive is still being back
 
 ## Deploying and running
 
-Each collection deploys as its own stack from a committed env file —
+Each collection deploys as its own stack from a committed env file:
 [`.env_hcho`](./.env_hcho) and [`.env_no2`](./.env_no2). Fill in `ACCOUNT_ID`
-and `ICECHUNK_BUCKET` (one shared bucket in us-west-2; create it once with
-`aws s3 mb s3://<bucket> --region us-west-2` — `S3_PREFIX` plus the
-per-collection `ICECHUNK_PREFIX` keep the stacks' output separate). Both files
+and `ICECHUNK_BUCKET`, one shared bucket in us-west-2 created once with
+`aws s3 mb s3://<bucket> --region us-west-2`; `S3_PREFIX` plus the
+per-collection `ICECHUNK_PREFIX` keep the stacks' output separate. Both files
 ship backfill-first: forward processing (consumer, poller, re-sort job) stays
 undeployed while the backfill runs.
 
@@ -101,7 +101,7 @@ Per collection, hcho shown:
 
 1. Deploy: `uv run --env-file .env_hcho cdk deploy`
 2. Build and upload the inventory: `uv run exploration/build_backfill_inventory.py --collection hcho --s3-uri s3://<bucket>/tempo/inventory/hcho.json`
-3. Start the backfill: `./scripts/start_backfill.sh -e .env_hcho hcho-backfill-<date> s3://<bucket>/tempo/inventory/hcho.json` (a failed run can be restarted under a new execution name; Init resets the leftover branch)
+3. Start the backfill: `./scripts/start_backfill.sh -e .env_hcho hcho-backfill-<date> s3://<bucket>/tempo/inventory/hcho.json`. A failed run can be restarted under a new execution name; Init resets the leftover branch.
 4. When it has promoted, set `FORWARD_QUEUE_ENABLED=true` in `.env_hcho` and redeploy. The poller's first run starts from the inventory's build time, so granules published while the backfill ran are picked up; the re-sort job folds in anything that arrived out of order.
 5. Run `uv run --env-file .env_hcho scripts/verify_store.py` after the promote (and periodically) to spot-check the store against its sources.
 
@@ -139,7 +139,7 @@ Settings live in [`cdk/settings.py`](./cdk/settings.py) and a `.env` file ([samp
 | `GC_EXPIRY_DAYS` | 30 | snapshot expiry for GC runs — also the store's rollback window |
 | `ALARM_EMAIL` | — | notification email for the DLQ-depth and scheduled-job-failure alarms |
 
-The Lambda images install against [`lambda/constraints.txt`](./lambda/constraints.txt), an export of the repo's `uv.lock`, so deploys run the dependency versions the test suite ran. Regenerate it with the command in its header whenever the lock changes. A backfill run that fails can simply be restarted with a new execution name: the Init step resets the leftover `backfill` branch (don't run two backfills concurrently).
+The Lambda images install against [`lambda/constraints.txt`](./lambda/constraints.txt), an export of the repo's `uv.lock`, so deploys run the dependency versions the test suite ran; regenerate it with the command in its header whenever the lock changes. Concurrent backfill runs are not supported.
 
 ![Backfill](./docs/backfill-fork-merge-dark.png#gh-dark-mode-only)
 ![Backfill](./docs/backfill-fork-merge.png#gh-light-mode-only)

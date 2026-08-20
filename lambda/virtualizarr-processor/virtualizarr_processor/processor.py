@@ -112,8 +112,6 @@ class Processor:
         if bucket:
             storage = icechunk.s3_storage(
                 bucket=bucket,
-                # $S3_PREFIX + $ICECHUNK_PREFIX, combined like the CDK stack
-                # (deployed Lambdas carry the pre-combined ICECHUNK_PREFIX).
                 prefix=manifest_module.storage_prefix(),
                 region=os.environ.get("ICECHUNK_REGION"),
                 from_env=True,
@@ -170,9 +168,8 @@ class Processor:
             self.template, {self.config.append_dim: len(inventory.granules)}
         )
         main_tip = repo.lookup_branch("main")
-        # A leftover branch from a failed run is reset so a re-run needs no
-        # manual surgery (same pattern as initialize_resort_store). Runs are
-        # serialized by operation, not by this branch: start one at a time.
+        # Reset a leftover branch from a failed run so it can be restarted.
+        # Concurrent backfill runs are not supported.
         if "backfill" in repo.list_branches():
             repo.reset_branch("backfill", main_tip)
         else:
@@ -264,17 +261,15 @@ class Processor:
     ) -> int:
         """Move already-ingested slots to their merged positions, metadata-only.
 
-        For every template array chunked one slot per chunk along the append
-        dimension, relocate each shifted slot's chunk references with
-        icechunk's ``reindex_array`` — the payloads (virtual refs including
-        their ``last_updated_at`` checksums) move untouched, so no granule is
-        re-read from source. Slots whose merged position holds a granule not
-        in ``manifest`` (the inserted ones) are cleared and must be written
-        by :meth:`process_resort_file` before the branch validates.
+        Relocates each shifted slot's chunk references with icechunk's
+        ``reindex_array``; payloads (including ``last_updated_at`` checksums)
+        move untouched, so no granule is re-read from source. Slots for
+        inserted granules are cleared and must be written afterwards with
+        :meth:`process_resort_file`.
 
-        Runs on the ``resort`` session after :meth:`initialize_resort_store`
-        resized the arrays and rewrote the axis. Returns the number of slots
-        moved.
+        Call on the ``resort`` session after :meth:`initialize_resort_store`
+        has resized the arrays and rewritten the axis. Returns the number of
+        slots moved.
         """
         shift = first_shifted_index(manifest, merged)
         merged_position = {e.granule_ur: i for i, e in enumerate(merged.granules)}
@@ -445,13 +440,11 @@ class Processor:
     # -- forward processing --------------------------------------------------
 
     def open_initialized_repo(self) -> Repository:
-        """Open the repository, refusing to run against an uninitialized store.
+        """Open the repository, raising if the store is not initialized.
 
-        The forward consumer uses this instead of :meth:`initialize_repo`:
-        creating the store is a deliberate act (the backfill Init step, or
-        the initialize Lambda in forward-only deployments), and a consumer
-        quietly bootstrapping an empty store on ``main`` ahead of a planned
-        backfill would collide with that backfill's Init.
+        Used by the forward consumer, which must never create the store as
+        a side effect; that is the backfill Init step's job (or the
+        initialize Lambda's, in forward-only deployments).
         """
         repo = self.open_backfill_repo()
         try:

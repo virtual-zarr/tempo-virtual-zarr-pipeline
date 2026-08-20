@@ -1,14 +1,7 @@
-from typing import Any, Literal
+from typing import Literal
 
 from pydantic import model_validator
 from pydantic_settings import BaseSettings
-
-
-def include_trailing_slash(value: Any) -> Any:
-    """Make sure the value includes a trailing slash if str"""
-    if isinstance(value, str):
-        return value.rstrip("/") + "/"
-    return value
 
 
 class StackSettings(BaseSettings):
@@ -18,9 +11,8 @@ class StackSettings(BaseSettings):
     # Optional: when blank, app.py falls back to CDK_DEFAULT_ACCOUNT (the account
     # of the active AWS credentials) so synth/deploy still resolve an environment.
     ACCOUNT_ID: str | None = None
-    # Default to the source data's region: asdc-prod-protected is in
-    # us-west-2, and deploying elsewhere makes every worker read a
-    # cross-region transfer (the largest avoidable backfill cost).
+    # The source data's region: asdc-prod-protected is in us-west-2, and
+    # deploying elsewhere makes every worker read a cross-region transfer.
     ACCOUNT_REGION: str = "us-west-2"
     ICECHUNK_BUCKET_NAME: str = "icechunk-output"
     # Optional existing bucket for the Icechunk store and per-run backfill
@@ -40,12 +32,10 @@ class StackSettings(BaseSettings):
     MAX_CONCURRENCY: int = 50
     SQS_BATCH_SIZE: int = 10
 
-    # ARN of the Secrets Manager secret holding Earthdata Login material —
-    # JSON with "token" or "username"+"password". The processor exchanges it
-    # for temporary S3 credentials at the DAAC's s3credentials endpoint when
-    # reading protected source granules. When unset, no secret resource or
-    # IAM grant is created and reads rely on the Lambda role's ambient IAM
-    # access to the source bucket.
+    # Secrets Manager secret holding Earthdata Login material (JSON with
+    # "token" or "username"+"password"), exchanged for temporary S3
+    # credentials when reading protected source granules. When unset, reads
+    # rely on the Lambda role's ambient IAM access to the source bucket.
     EARTHDATA_SECRET_ARN: str | None = None
 
     # Frequency in days to run garbage collection (requires VPC_ID).
@@ -55,8 +45,7 @@ class StackSettings(BaseSettings):
     GC_EXPIRY_DAYS: int = 30
 
     # Email for CloudWatch alarm notifications (DLQ depth, scheduled-job
-    # failures). The alarms exist regardless; without an email they are
-    # visible in the console only.
+    # failures). Without it the alarms are console-only.
     ALARM_EMAIL: str | None = None
 
     # TEMPO collection this instance processes ("hcho" or "no2"); reaches every
@@ -74,9 +63,9 @@ class StackSettings(BaseSettings):
     # enabled. None disables the individual schedule.
     RESORT_SCHEDULE_HOURS: int | None = 24
     POLL_SCHEDULE_MINUTES: int | None = 30
-    # Max pending granules one re-sort run parses and inserts; the rest stay
-    # in the ledger for the next run. Relocating already-ingested slots is
-    # metadata-only and not bounded by this.
+    # Max pending granules one re-sort run parses and inserts; the rest
+    # stay in the ledger for the next run. Slot relocation is metadata-only
+    # and not bounded by this.
     RESORT_MAX_FOLD: int = 500
 
     VPC_ID: str | None = None

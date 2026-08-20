@@ -26,8 +26,8 @@ def handler(event: dict[str, Any], context: LambdaContext) -> dict[str, Any]:
             "branched_from": init_result.branched_from,
         },
     )
-    # branched_from travels through the Step Functions state to the promote
-    # step, which uses it as the compare-and-swap expectation for `main`.
+    # The promote step uses branched_from as its compare-and-swap
+    # expectation for `main`.
     return {
         "base_snapshot": init_result.snapshot,
         "branched_from": init_result.branched_from,

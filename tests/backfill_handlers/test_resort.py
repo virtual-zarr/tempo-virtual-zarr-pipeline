@@ -215,7 +215,7 @@ def test_resort_promote_refuses_when_main_moved_mid_run(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A commit landing on main while the re-sort runs fails the promote
-    (compare-and-swap) instead of being silently discarded."""
+    instead of being discarded."""
     tiny = tempo_pipeline.tiny
     processor = backfilled_processor(tempo_pipeline)
     directory = tiny.granule_paths[0].parent

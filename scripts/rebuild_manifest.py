@@ -1,29 +1,21 @@
 #!/usr/bin/env python3
 """Reconstruct the store manifest from the store's own time axis.
 
-The store manifest is derivable state: the axis fixes each slot's exact
-time, and the granule that owns each time is recorded in the old
-manifest, the pending ledger, a backfill inventory, or CMR. An Icechunk
-commit and its manifest write are two separate writes, so a crash between
-them leaves the pair divergent — redeliveries get rejected and the
-re-sort job fails its axis check until the manifest is repaired. This
-script is that repair: one command instead of hand-editing JSON in S3.
+An Icechunk commit and its manifest write are separate, so a crash
+between them leaves the pair divergent: redeliveries get rejected and
+the re-sort job fails its axis check until the manifest is repaired.
+The manifest is derivable state, and this script rebuilds it.
 
 Each axis slot is resolved by exact time match against the existing
-manifest, the pending ledger, and ``--inventory`` (in that order; two
-sources disagreeing on the granule UR for one time is an error), and any
-still-unresolved slot is looked up in CMR by nearest temporal match
-(disable with ``--offline``). The result is validated through the
-inventory model and against the axis before anything is written.
+manifest, the pending ledger, and ``--inventory``, in that order (two
+sources disagreeing on the granule UR for one time is an error); any
+remaining slot is looked up in CMR by nearest temporal match (disable
+with ``--offline``). The result is validated through the inventory model
+and against the axis before anything is written.
 
-Dry-run by default: prints the rebuilt manifest's divergence from the
-stored one and exits non-zero if slots could not be resolved. Pass
-``--write`` to replace the stored manifest. Run ``verify_store.py``
-afterwards to confirm the repaired manifest against the sources.
-
-Uses the same environment variables as the processor Lambdas
-(ICECHUNK_BUCKET or ICECHUNK_LOCAL_PATH, TEMPO_COLLECTION,
-STORE_MANIFEST_URI, PENDING_LEDGER_URI).
+Dry-run by default; ``--write`` replaces the stored manifest. Run
+``verify_store.py`` afterwards to confirm the repair. Uses the same
+environment variables as the processor Lambdas.
 
 Usage:
     uv run scripts/rebuild_manifest.py
@@ -154,8 +146,8 @@ def main() -> int:
             print(f"  {line}", file=sys.stderr)
         return 1
 
-    # built_at feeds the CMR poller's initial watermark; keep the earliest
-    # known build time rather than pretending the store is brand new.
+    # built_at seeds the CMR poller's initial watermark; keep the earliest
+    # known build time.
     built_at = (
         old_manifest.built_at
         if old_manifest is not None

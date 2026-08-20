@@ -14,14 +14,13 @@ if TYPE_CHECKING:
 class BranchInit(NamedTuple):
     """Result of creating a work branch off the promote target.
 
-    ``branched_from`` is the target branch's tip at branch time — the
-    compare-and-swap expectation :func:`virtualizarr_processor.backfill.promote`
-    requires, so a commit that lands on the target while the work branch is
-    built fails the promote loudly instead of being silently discarded.
+    ``branched_from`` is :func:`virtualizarr_processor.backfill.promote`'s
+    compare-and-swap expectation: if the target moved while the work branch
+    was built, the promote fails instead of discarding that commit.
     """
 
     snapshot: str  # the init commit on the work branch
-    branched_from: str  # the promote target's tip when the branch was created
+    branched_from: str  # the promote target's tip at branch time
 
 
 class ProcessOutcome(enum.Enum):
@@ -36,13 +35,9 @@ class ProcessOutcome(enum.Enum):
 class VirtualizarrProcessor(Protocol):
     def initialize_repo(self) -> Repository:
         """
-        Initialize an Icechunk Store with the necessary structure and return
-        a Repository handle.
+        Open the repository, creating an empty templated store if new.
 
-        This store should have a dimension that can be used with an append function.
-
-        Parameters
-        ----------
+        The store must carry an append dimension for forward processing.
 
         Returns
         -------
@@ -87,7 +82,7 @@ class VirtualizarrProcessor(Protocol):
 
     def commit_processed_files(self, session: Session) -> str:
         """
-        Commits the updates made by one or multiple calls to process_file
+        Commit the updates made by calls to process_file.
 
         Parameters
         ----------
@@ -103,25 +98,19 @@ class VirtualizarrProcessor(Protocol):
         self, repo: Repository, inventory: "BackfillInventory"
     ) -> BranchInit:
         """
-        Create the `backfill` branch off the current `main` tip and build the
-        full-shape store (metadata plus native coordinates), commit, and
-        return the base snapshot id together with the `main` tip the branch
-        was created from (the promote CAS expectation).
+        Create the `backfill` branch off the current `main` tip, build the
+        full-shape store (metadata plus native coordinates), and commit.
 
-        The store is declared at its full extent up front because backfill
+        The store is declared at full extent up front because backfill
         writes disjoint regions rather than appending. The time axis is
-        written from the inventory's exact per-granule values, read from
-        the files at inventory build time. Workers match each granule
-        against that axis, so a granule missing from the inventory is
-        rejected rather than misplaced. The session must have no
-        uncommitted changes after this returns, so that forks taken from a
-        fresh session share the committed branch-tip snapshot as their
-        base.
+        written from the inventory's exact per-granule values, and workers
+        match each granule against it, so a granule missing from the
+        inventory is rejected rather than misplaced. The session must have
+        no uncommitted changes after this returns, so that forks share the
+        committed branch-tip snapshot as their base.
 
-        A `backfill` branch left behind by a failed run is reset to the
-        current `main` tip, so a run can simply be restarted. Backfill runs
-        must not execute concurrently; this method is intended to be called
-        exactly once per run.
+        A `backfill` branch left behind by a failed run is reset so the run
+        can be restarted. Concurrent backfill runs are not supported.
 
         Parameters
         ----------
@@ -139,11 +128,10 @@ class VirtualizarrProcessor(Protocol):
         """
         Open (or create) the durable backfill repository.
 
-        Storage is chosen by the implementation (e.g. S3 in a deployed Lambda,
-        local filesystem in tests). Must use durable, shared storage — a pickled
+        Storage is chosen by the implementation (S3 in a deployed Lambda,
+        local filesystem in tests) but must be durable and shared: a pickled
         ForkSession cannot resolve its base snapshot from in-memory storage.
-        Uses open_or_create semantics so the `main` branch exists for
-        initialize_backfill_store to branch off.
+        open_or_create semantics guarantee a `main` branch to branch off.
 
         Returns
         -------
@@ -171,11 +159,10 @@ class VirtualizarrProcessor(Protocol):
 
     def garbage_collect(self, expiry_time: datetime) -> icechunk.GCSummary:
         """
-        Run Icechunk garbage collection and snapshot removal.
+        Run Icechunk snapshot expiry and garbage collection.
 
         Parameters
         ----------
-            repo: And Icechunk Repository.
             expiry_time: Remove snapshots older than this time.
         Returns
         -------

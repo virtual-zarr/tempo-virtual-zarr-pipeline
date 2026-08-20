@@ -1,13 +1,12 @@
 """Handler: validate the finished backfill store, then promote main.
 
-The promote gate runs before the branch move: the store must
-match the resized template, the time axis must equal the inventory's
-values bit-exactly and be strictly increasing, and the native lat/lon
-chunks must equal the committed reference grid. A gate failure raises and
-leaves `main` untouched. The move itself is compare-and-swap against the
-`main` tip the Init step branched from (``branched_from`` in the event),
-so a commit that landed on `main` during the run fails the promote loudly
-instead of being discarded.
+The gate runs first: the store must match the resized template, the time
+axis must equal the inventory's values bit-exactly and be strictly
+increasing, and the native lat/lon chunks must equal the committed
+reference grid. A gate failure raises and leaves `main` untouched. The
+move is compare-and-swap against ``branched_from`` (the `main` tip the
+Init step branched from), so a commit that landed on `main` mid-run
+fails the promote instead of being discarded.
 """
 
 import os

@@ -136,12 +136,11 @@ def _write_bytes(uri: str, data: bytes) -> None:
 def enqueue(queue_url: str, urls: list[str]) -> int:
     """Enqueue every url, or raise.
 
-    ``send_message_batch`` is not all-or-nothing: individual entries can
-    fail while the call succeeds. Failed entries are retried once; if any
-    still fail, raise so the handler exits without advancing the
-    watermark — the next poll then re-covers the same window. Silently
-    dropping them would lose the granules for good once their revision
-    date fell behind the watermark's overlap.
+    ``send_message_batch`` is not all-or-nothing: entries can fail while
+    the call succeeds. Failed entries are retried once; if any still fail,
+    raise so the watermark is not advanced and the next poll re-covers the
+    window. A dropped entry would otherwise be lost once its revision date
+    fell behind the watermark's overlap.
     """
     import boto3
 

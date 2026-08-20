@@ -1,8 +1,7 @@
-"""The initialize and garbage-collect entry points must fail loudly.
+"""The initialize and garbage-collect entry points must propagate errors.
 
-A swallowed exception here reported a successful deploy with an
-uninitialized store, and a GC Batch job exiting 0 on failure defeated
-both its retry policy and any monitoring.
+A swallowed exception reports a successful deploy with an uninitialized
+store; a GC job exiting 0 defeats its retry policy and monitoring.
 """
 
 import sys

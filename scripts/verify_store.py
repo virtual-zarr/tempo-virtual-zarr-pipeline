@@ -22,10 +22,10 @@ Any mismatch, missing granule, or read failure (including the checksum
 error a source object overwritten after ingest produces) is reported and
 the script exits non-zero.
 
-Uses the same environment variables as the processor Lambdas
-(ICECHUNK_BUCKET or ICECHUNK_LOCAL_PATH, VIRTUAL_CHUNK_PREFIX,
-TEMPO_COLLECTION, STORE_MANIFEST_URI, PENDING_LEDGER_URI). Reading s3://
-sources requires Earthdata credentials; CMR metadata does not.
+Uses the same environment variables as the processor Lambdas; the state
+artifact URIs default to the deployment layout when unset, so a
+per-collection env file is enough. Reading s3:// sources requires
+Earthdata credentials; CMR metadata does not.
 
 Usage:
     uv run scripts/verify_store.py --samples 8 --window 5

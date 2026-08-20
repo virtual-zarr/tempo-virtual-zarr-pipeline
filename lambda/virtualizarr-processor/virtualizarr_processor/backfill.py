@@ -48,14 +48,13 @@ def promote(
     target: str = "main",
     expected_target_tip: str,
 ) -> None:
-    """Move `target` to the current tip of `source`, compare-and-swap style.
+    """Move `target` to the tip of `source`, compare-and-swap style.
 
-    `expected_target_tip` must be the `target` tip the `source` branch was
-    created from (BranchInit.branched_from). If `target` moved in the
-    meantime — e.g. the forward consumer committed an append while a re-sort
-    or backfill run was in flight — icechunk refuses the reset and this
-    raises instead of silently discarding that commit. The failed run can
-    then be retried against the new tip.
+    `expected_target_tip` is the `target` tip the `source` branch was
+    created from (BranchInit.branched_from). If `target` has moved since,
+    for example because the consumer committed an append mid-run, the reset
+    raises instead of discarding that commit; the run is retried against
+    the new tip.
     """
     repo.reset_branch(
         target, repo.lookup_branch(source), from_snapshot_id=expected_target_tip

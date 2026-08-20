@@ -49,14 +49,12 @@ S3_CREDENTIALS_ENDPOINTS = {
 
 @lru_cache(maxsize=1)
 def _earthdata_auth() -> str | tuple[str, str] | None:
-    """Resolve Earthdata Login material for the process, or None.
+    """Resolve Earthdata Login material, or None to use ambient IAM.
 
-    Sources, in order: ``$EARTHDATA_TOKEN`` (a bearer token),
-    ``$EARTHDATA_USERNAME``/``$EARTHDATA_PASSWORD``, then the Secrets
-    Manager secret at ``$EARTHDATA_SECRET_ARN`` — JSON carrying ``token``
-    or ``username``+``password``, or a plain token string. None means the
-    deployment relies on ambient IAM access to the source bucket instead
-    (e.g. an in-account bucket policy).
+    Sources, in order: ``$EARTHDATA_TOKEN``, ``$EARTHDATA_USERNAME`` and
+    ``$EARTHDATA_PASSWORD``, then the Secrets Manager secret at
+    ``$EARTHDATA_SECRET_ARN`` (JSON with ``token`` or
+    ``username``+``password``, or a plain token string).
     """
     token = os.environ.get("EARTHDATA_TOKEN")
     if token:
@@ -88,10 +86,9 @@ def _earthdata_auth() -> str | tuple[str, str] | None:
 def _s3_credential_provider(bucket: str) -> "NasaEarthdataCredentialProvider | None":
     """An EDL-refreshing credential provider for ``bucket``, or None.
 
-    None when no EDL material is configured, or the bucket has no known
-    ``s3credentials`` endpoint (tests and staging buckets read with ambient
-    AWS credentials). Cached so a warm Lambda exchanges credentials once
-    per expiry window, not once per granule.
+    None when no EDL material is configured or the bucket has no known
+    ``s3credentials`` endpoint; such reads use ambient AWS credentials.
+    Cached so a warm Lambda exchanges credentials once per expiry window.
     """
     auth = _earthdata_auth()
     if auth is None:
@@ -109,11 +106,10 @@ def _s3_credential_provider(bucket: str) -> "NasaEarthdataCredentialProvider | N
 def make_registry(url: str) -> ObjectStoreRegistry:
     """Build an object-store registry that can resolve ``url``.
 
-    Supports ``file://`` (tests, the template generator), ``s3://``
-    (temporary Earthdata credentials when EDL material is configured — see
-    :func:`_earthdata_auth` — otherwise ambient AWS credentials), and
-    ``https://`` with an EDL bearer-token header (token-based EDL material
-    only).
+    Supports ``file://`` (tests, the template generator); ``s3://`` with
+    temporary Earthdata credentials when EDL material is configured (see
+    :func:`_earthdata_auth`), otherwise ambient AWS credentials; and
+    ``https://`` with an EDL bearer-token header (token material only).
     """
     parsed = urlparse(url)
     if parsed.scheme == "file":

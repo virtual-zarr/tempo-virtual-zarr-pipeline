@@ -2,17 +2,15 @@
 
 Merges the store manifest with the pending ledger into one sorted
 inventory (collisions abort before any branch is touched), rewrites the
-axis on a ``resort`` branch, relocates every already-ingested slot with a
-metadata-only chunk reindex (no source file is re-read), parses and
-writes only the inserted granules, validates, promotes ``main`` with a
-compare-and-swap against the tip the branch was created from, updates the
-store manifest, and clears the folded ledger entries.
+axis on a ``resort`` branch, relocates already-ingested slots with a
+metadata-only chunk reindex, parses only the inserted granules,
+validates, promotes ``main`` by compare-and-swap, updates the manifest,
+and clears the folded ledger entries.
 
-A run folds at most ``$RESORT_MAX_FOLD`` pending granules (earliest
-first); the remainder stays in the ledger for the next scheduled run, so
-each run's parse work is bounded and every promoted run is durable
-partial progress. Deep historical insertions are cheap: the shifted
-suffix moves as chunk references, however long it is.
+One run folds at most ``$RESORT_MAX_FOLD`` pending granules (earliest
+first); the rest stay in the ledger for the next run. Each promoted run
+is durable partial progress, and deep insertions stay cheap because the
+shifted suffix moves as references, not re-parsed data.
 """
 
 import os
@@ -53,8 +51,8 @@ def handler(event: dict[str, Any], context: LambdaContext) -> dict[str, Any]:
     axis = np.asarray(
         zarr.open_array(repo.readonly_session("main").store, path="time")[:]
     )
-    # The manifest must describe the store exactly before it is used to
-    # relocate existing granules.
+    # The manifest is used to relocate existing granules, so it must
+    # describe the store exactly.
     StoreManifest.validate_against_axis(manifest, axis)
 
     merged = merge_pending(manifest, fold)  # collisions raise here

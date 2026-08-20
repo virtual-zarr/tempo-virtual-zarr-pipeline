@@ -1,22 +1,21 @@
 """Declarative Icechunk/Zarr store templates.
 
-A store schema is declared once as a ``pydantic_zarr.v3.GroupSpec`` —
-structure plus the attributes shared by every granule (strip the per-granule
-volatile ones with :func:`strip_attributes`) — and can then be:
+A store schema is declared once as a ``pydantic_zarr.v3.GroupSpec``:
+structure plus the attributes shared by every granule (strip the
+per-granule volatile ones with :func:`strip_attributes`). It can then be:
 
-- materialized as an empty store with :func:`create_empty_store` (metadata
-  only — no chunk data is written, which is exactly what the backfill
-  pipeline needs before workers region-write virtual references),
+- materialized as an empty store with :func:`create_empty_store`
+  (metadata only, ready for the backfill workers' region writes),
 - derived at full shape from a single-granule spec with :func:`resize`,
-- checked against an actual store with :func:`validate_store`, which reports
-  every missing node, unexpected node, and mismatched metadata field,
+- checked against an actual store with :func:`validate_store`, which
+  reports every missing node, unexpected node, and mismatched field,
 - checked against each input granule with :func:`validate_granule`, which
-  raises when spatial coordinates or expected shared attributes differ.
+  raises when coordinates or expected shared attributes differ.
 
-Both validators raise on divergence from what the template declares, but
-attributes the template does not mention only produce a warning — emitted on
-this module's logger and as an event on the current OpenTelemetry span (a
-no-op unless an OTEL SDK is configured, e.g. by a Lambda OTEL layer).
+Both validators raise on divergence from what the template declares.
+Attributes the template does not mention only produce a warning, emitted
+on this module's logger and as an event on the current OpenTelemetry span
+(a no-op unless an OTEL SDK is configured, e.g. by a Lambda layer).
 """
 
 from __future__ import annotations
@@ -104,11 +103,11 @@ def create_empty_store(
 ) -> zarr.Group:
     """Materialize ``spec`` as a metadata-only hierarchy in ``store``.
 
-    Only group/array metadata documents are written — no chunk data — so the
-    result is an empty store ready for region writes. Groups declared by the
-    template may already exist (their non-template members are left alone,
-    which lets a template land on a branch that inherited nodes from
-    ``main``), but a pre-existing node at any template array path is an
+    Only group/array metadata documents are written, no chunk data, so the
+    result is an empty store ready for region writes. Groups declared by
+    the template may already exist (their non-template members are left
+    alone, so a template can land on a branch that inherited nodes from
+    ``main``), but a pre-existing node at a template array path is an
     error.
     """
     for subpath, node in sorted(spec.to_flat().items()):
@@ -192,11 +191,11 @@ def validate_store(
     Raises :class:`StoreValidationError` listing every missing node,
     unexpected node, and mismatched metadata field (NaN fill values compare
     equal). Attributes follow the shared policy: every attribute the
-    template declares must be present and equal (raise), while attributes it
-    does not declare only produce a warning. Returns ``None`` when the store
-    matches. With ``allow_extra`` the store may contain nodes the template
-    does not declare — useful when the template landed on a branch that
-    inherited other nodes.
+    template declares must be present and equal, while undeclared ones only
+    produce a warning. Returns ``None`` when the store matches. With
+    ``allow_extra`` the store may contain nodes the template does not
+    declare, as when the template landed on a branch that inherited other
+    nodes.
     """
     expected = {p: node.model_dump() for p, node in spec.to_flat().items()}
     found = {
@@ -245,9 +244,9 @@ def validate_granule(
     ``coordinates`` is missing from the granule or differs from the given
     reference values, or when an attribute the template declares (on a node
     the granule carries) is missing or differs. Attribute names in
-    ``volatile`` (e.g. :data:`TEMPO_L3_VOLATILE_ATTRIBUTES`) are exempt per
-    granule. Attributes the template does not declare only produce a
-    warning — a granule is never rejected for carrying extras.
+    ``volatile`` (e.g. :data:`TEMPO_L3_VOLATILE_ATTRIBUTES`) are exempt.
+    Attributes the template does not declare only produce a warning; a
+    granule is never rejected for carrying extras.
     """
     differences: list[str] = []
     for name, reference in (coordinates or {}).items():

@@ -127,7 +127,7 @@ def test_s3_prefix_scopes_state_env_and_run_artifact_lifecycle() -> None:
 
 
 def test_alarms_cover_dlq_consumer_and_scheduled_jobs() -> None:
-    """Wedge states are fail-safe but silent; the alarms make them visible."""
+    """Failure states are fail-safe but silent; alarms make them visible."""
     # Forward deployment: DLQ depth, consumer, re-sort, and poller errors.
     _template().resource_count_is("AWS::CloudWatch::Alarm", 4)
     # Backfill-only deployment: no scheduled forward jobs to watch.

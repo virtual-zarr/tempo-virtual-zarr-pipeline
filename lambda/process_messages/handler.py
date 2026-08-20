@@ -76,8 +76,8 @@ def handler(event: Any, context: LambdaContext) -> PartialItemFailureResponse:
     # scans that arrived swapped within one batch still append in order.
     records = sorted(sqs_event.raw_event["Records"], key=record_url)
     virtualizarr_processor = Processor()
-    # Refuses an uninitialized store: bootstrapping is the backfill's (or the
-    # initialize Lambda's) job, never a side effect of consuming a message.
+    # Refuses an uninitialized store; bootstrapping is the backfill's (or
+    # the initialize Lambda's) job, not a message-consumption side effect.
     repo = virtualizarr_processor.open_initialized_repo()
     session = virtualizarr_processor.initialize_session(repo=repo)
 
@@ -107,8 +107,8 @@ def handler(event: Any, context: LambdaContext) -> PartialItemFailureResponse:
         logger.info(f"Committed to {snapshot_id}")
     except Exception:
         # All records retry, including DEFERRED ones whose pending-ledger
-        # write already persisted — safe only because PendingLedger.append
-        # dedupes by granule UR on redelivery.
+        # write persisted; safe only because PendingLedger.append dedupes
+        # by granule UR on redelivery.
         logger.exception("Commit failed, marking all records as failed")
         return {
             "batchItemFailures": [

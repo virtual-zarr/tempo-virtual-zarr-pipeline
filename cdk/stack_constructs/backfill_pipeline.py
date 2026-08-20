@@ -14,9 +14,9 @@ from .log_groups import function_log_group
 
 _ACTIONS = ["partition", "init", "fork", "worker", "reduce", "promote"]
 
-# Actions whose handler opens the icechunk repo and therefore needs Earthdata
-# credentials to authorize reading protected GES DISC virtual chunks. ``partition``
-# only reads the inventory object, so it is excluded.
+# Actions whose handler opens the icechunk repo and may need Earthdata
+# credentials to read protected source granules. ``partition`` only reads
+# the inventory object, so it is excluded.
 _REPO_ACTIONS = ["init", "fork", "worker", "reduce", "promote"]
 
 
@@ -117,8 +117,8 @@ class BackfillPipeline(Construct):
         max_items_per_batch: int,
         max_concurrency: int,
     ) -> sfn.StateMachine:
-        # Per-run artifacts are scoped under the deployment's global output
-        # prefix so stacks sharing a bucket don't mingle their run debris.
+        # Run artifacts are scoped under the deployment's output prefix so
+        # stacks sharing a bucket keep their runs separate.
         run_prefix = sfn.JsonPath.format(
             f"s3://{{}}/{s3_prefix}/backfill/{{}}/"
             if s3_prefix
@@ -175,12 +175,10 @@ class BackfillPipeline(Construct):
             ),
             payload_response_only=True,
         )
-        # An object-store hiccup outliving the in-code parse retries would
-        # otherwise fail the whole run. Deterministic failures (validation)
-        # just fail again quickly and still fail the run before promote. A
-        # retried worker that already saved its fork writes a second one —
-        # harmless, since both carry identical region writes and merge is
-        # last-writer-wins over the same data.
+        # Retry transient failures that outlive the in-code parse retries;
+        # deterministic (validation) failures fail again quickly and still
+        # gate the promote. A retried worker that already saved its fork
+        # writes a second, identical one; merge is last-writer-wins.
         worker.add_retry(
             errors=[sfn.Errors.ALL],
             interval=Duration.seconds(30),
@@ -250,9 +248,8 @@ class BackfillPipeline(Construct):
             payload=sfn.TaskInput.from_object(
                 {
                     "inventory_uri": sfn.JsonPath.string_at("$.inventory_uri"),
-                    # The `main` tip Init branched from: promote's
-                    # compare-and-swap expectation, so a commit that landed
-                    # on main during the run fails the promote loudly.
+                    # The `main` tip Init branched from: the promote's
+                    # compare-and-swap expectation.
                     "branched_from": sfn.JsonPath.string_at(
                         "$.initResult.branched_from"
                     ),
