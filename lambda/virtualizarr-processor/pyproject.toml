@@ -6,6 +6,7 @@ requires-python = ">=3.12"
 dependencies = [
     "icechunk>=2.1",
     "opentelemetry-api>=1.20",
+    "pydantic>=2",
     "pydantic-zarr>=0.10",
     "virtualizarr>=2.7",
     "zarr>=3.2.1",

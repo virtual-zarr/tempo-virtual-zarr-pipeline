@@ -1,0 +1,17 @@
+# TEMPO_NO2_L3 V04 — gridded NO2 tropospheric and stratospheric columns
+name = "no2"
+collection_shortname = "TEMPO_NO2_L3"
+concept_id = "C3685896708-LARC_CLOUD"
+append_dim = "time"
+time_units = "seconds since 1980-01-06T00:00:00Z"
+flatten_groups = ["product", "geolocation", "qa_statistics", "support_data"]
+promote_to_time = ["weight"]
+drop_variables = []
+extra_volatile_attributes = [
+    "geospatial_lat_min",
+    "geospatial_lat_max",
+    "geospatial_lon_min",
+    "geospatial_lon_max",
+]
+template_file = "no2_template.json"
+coordinates_file = "coordinates.npz"
