@@ -263,9 +263,10 @@ fraction of the collection into a dead letter queue with no way back in.
 
 The template's only built-in feeder is a subscription of the SQS queue to
 an SNS topic named by `SNS_TOPIC` — a topic the *data provider* would have
-to own and publish object-created events to. Whether ASDC exposes such a
-topic for `asdc-prod-protected` is unconfirmed (**open question for the
-operator**). The pipeline therefore gets a feeder it fully controls:
+to own and publish object-created events to. ASDC does not offer one for
+`asdc-prod-protected` (confirmed by the operator, 2026-08-20; the README
+notes that requesting one would be worthwhile). **CMR polling is
+therefore the feeder**:
 
 - **CMR poller** (scheduled Lambda, ~every 30 min; the product's median
   production lag is ~3 h, so polling latency is immaterial): queries CMR
@@ -280,8 +281,8 @@ operator**). The pipeline therefore gets a feeder it fully controls:
 - The overlap window plus the consumer's idempotent routing (same-UR
   redelivery hits the overwrite-in-place case; ledger appends dedupe)
   makes duplicate enqueues harmless, so the poller needs no exactness.
-- If an ASDC SNS topic exists, it can be subscribed *in addition* for
-  lower latency; the poller then serves as the missed-notification
+- If ASDC adds an SNS topic later, it can be subscribed *in addition*
+  for lower latency; the poller then serves as the missed-notification
   backstop the README's sequencing section step 5 currently asks
   operators to perform by hand.
 

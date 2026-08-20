@@ -248,6 +248,20 @@ Lambda invocation is controlled by `SQS_BATCH_SIZE`.
 
 For S3 buckets where new data is continually added you can enable an [SNS topic for new data](https://docs.aws.amazon.com/AmazonS3/latest/userguide/ways-to-add-notification-config-to-bucket.html) which the Virtualizarr Data Pipelines queue can subscribe to, so files are processed as they land.  This can be configured using `SNS_TOPIC` which will automatically wire up notifications to the queue.
 
+> **TEMPO/ASDC note:** ASDC does not currently publish an SNS notification
+> topic for `asdc-prod-protected`, so `SNS_TOPIC` is left unset and this
+> pipeline feeds the queue itself by **polling CMR**: a scheduled Lambda
+> enqueues every granule whose CMR `revision_date` advanced past a
+> persisted watermark (with an overlap window; the consumer's routing
+> rules make duplicate enqueues harmless). Revision-date polling captures
+> new scans, republications, and the ongoing historical back-fill alike,
+> and the ~30-minute polling cadence is immaterial next to the product's
+> ~3 h median production lag. It would be great if ASDC added a
+> provider-side SNS topic for new/updated objects — the queue could then
+> subscribe directly for lower latency and less CMR load, with the poller
+> retained as a missed-notification backstop; consider requesting this
+> through the ASDC/LARC DAAC support channel.
+
 ![Architecture](./docs/architecture-dark.png#gh-dark-mode-only)
 ![Architecture](./docs/architecture.png#gh-light-mode-only)
 
