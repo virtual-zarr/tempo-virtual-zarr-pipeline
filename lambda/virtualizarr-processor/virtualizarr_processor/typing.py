@@ -140,7 +140,7 @@ class VirtualizarrProcessor(Protocol):
         """
         ...
 
-    def process_backfill_file(self, file_key: str, fork: ForkSession) -> bool:
+    def process_backfill_file(self, file_key: str, fork: ForkSession | Session) -> bool:
         """
         Write a per-file virtual dataset into the fork's store with an
         explicit region write, locating the target slot by exact match of

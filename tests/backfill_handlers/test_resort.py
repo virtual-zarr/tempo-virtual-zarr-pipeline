@@ -1,6 +1,5 @@
 """End-to-end tests for the re-sort job."""
 
-import os
 import pickle
 import sys
 from pathlib import Path
@@ -12,7 +11,9 @@ import pydantic
 import pytest
 import zarr
 from backfill_handlers import resort
+from icechunk import Repository
 from virtualizarr_processor import backfill
+from virtualizarr_processor.inventory import GranuleEntry
 from virtualizarr_processor.manifest import PendingLedger, StoreManifest
 from virtualizarr_processor.processor import Processor
 
@@ -25,7 +26,7 @@ from tempo_fixtures import (  # noqa: E402
 
 
 def backfilled_processor(tempo_pipeline: SimpleNamespace) -> Processor:
-    """Backfill the tiny collection onto main and write the store manifest."""
+    """Backfill the tiny collection onto main (manifest+ledger ride along)."""
     tiny = tempo_pipeline.tiny
     processor = Processor()
     repo = processor.open_backfill_repo()
@@ -38,8 +39,14 @@ def backfilled_processor(tempo_pipeline: SimpleNamespace) -> Processor:
         children.append(pickle.dumps(child))
     backfill.merge_and_commit(repo, children, message="backfill")
     backfill.promote(repo, expected_target_tip=init.branched_from)
-    StoreManifest.write(os.environ["STORE_MANIFEST_URI"], tiny.inventory)
     return processor
+
+
+def defer(repo: Repository, entries: list[GranuleEntry]) -> None:
+    """Append entries to the pending ledger via a committed main session."""
+    session = repo.writable_session("main")
+    PendingLedger.append(session.store, entries)
+    session.commit("defer granules")
 
 
 def test_resort_with_empty_ledger_is_a_noop(
@@ -55,6 +62,7 @@ def test_resort_folds_pending_granules_in(
 ) -> None:
     tiny = tempo_pipeline.tiny
     processor = backfilled_processor(tempo_pipeline)
+    repo = processor.open_backfill_repo()
     directory = tiny.granule_paths[0].parent
 
     # One deep historical insertion (between slots 0 and 1, shifting the
@@ -67,10 +75,8 @@ def test_resort_folds_pending_granules_in(
     tail = write_tempo_granule(
         directory / "tail.nc", time_value=tail_time, weight_scale=8.0
     )
-    from virtualizarr_processor.inventory import GranuleEntry
-
-    PendingLedger.append(
-        os.environ["PENDING_LEDGER_URI"],
+    defer(
+        repo,
         [
             GranuleEntry(url=f"file://{deep}", granule_ur="deep", time=deep_time),
             GranuleEntry(url=f"file://{tail}", granule_ur="tail", time=tail_time),
@@ -103,9 +109,10 @@ def test_resort_folds_pending_granules_in(
         )
 
     # The ledger is drained and the manifest matches the new axis.
-    assert PendingLedger.read(os.environ["PENDING_LEDGER_URI"]) == ()
-    manifest = StoreManifest.read(os.environ["STORE_MANIFEST_URI"])
-    StoreManifest.validate_against_axis(manifest, np.asarray(group["time"][:]))
+    main_store = repo.readonly_session("main").store
+    assert PendingLedger.read(main_store) == ()
+    manifest = StoreManifest.read(main_store)
+    assert manifest is not None
     expected_urs = (
         ["granule_0", "deep"]
         + [f"granule_{i}" for i in range(1, len(tiny.times))]
@@ -121,18 +128,14 @@ def test_resort_relocates_without_rereading_ingested_sources(
     reopened. Proven by hiding every ingested source during the resort."""
     tiny = tempo_pipeline.tiny
     processor = backfilled_processor(tempo_pipeline)
+    repo = processor.open_backfill_repo()
     directory = tiny.granule_paths[0].parent
 
     deep_time = tiny.times[0] + 1800.0  # shifts every slot after the first
     deep = write_tempo_granule(
         directory / "deep.nc", time_value=deep_time, weight_scale=7.0
     )
-    from virtualizarr_processor.inventory import GranuleEntry
-
-    PendingLedger.append(
-        os.environ["PENDING_LEDGER_URI"],
-        [GranuleEntry(url=f"file://{deep}", granule_ur="deep", time=deep_time)],
-    )
+    defer(repo, [GranuleEntry(url=f"file://{deep}", granule_ur="deep", time=deep_time)])
 
     hidden = [(path, path.with_suffix(".hidden")) for path in tiny.granule_paths]
     for path, away in hidden:
@@ -166,6 +169,7 @@ def test_resort_folds_at_most_max_fold_per_run(
     partial progress, and leaves the rest in the ledger for the next run."""
     tiny = tempo_pipeline.tiny
     processor = backfilled_processor(tempo_pipeline)
+    repo = processor.open_backfill_repo()
     directory = tiny.granule_paths[0].parent
     monkeypatch.setenv("RESORT_MAX_FOLD", "1")
 
@@ -177,10 +181,8 @@ def test_resort_folds_at_most_max_fold_per_run(
     late = write_tempo_granule(
         directory / "late.nc", time_value=late_time, weight_scale=8.0
     )
-    from virtualizarr_processor.inventory import GranuleEntry
-
-    PendingLedger.append(
-        os.environ["PENDING_LEDGER_URI"],
+    defer(
+        repo,
         [
             GranuleEntry(url=f"file://{late}", granule_ur="late", time=late_time),
             GranuleEntry(url=f"file://{early}", granule_ur="early", time=early_time),
@@ -194,19 +196,21 @@ def test_resort_folds_at_most_max_fold_per_run(
         "remaining": 1,
         "first_shifted_index": 1,
     }
-    ledger = PendingLedger.read(os.environ["PENDING_LEDGER_URI"])
+    repo = processor.open_backfill_repo()
+    ledger = PendingLedger.read(repo.readonly_session("main").store)
     assert [entry.granule_ur for entry in ledger] == ["late"]  # earliest folded
 
     second = resort.handler({}, lambda_context)
     assert second["resorted"] is True and second["remaining"] == 0
-    assert PendingLedger.read(os.environ["PENDING_LEDGER_URI"]) == ()
-
     repo = processor.open_backfill_repo()
+    assert PendingLedger.read(repo.readonly_session("main").store) == ()
+
     group = zarr.open_group(repo.readonly_session("main").store, mode="r")
     merged_times = sorted([*tiny.times, early_time, late_time])
     np.testing.assert_array_equal(np.asarray(group["time"][:]), merged_times)
-    manifest = StoreManifest.read(os.environ["STORE_MANIFEST_URI"])
-    StoreManifest.validate_against_axis(manifest, np.asarray(group["time"][:]))
+    manifest = StoreManifest.read(repo.readonly_session("main").store)
+    assert manifest is not None
+    np.testing.assert_array_equal(np.asarray(manifest.times()), merged_times)
 
 
 def test_resort_promote_refuses_when_main_moved_mid_run(
@@ -218,17 +222,13 @@ def test_resort_promote_refuses_when_main_moved_mid_run(
     instead of being discarded."""
     tiny = tempo_pipeline.tiny
     processor = backfilled_processor(tempo_pipeline)
+    repo = processor.open_backfill_repo()
     directory = tiny.granule_paths[0].parent
     deep_time = tiny.times[0] + 1800.0
     deep = write_tempo_granule(directory / "deep.nc", time_value=deep_time)
-    from virtualizarr_processor.inventory import GranuleEntry
+    defer(repo, [GranuleEntry(url=f"file://{deep}", granule_ur="deep", time=deep_time)])
 
-    PendingLedger.append(
-        os.environ["PENDING_LEDGER_URI"],
-        [GranuleEntry(url=f"file://{deep}", granule_ur="deep", time=deep_time)],
-    )
-
-    manifest_before = StoreManifest.read(os.environ["STORE_MANIFEST_URI"])
+    manifest_before = StoreManifest.read(repo.readonly_session("main").store)
     concurrent_tip = None
     original = Processor.validate_backfill_store
 
@@ -250,9 +250,42 @@ def test_resort_promote_refuses_when_main_moved_mid_run(
     assert repo.lookup_branch("main") == concurrent_tip
     # Nothing was consumed: the ledger and manifest are untouched, so the
     # next scheduled run retries against the new tip.
-    ledger = PendingLedger.read(os.environ["PENDING_LEDGER_URI"])
+    main_store = repo.readonly_session("main").store
+    ledger = PendingLedger.read(main_store)
     assert [entry.granule_ur for entry in ledger] == ["deep"]
-    assert StoreManifest.read(os.environ["STORE_MANIFEST_URI"]) == manifest_before
+    assert StoreManifest.read(main_store) == manifest_before
+
+
+def test_resort_concurrent_append_fails_the_cas(
+    tempo_pipeline: SimpleNamespace,
+    lambda_context: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An append landing on main after the resort pinned its snapshot must
+    fail the promote CAS — never be silently erased (review finding #2)."""
+    import icechunk
+    from virtualizarr_processor import backfill as backfill_module
+
+    tiny = tempo_pipeline.tiny
+    processor = backfilled_processor(tempo_pipeline)
+    repo = processor.open_backfill_repo()
+    directory = tiny.granule_paths[0].parent
+    deep_time = tiny.times[0] + 1800.0
+    deep = write_tempo_granule(directory / "deep.nc", time_value=deep_time)
+    defer(repo, [GranuleEntry(url=f"file://{deep}", granule_ur="deep", time=deep_time)])
+
+    real_promote = backfill_module.promote
+
+    def promote_after_concurrent_append(repo: Repository, **kwargs: object) -> str:
+        # Simulate the consumer committing between the pin and the CAS.
+        session = repo.writable_session("main")
+        zarr.open_group(session.store, mode="a").attrs["raced"] = True
+        session.commit("concurrent consumer commit")
+        return real_promote(repo, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(resort.backfill, "promote", promote_after_concurrent_append)
+    with pytest.raises(icechunk.IcechunkError):
+        resort.handler({}, lambda_context)
 
 
 def test_resort_collision_aborts_before_touching_branches(
@@ -260,11 +293,11 @@ def test_resort_collision_aborts_before_touching_branches(
 ) -> None:
     tiny = tempo_pipeline.tiny
     processor = backfilled_processor(tempo_pipeline)
-    from virtualizarr_processor.inventory import GranuleEntry
+    repo = processor.open_backfill_repo()
 
     # A pending granule claiming an occupied time step under another name.
-    PendingLedger.append(
-        os.environ["PENDING_LEDGER_URI"],
+    defer(
+        repo,
         [
             GranuleEntry(
                 url="s3://x/imposter.nc", granule_ur="imposter", time=tiny.times[1]

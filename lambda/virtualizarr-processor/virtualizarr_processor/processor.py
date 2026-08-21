@@ -196,7 +196,9 @@ class Processor:
         )
         return BranchInit(snapshot=snapshot, branched_from=main_tip)
 
-    def process_backfill_file(self, file_key: str, fork: ForkSession) -> bool:
+    def process_backfill_file(
+        self, file_key: str, fork: ForkSession | Session
+    ) -> bool:
         """Validate one granule and region-write it into the fork (no commit)."""
         try:
             vds, stamp = self._parse_and_validate(file_key)
@@ -210,16 +212,21 @@ class Processor:
             return False
 
     def initialize_resort_store(
-        self, repo: Repository, merged: BackfillInventory
+        self, repo: Repository, merged: BackfillInventory, *, from_tip: str
     ) -> BranchInit:
         """Prepare the ``resort`` branch for the re-sort job.
 
-        Branch (or reset) ``resort`` off the current ``main`` tip, resize
-        every array carrying the append dimension to the merged inventory's
-        length, rewrite the time axis, validate, and commit. Slots at or
-        after the first shifted index hold stale references until the job
-        relocates them (:meth:`reindex_resort_slots`) and writes the
-        inserted granules, which it must do before promoting.
+        Branch (or reset) ``resort`` off ``from_tip`` — the caller's pinned
+        ``main`` tip, captured before it read any store state — never
+        re-looking up ``main`` here. Resize every array carrying the append
+        dimension to the merged inventory's length, rewrite the time axis
+        and the manifest, validate, and commit. Slots at or after the first
+        shifted index hold stale references until the job relocates them
+        (:meth:`reindex_resort_slots`) and writes the inserted granules,
+        which it must do before promoting. Because the branch point is the
+        caller's pin rather than a fresh lookup, a concurrent append to
+        ``main`` moves the tip out from under the promote's CAS instead of
+        being silently discarded.
         """
         if merged.collection != self.config.collection_shortname:
             raise StoreValidationError(
@@ -228,11 +235,10 @@ class Processor:
                     f"deployment processes {self.config.collection_shortname!r}"
                 ]
             )
-        tip = repo.lookup_branch("main")
         if "resort" in repo.list_branches():
-            repo.reset_branch("resort", tip)
+            repo.reset_branch("resort", from_tip)
         else:
-            repo.create_branch("resort", tip)
+            repo.create_branch("resort", from_tip)
         session = repo.writable_session("resort")
         template = resize(self.template, {self.config.append_dim: len(merged.granules)})
         for path, node in template.to_flat().items():
@@ -244,6 +250,7 @@ class Processor:
                 array = zarr.open_array(session.store, path=path.lstrip("/"))
                 array.resize(node.shape)
         zarr.open_array(session.store, path="time")[:] = merged.times()
+        StoreManifest.write(session.store, merged)
         validate_store(
             template,
             zarr.open_group(session.store, mode="r"),
@@ -251,13 +258,7 @@ class Processor:
             volatile=PIPELINE_STATE_ATTRIBUTES,
         )
         snapshot = session.commit(f"Resort: axis of {len(merged.granules)} granules")
-        return BranchInit(snapshot=snapshot, branched_from=tip)
-
-    def process_resort_file(self, file_key: str, session: Session) -> bool:
-        """Rewrite one granule's slot on the resort branch without committing."""
-        # Same as the backfill worker path; only the session type differs,
-        # and only the .store attribute is used.
-        return self.process_backfill_file(file_key, session)  # type: ignore[arg-type]
+        return BranchInit(snapshot=snapshot, branched_from=from_tip)
 
     def reindex_resort_slots(
         self,
@@ -271,7 +272,7 @@ class Processor:
         ``reindex_array``; payloads (including ``last_updated_at`` checksums)
         move untouched, so no granule is re-read from source. Slots for
         inserted granules are cleared and must be written afterwards with
-        :meth:`process_resort_file`.
+        :meth:`process_backfill_file`.
 
         Call on the ``resort`` session after :meth:`initialize_resort_store`
         has resized the arrays and rewritten the axis. Returns the number of
@@ -294,8 +295,8 @@ class Processor:
                 continue
             if self.config.append_dim not in node.dimension_names:
                 continue
-            if path.lstrip("/") == self.config.append_dim:
-                continue  # the axis itself is rewritten wholesale at init
+            if path.lstrip("/") in (self.config.append_dim, *MANIFEST_ARRAYS):
+                continue  # rewritten wholesale at init, not relocated
             axis_pos = node.dimension_names.index(self.config.append_dim)
             chunk_shape = node.chunk_grid["configuration"]["chunk_shape"]
             if chunk_shape[axis_pos] != 1:
