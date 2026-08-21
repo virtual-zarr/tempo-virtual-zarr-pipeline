@@ -111,7 +111,18 @@ One-time setup for the sandbox test run:
 aws sso login --profile ds-sandbox-max                 # or however the profile authenticates
 cdk bootstrap aws://755329541016/us-west-2 --profile ds-sandbox-max   # fresh account only
 aws s3 mb s3://tempo-virtual-store-sandbox --region us-west-2 --profile ds-sandbox-max
+aws secretsmanager create-secret --name tempo-earthdata \
+  --secret-string '{"token":"<EDL token>"}' \
+  --region us-west-2 --profile ds-sandbox-max
 ```
+
+Paste the ARN the last command returns into `EARTHDATA_SECRET_ARN` in both
+env files. This is required in the sandbox: the account has no bucket-policy
+grant on `asdc-prod-protected`, so without the secret every worker granule
+read fails with AccessDenied (the deploy itself would still succeed). Also
+check the account's Lambda concurrent-executions quota — fresh sub-accounts
+can start as low as 10, and the backfill fans out to
+`BACKFILL_MAX_CONCURRENCY=50`; request an increase or lower that setting.
 
 `AWS_PROFILE` is set inside the env files, so every `uv run --env-file ...`
 command and `start_backfill.sh -e ...` targets the sandbox without exporting
