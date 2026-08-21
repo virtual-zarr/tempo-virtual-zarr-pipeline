@@ -53,7 +53,7 @@ from virtualizarr_processor.granule import (
     open_flat_granule,
     source_last_modified,
 )
-from virtualizarr_processor.inventory import BackfillInventory, GranuleEntry
+from virtualizarr_processor.inventory import SCHEMA_ID, BackfillInventory, GranuleEntry
 from virtualizarr_processor.manifest import (
     MANIFEST_ARRAYS,
     PIPELINE_STATE_ATTRIBUTES,
@@ -330,13 +330,27 @@ class Processor:
         return len(forward_map)
 
     def validate_backfill_store(
-        self, repo: Repository, inventory: BackfillInventory, *, branch: str
+        self,
+        repo: Repository,
+        inventory: BackfillInventory,
+        *,
+        branch: str,
+        snapshot_id: str | None = None,
     ) -> None:
         """Check a finished branch against template, inventory, and grid.
 
-        This is the gate that runs before promoting to ``main``.
+        This is the gate that runs before promoting to ``main``. Pass
+        ``snapshot_id`` to validate the exact snapshot this run committed
+        rather than re-reading ``branch``'s current tip — otherwise a
+        concurrent run of the same job that resets ``branch`` between this
+        run's commit and its validate/promote gets validated (and then
+        promoted) in this run's place.
         """
-        session = repo.readonly_session(branch)
+        session = (
+            repo.readonly_session(snapshot_id=snapshot_id)
+            if snapshot_id is not None
+            else repo.readonly_session(branch)
+        )
         group = zarr.open_group(session.store, mode="r")
         template = resize(
             self.template, {self.config.append_dim: len(inventory.granules)}
@@ -486,7 +500,7 @@ class Processor:
                 zarr.open_array(session.store, path=axis)[:] = values
             root = zarr.open_group(session.store, mode="a")
             root.attrs[STORE_META_ATTRIBUTE] = {
-                "schema": "tempo-backfill-inventory/1",
+                "schema": SCHEMA_ID,
                 "collection": self.config.collection_shortname,
                 "concept_id": self.config.concept_id,
                 "time_units": self.config.time_units,
@@ -560,18 +574,11 @@ class Processor:
                 self._replaced[index] = entry
                 return ProcessOutcome.WRITTEN
 
-            if not axis.size or time_value > float(axis[-1]):
-                vds.attrs = {}  # store attributes come from the template only
-                vds.vz.to_icechunk(
-                    session.store,
-                    append_dim=self.config.append_dim,
-                    validate_containers=False,
-                    last_updated_at=stamp,
-                )
-                self._appended.append(entry)
-                return ProcessOutcome.WRITTEN
-
-            # Out of order: appending would break axis monotonicity.
+            # A UR already owning a slot (in the committed manifest or this
+            # batch) can no longer appear anywhere else: appending it past
+            # the axis end or deferring it out of order would both give the
+            # manifest a duplicate UR and wedge every future re-sort. This
+            # must guard both branches below, not just the out-of-order one.
             owned = (
                 {
                     str(v)
@@ -583,9 +590,8 @@ class Processor:
                 | {e.granule_ur for e in self._replaced.values()}
             )
             if entry.granule_ur in owned:
-                # Same granule, shifted time: folding it in would give the
-                # manifest a duplicate UR and wedge every future re-sort.
-                # Reject to the DLQ for operator review instead.
+                # Same granule, shifted time: reject to the DLQ for operator
+                # review instead of folding it in.
                 logger.error(
                     "process_file: %s already owns a slot but its time %r no "
                     "longer matches the axis; rejecting republication with a "
@@ -594,7 +600,20 @@ class Processor:
                     time_value,
                 )
                 return ProcessOutcome.REJECTED
-            # Record it for the scheduled re-sort job; the ledger update is
+
+            if not axis.size or time_value > float(axis[-1]):
+                vds.attrs = {}  # store attributes come from the template only
+                vds.vz.to_icechunk(
+                    session.store,
+                    append_dim=self.config.append_dim,
+                    validate_containers=False,
+                    last_updated_at=stamp,
+                )
+                self._appended.append(entry)
+                return ProcessOutcome.WRITTEN
+
+            # Out of order: appending would break axis monotonicity. Record
+            # it for the scheduled re-sort job; the ledger update is
             # part of this session and commits with the batch.
             PendingLedger.append(session.store, [entry])
             logger.info(

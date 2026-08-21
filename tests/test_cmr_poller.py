@@ -123,6 +123,14 @@ def test_initial_watermark_uses_poll_start_env(
     assert poller.initial_watermark(now) == datetime(2026, 8, 1, tzinfo=timezone.utc)
 
 
+def test_initial_watermark_normalizes_naive_poll_start_to_utc(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("POLL_START_ISO", "2026-08-01T00:00:00")  # no tzinfo
+    now = datetime(2026, 8, 20, tzinfo=timezone.utc)
+    assert poller.initial_watermark(now) == datetime(2026, 8, 1, tzinfo=timezone.utc)
+
+
 def test_initial_watermark_falls_back_to_lookback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -45,6 +45,7 @@ def promote(
     repo: Repository,
     *,
     source: str = "backfill",
+    source_snapshot: str | None = None,
     target: str = "main",
     expected_target_tip: str,
 ) -> None:
@@ -55,7 +56,16 @@ def promote(
     for example because the consumer committed an append mid-run, the reset
     raises instead of discarding that commit; the run is retried against
     the new tip.
+
+    By default the promoted snapshot is looked up as `source`'s branch tip
+    at call time — fine when nothing else can reset that branch mid-run.
+    When a concurrent run of the same job could reset `source` between this
+    run's own commit and its promote (the resort job, run twice), pass the
+    exact `source_snapshot` this run committed instead: the CAS then either
+    promotes this run's own commit or fails, never a stranger's.
     """
     repo.reset_branch(
-        target, repo.lookup_branch(source), from_snapshot_id=expected_target_tip
+        target,
+        source_snapshot if source_snapshot is not None else repo.lookup_branch(source),
+        from_snapshot_id=expected_target_tip,
     )

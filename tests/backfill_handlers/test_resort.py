@@ -16,6 +16,7 @@ from virtualizarr_processor import backfill
 from virtualizarr_processor.inventory import GranuleEntry
 from virtualizarr_processor.manifest import PendingLedger, StoreManifest
 from virtualizarr_processor.processor import Processor
+from virtualizarr_processor.resort import merge_pending
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from tempo_fixtures import (  # noqa: E402
@@ -286,6 +287,72 @@ def test_resort_concurrent_append_fails_the_cas(
     monkeypatch.setattr(resort.backfill, "promote", promote_after_concurrent_append)
     with pytest.raises(icechunk.IcechunkError):
         resort.handler({}, lambda_context)
+
+
+def test_resort_promotes_own_fold_snapshot_despite_concurrent_resort_reinit(
+    tempo_pipeline: SimpleNamespace,
+    lambda_context: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two interleaved resort runs, A and B, both pinned to the same main
+    tip: B re-initializes the shared "resort" branch (its own init-only
+    commit, same axis/manifest shape as A's merge but with data slots at or
+    after the shift still holding their *old* granules' chunk refs — the
+    reindex hasn't run) after A already committed its correctly-relocated
+    fold, but before A validates and promotes. A must validate and promote
+    its own fold snapshot, not the branch tip B just reset — otherwise main
+    ends up serving B's unrelocated data under A's axis (review finding
+    C1)."""
+    tiny = tempo_pipeline.tiny
+    processor = backfilled_processor(tempo_pipeline)
+    repo = processor.open_backfill_repo()
+    directory = tiny.granule_paths[0].parent
+    deep_time = tiny.times[0] + 1800.0
+    deep = write_tempo_granule(
+        directory / "deep.nc", time_value=deep_time, weight_scale=9.0
+    )
+    defer(repo, [GranuleEntry(url=f"file://{deep}", granule_ur="deep", time=deep_time)])
+
+    tip_before = repo.lookup_branch("main")
+    pinned = repo.readonly_session(snapshot_id=tip_before).store
+    manifest_before = StoreManifest.read(pinned)
+    assert manifest_before is not None
+    pending_before = PendingLedger.read(pinned)
+    b_merged = merge_pending(manifest_before, pending_before)  # same merge as A's
+
+    original = Processor.validate_backfill_store
+    reinit_done = False
+
+    def validate_after_b_reinits_resort(
+        self: Processor, *args: object, **kw: object
+    ) -> None:
+        nonlocal reinit_done
+        if not reinit_done:  # only once, between A's commit and A's validate
+            reinit_done = True
+            b_repo = self.open_backfill_repo()
+            self.initialize_resort_store(b_repo, b_merged, from_tip=tip_before)
+        return original(self, *args, **kw)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(
+        Processor, "validate_backfill_store", validate_after_b_reinits_resort
+    )
+
+    result = resort.handler({}, lambda_context)
+    assert result["resorted"] is True
+
+    repo = processor.open_backfill_repo()
+    main_store = repo.readonly_session("main").store
+    manifest = StoreManifest.read(main_store)
+    assert manifest is not None
+    assert manifest.granules[0].granule_ur == "granule_0"
+    assert manifest.granules[1].granule_ur == "deep"  # A's own relocated fold
+    assert PendingLedger.read(main_store) == ()  # A's own drain, not B's undrained one
+
+    group = zarr.open_group(main_store, mode="r")
+    np.testing.assert_array_equal(
+        np.asarray(group["weight"][1]),
+        expected_weight(deep_time, weight_scale=9.0),
+    )
 
 
 def test_resort_collision_aborts_before_touching_branches(

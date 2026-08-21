@@ -103,7 +103,10 @@ def initial_watermark(now: datetime) -> datetime:
     """
     start = os.environ.get("POLL_START_ISO")
     if start:
-        return datetime.fromisoformat(start)
+        parsed = datetime.fromisoformat(start)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed
     return now - DEFAULT_LOOKBACK
 
 

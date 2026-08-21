@@ -126,10 +126,17 @@ class PendingLedger:
 
     @classmethod
     def append(cls, store: Store, entries: Iterable[GranuleEntry]) -> None:
+        """Append new entries; a redelivered UR replaces its stale entry
+        in place (last delivery wins) rather than being dropped, so a
+        republication with a corrected time or url can't leave a stale
+        entry to crash-loop the resort fold."""
         existing = list(cls.read(store))
-        seen = {entry.granule_ur for entry in existing}
+        by_ur = {entry.granule_ur: i for i, entry in enumerate(existing)}
         for entry in entries:
-            if entry.granule_ur not in seen:
+            index = by_ur.get(entry.granule_ur)
+            if index is None:
+                by_ur[entry.granule_ur] = len(existing)
                 existing.append(entry)
-                seen.add(entry.granule_ur)
+            else:
+                existing[index] = entry
         cls.write(store, existing)

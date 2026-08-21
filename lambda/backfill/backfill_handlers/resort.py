@@ -83,13 +83,23 @@ def handler(event: dict[str, Any], context: LambdaContext) -> dict[str, Any]:
     PendingLedger.write(
         session.store, [e for e in pending if e.granule_ur not in fold_urs]
     )
-    session.commit(
+    # Capture this run's own commit and validate/promote *that* snapshot,
+    # never the branch tip: a concurrent resort run can reset the "resort"
+    # branch between this commit and the promote below (e.g. re-initializing
+    # it for its own fold), and a tip lookup at that point would pick up the
+    # other run's snapshot instead of this run's — validating and promoting
+    # a store that was never actually folded or relocated.
+    fold_snapshot = session.commit(
         f"Resort: insert {len(fold)} granules, "
         f"relocate slots {shift_index}..{len(merged.granules) - 1}"
     )
 
-    processor.validate_backfill_store(repo, merged, branch="resort")
-    backfill.promote(repo, source="resort", expected_target_tip=tip)
+    processor.validate_backfill_store(
+        repo, merged, branch="resort", snapshot_id=fold_snapshot
+    )
+    backfill.promote(
+        repo, source="resort", source_snapshot=fold_snapshot, expected_target_tip=tip
+    )
     remaining = len(pending) - len(fold)
     logger.info("Resort promoted to main", extra={"remaining": remaining})
     return {

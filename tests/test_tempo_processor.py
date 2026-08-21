@@ -341,6 +341,31 @@ def test_forward_rejects_republication_with_moved_timestamp(
     assert PendingLedger.read(repo.readonly_session("main").store) == ()
 
 
+def test_forward_rejects_republication_with_moved_timestamp_past_axis_end(
+    tiny: TinyCollection,
+) -> None:
+    """Same UR as an ingested granule, time shifted PAST the axis end: this
+    used to fall into the append branch (owned-UR check only guarded the
+    out-of-order branch) and got appended, poisoning the manifest with a
+    duplicate UR and failing every subsequent batch (review finding I1)."""
+    from virtualizarr_processor.manifest import PendingLedger, StoreManifest
+
+    processor = backfilled(tiny)
+    moved = write_tempo_granule(
+        tiny.granule_paths[1].parent / f"{tiny.granule_paths[1].stem}.nc",
+        time_value=tiny.times[-1] + 3600.0,  # past the axis end
+    )
+    assert forward(processor, [f"file://{moved}"]) == [ProcessOutcome.REJECTED]
+    repo = processor.open_backfill_repo()
+    main_store = repo.readonly_session("main").store
+    assert PendingLedger.read(main_store) == ()
+    manifest = StoreManifest.read(main_store)
+    assert manifest is not None
+    assert [e.granule_ur for e in manifest.granules] == [
+        f"granule_{i}" for i in range(len(tiny.times))
+    ]
+
+
 def test_forward_rejects_moved_timestamp_within_same_batch(
     tiny: TinyCollection,
 ) -> None:

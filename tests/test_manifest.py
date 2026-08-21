@@ -86,6 +86,20 @@ def test_pending_ledger_round_trip_and_dedupe(store: zarr.abc.store.Store) -> No
     assert [e.granule_ur for e in PendingLedger.read(store)] == ["G2"]
 
 
+def test_pending_ledger_append_replaces_stale_entry_on_redelivery(
+    store: zarr.abc.store.Store,
+) -> None:
+    """A republished pending granule with a corrected time/url must replace
+    the stale entry, not be dropped by it — an unreplaced stale entry
+    crash-loops the resort fold forever (review finding I2)."""
+    PendingLedger.append(store, [entry(1)])
+    corrected = GranuleEntry(url="s3://b/g1-corrected.nc", granule_ur="G1", time=99.0)
+    PendingLedger.append(store, [corrected])
+    ledger = PendingLedger.read(store)
+    assert len(ledger) == 1
+    assert ledger[0] == corrected
+
+
 def test_state_rides_the_commit() -> None:
     """Manifest + ledger written through a session survive commit, and an
     attrs-only change is a committable session change (no empty commit)."""

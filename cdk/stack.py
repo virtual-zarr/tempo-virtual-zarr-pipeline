@@ -421,6 +421,11 @@ class VirtualizarrSqsStack(Stack):
                 # shifted suffix's manifest updates in memory.
                 memory_size=4096,
                 environment=resort_env,
+                # Single-writer, same reason as the consumer: two concurrent
+                # resort runs race to reset/promote the shared "resort"
+                # branch, and the schedule alone doesn't rule out overlap
+                # (a slow run plus a manual invoke, or async redelivery).
+                reserved_concurrent_executions=1,
             )
             self.icechunk_bucket.grant_read_write(self.resort_lambda)
             if self.earthdata_secret is not None:

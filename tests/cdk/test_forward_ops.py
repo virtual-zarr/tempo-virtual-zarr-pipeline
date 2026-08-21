@@ -57,6 +57,17 @@ def test_forward_state_env_reaches_lambdas() -> None:
     )
 
 
+def test_resort_lambda_is_single_writer() -> None:
+    """Two concurrent resort runs race to reset/promote the shared "resort"
+    branch (review finding C1); reserved concurrency 1 rules that out at
+    the infrastructure level, mirroring the consumer's single-writer
+    setting."""
+    _template().has_resource_properties(
+        "AWS::Lambda::Function",
+        Match.object_like({"MemorySize": 4096, "ReservedConcurrentExecutions": 1}),
+    )
+
+
 def test_resort_and_poller_are_scheduled() -> None:
     template = _template()
     # One rule for the daily resort, one for the CMR poller.
