@@ -108,8 +108,9 @@ undeployed while the backfill runs.
 One-time setup for the sandbox test run:
 
 ```bash
+./scripts/setup.sh   # uv deps + Node and the cdk CLI, installed into the uv venv
 aws sso login --profile ds-sandbox-max                 # or however the profile authenticates
-cdk bootstrap aws://755329541016/us-west-2 --profile ds-sandbox-max   # fresh account only
+uv run --env-file .env_hcho cdk bootstrap aws://755329541016/us-west-2   # fresh account only
 aws s3 mb s3://tempo-virtual-store-sandbox --region us-west-2 --profile ds-sandbox-max
 aws secretsmanager create-secret --name tempo-earthdata \
   --secret-string '{"token":"<EDL token>"}' \
