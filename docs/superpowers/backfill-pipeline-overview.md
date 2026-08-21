@@ -72,7 +72,7 @@ Map over partitions   (MaxConcurrency = 1, SERIAL — incremental failure recove
 └─────────────────────────────────────────────────────────────────────────┘
       │  (next partition; its fork bases off the new committed tip)
       ▼
-[Promote]   open_backfill_repo() → promote(): reset_branch("main", backfill tip)
+[Promote]   open_backfill_repo() → validate_backfill_store() → promote(): CAS main to backfill tip
 ```
 
 Per-run isolation: every S3 location derives from a per-run prefix, e.g.
@@ -115,7 +115,13 @@ Notes:
 
 ## Repo opening
 
-`open_backfill_repo()` is a `VirtualizarrProcessor` Protocol method (added in sub-project B). The
-reference implementation is env-configurable: `icechunk.s3_storage(...)` when `ICECHUNK_BUCKET`
-is set (Lambda), otherwise `local_filesystem_storage(<path from env>)` (tests). It uses
-`open_or_create`, which yields a `main` branch for `initialize_backfill_store` to branch off.
+`open_backfill_repo()` is a method on `Processor`, the sole implementation (the earlier
+`VirtualizarrProcessor` Protocol was removed once no polymorphic caller remained). It is
+env-configurable: `icechunk.s3_storage(...)` when `ICECHUNK_BUCKET` is set (Lambda), otherwise
+`local_filesystem_storage(<path from env>)` (tests). It uses `open_or_create`, which yields a
+`main` branch for `initialize_backfill_store` to branch off.
+
+The store manifest (`granule_ur`/`granule_url` arrays on the time axis) and pending ledger (the
+`pending_ledger` root attribute) live inside the store itself and commit atomically with the data
+they describe — see `docs/superpowers/specs/2026-08-20-manifest-in-icechunk-design.md` for the
+full design.

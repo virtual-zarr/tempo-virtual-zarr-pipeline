@@ -58,7 +58,7 @@ Points worth knowing:
 
 **Backfill inventory.** `uv run exploration/build_backfill_inventory.py` produces the input for a backfill: a validated JSON document with one entry per granule — its `.nc` link, its granule UR, and its exact in-file `/time[0]`. The in-file time differs from the CMR and filename timestamps (`...T174200Z` has `/time` = 17:42:18.02), and the store's time axis is built from these exact values, so the builder reads a few KB of every granule's header. The document is rejected if it is empty, unsorted, or contains duplicate times or granule URs — checked again when the pipeline reads it.
 
-**Backfill.** The Step Functions run partitions the inventory, creates the full-shape store on a `backfill` branch (metadata plus the native coordinates, nothing else), and fans out workers. Each worker parses its granule, validates it, finds its slot by matching the granule's time against the axis exactly, and writes its references into a disjoint region of an Icechunk fork; a reducer merges each partition's forks into one commit. Any worker failure fails the run before anything reaches `main`. The final promote step re-validates the store against the template, the axis against the inventory, and the coordinates against the reference arrays, then moves `main` to the backfill tip and writes the store manifest. The move is a compare-and-swap against the tip the branch was created from, so a commit that landed on `main` mid-run fails the promote instead of being discarded.
+**Backfill.** The Step Functions run partitions the inventory, creates the full-shape store on a `backfill` branch (metadata plus the native coordinates, nothing else), and fans out workers. Each worker parses its granule, validates it, finds its slot by matching the granule's time against the axis exactly, and writes its references into a disjoint region of an Icechunk fork; a reducer merges each partition's forks into one commit. Any worker failure fails the run before anything reaches `main`. The manifest (as two vlen-string arrays on the time axis) and an empty pending ledger are committed on the `backfill` branch alongside the data, so the final promote step only re-validates the store against the template, the axis and manifest against the inventory, and the coordinates against the reference arrays, then moves `main` to the already-committed backfill tip. The move is a compare-and-swap against the tip the branch was created from, so a commit that landed on `main` mid-run fails the promote instead of being discarded; nothing is written after the CAS.
 
 **Validation.** A granule is written only if it matches the template's shared attributes, carries the bit-identical reference grid, and its `/time[0]` equals its own `time_coverage_start_since_epoch` attribute. Every virtual reference is stamped with the source object's observed modification time, so if a source file is later overwritten, reads of the stale references fail instead of returning bytes from a changed file.
 
@@ -71,7 +71,9 @@ Points worth knowing:
 | time occupies a slot, different granule UR | reject to the DLQ |
 | time is out of order | record in the pending ledger, consume the message |
 
-Out-of-order arrivals are common: TEMPO's historical archive is still being back-filled, and about 7% of adjacent scans publish swapped. A scheduled re-sort job merges the pending ledger into the store on a `resort` branch. Already-ingested slots at or after the earliest insertion are relocated with icechunk's `reindex_array`, a metadata-only move that never re-reads a source file, so deep historical insertions are cheap; only the inserted granules are parsed. `main` moves by the same compare-and-swap as the backfill promote. One run folds at most `RESORT_MAX_FOLD` pending granules, earliest first, and promotes that as durable partial progress; the rest drain on later runs. The consumer runs at reserved concurrency 1 because concurrent appends conflict. The store manifest (which granule owns which slot), the pending ledger, and the poll watermark live under `s3://<icechunk bucket>/<prefix>state/`.
+Out-of-order arrivals are common: TEMPO's historical archive is still being back-filled, and about 7% of adjacent scans publish swapped. A scheduled re-sort job pins `main`'s tip first, reads the axis, manifest, and pending ledger from a readonly session at that snapshot, and merges the pending ledger into the store on a `resort` branch built from it. Already-ingested slots at or after the earliest insertion are relocated with icechunk's `reindex_array`, a metadata-only move that never re-reads a source file, so deep historical insertions are cheap; only the inserted granules are parsed. Folded ledger entries are drained inside the same commit that performs the fold, and `main` moves by the same compare-and-swap as the backfill promote, so a consumer append that landed on `main` mid-run fails the promote instead of being silently erased. One run folds at most `RESORT_MAX_FOLD` pending granules, earliest first, and promotes that as durable partial progress; the rest drain on later runs. The consumer runs at reserved concurrency 1 because concurrent appends conflict.
+
+The store manifest (which granule owns which slot, as two arrays on the time axis) and the pending ledger live inside the Icechunk store itself, as root-group attributes and arrays committed atomically with the data they describe; only the CMR poll watermark lives in `s3://<icechunk bucket>/<prefix>state/`. The poller's first poll starts from `$POLL_START_ISO` when set (typically the backfill inventory's build time), else a fixed lookback.
 
 **Verification.** `uv run scripts/verify_store.py` samples random time steps and, for each, asks CMR for the granule nearest that time, independently of the pipeline's own bookkeeping. The file CMR points at must match the store's axis time exactly, and random windows of every variable are compared both raw (store bytes against h5py reads) and CF-decoded (the read path users take). Because the URL comes from CMR, a store still referencing a superseded revision is caught even when the old object is intact. `--completeness` diffs CMR's granule listing against the manifest and pending ledger; `--offline` falls back to manifest-provided URLs. Any mismatch or read failure exits non-zero.
 
@@ -102,7 +104,7 @@ Per collection, hcho shown:
 1. Deploy: `uv run --env-file .env_hcho cdk deploy`
 2. Build and upload the inventory: `uv run exploration/build_backfill_inventory.py --collection hcho --s3-uri s3://<bucket>/tempo/inventory/hcho.json`
 3. Start the backfill: `./scripts/start_backfill.sh -e .env_hcho hcho-backfill-<date> s3://<bucket>/tempo/inventory/hcho.json`. A failed run can be restarted under a new execution name; Init resets the leftover branch.
-4. When it has promoted, set `FORWARD_QUEUE_ENABLED=true` in `.env_hcho` and redeploy. The poller's first run starts from the inventory's build time, so granules published while the backfill ran are picked up; the re-sort job folds in anything that arrived out of order.
+4. When it has promoted, set `FORWARD_QUEUE_ENABLED=true` and `POLL_START_ISO` to the inventory's build time in `.env_hcho`, then redeploy, so the poller's first poll picks up granules published while the backfill ran; the re-sort job folds in anything that arrived out of order.
 5. Run `uv run --env-file .env_hcho scripts/verify_store.py` after the promote (and periodically) to spot-check the store against its sources.
 
 Then repeat with `.env_no2` for the second stack:
@@ -132,6 +134,7 @@ Settings live in [`cdk/settings.py`](./cdk/settings.py) and a `.env` file ([samp
 | `FORWARD_QUEUE_ENABLED` | inverse of backfill | enable the SQS consumer |
 | `SQS_BATCH_SIZE` | 10 | files per consumer invocation (one commit each) |
 | `POLL_SCHEDULE_MINUTES` | 30 | CMR poller cadence |
+| `POLL_START_ISO` | — | first-poll start time (else a fixed lookback from now); set to the backfill inventory's build time when enabling forward processing |
 | `RESORT_SCHEDULE_HOURS` | 24 | re-sort job cadence |
 | `RESORT_MAX_FOLD` | 500 | max pending granules parsed per re-sort run |
 | `EARTHDATA_SECRET_ARN` | — | Secrets Manager secret with EDL credentials for source reads |
@@ -158,7 +161,7 @@ uv run --env-file .env cdk synth   # review infrastructure before deploying
 uv run --env-file .env cdk deploy
 ```
 
-The processor implements the [`VirtualizarrProcessor` protocol](./lambda/virtualizarr-processor/virtualizarr_processor/typing.py); the template's synthetic reference implementation lives on as `tests/stub_processor.py` and still exercises the generic fork/merge mechanics.
+The `Processor` class in [`virtualizarr_processor/processor.py`](./lambda/virtualizarr-processor/virtualizarr_processor/processor.py) is the sole (non-polymorphic) implementation; the template's synthetic reference implementation lives on as `tests/stub_processor.py` and still exercises the generic fork/merge mechanics.
 
 ## Exploration
 

@@ -196,9 +196,7 @@ class Processor:
         )
         return BranchInit(snapshot=snapshot, branched_from=main_tip)
 
-    def process_backfill_file(
-        self, file_key: str, fork: ForkSession | Session
-    ) -> bool:
+    def process_backfill_file(self, file_key: str, fork: ForkSession | Session) -> bool:
         """Validate one granule and region-write it into the fork (no commit)."""
         try:
             vds, stamp = self._parse_and_validate(file_key)

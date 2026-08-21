@@ -328,8 +328,12 @@ def main() -> int:
         return 1
     lookup = None if args.offline else cmr_lookup_for(processor.config.concept_id)
     problems = verify_store(
-        repo, manifest, samples=args.samples, window=args.window,
-        seed=args.seed, cmr_lookup=lookup,
+        repo,
+        manifest,
+        samples=args.samples,
+        window=args.window,
+        seed=args.seed,
+        cmr_lookup=lookup,
     )
     if args.completeness:
         ledger_urs = {entry.granule_ur for entry in PendingLedger.read(pinned)}
