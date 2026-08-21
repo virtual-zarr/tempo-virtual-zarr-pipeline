@@ -1,6 +1,5 @@
 """Tests for the store verification script."""
 
-import os
 import pathlib
 import pickle
 from datetime import datetime
@@ -10,7 +9,6 @@ import verify_store as vs
 from tempo_fixtures import TinyCollection, build_tiny_collection, write_tempo_granule
 from virtualizarr_processor import backfill
 from virtualizarr_processor.inventory import BackfillInventory
-from virtualizarr_processor.manifest import StoreManifest
 from virtualizarr_processor.processor import Processor
 
 
@@ -21,8 +19,6 @@ def tiny(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> TinyCollect
     monkeypatch.setenv("ICECHUNK_LOCAL_PATH", str(tmp_path / "repo"))
     monkeypatch.setenv("VIRTUAL_CHUNK_PREFIX", f"file://{tmp_path}/")
     monkeypatch.setenv("TEMPO_COLLECTION", str(collection.config_path))
-    monkeypatch.setenv("STORE_MANIFEST_URI", str(tmp_path / "store-manifest.json"))
-    monkeypatch.setenv("PENDING_LEDGER_URI", str(tmp_path / "pending-ledger.json"))
     return collection
 
 
@@ -38,7 +34,6 @@ def backfill_and_promote(tiny: TinyCollection) -> Processor:
         children.append(pickle.dumps(child))
     backfill.merge_and_commit(repo, children, message="backfill")
     backfill.promote(repo, expected_target_tip=init.branched_from)
-    StoreManifest.write(os.environ["STORE_MANIFEST_URI"], tiny.inventory)
     return processor
 
 

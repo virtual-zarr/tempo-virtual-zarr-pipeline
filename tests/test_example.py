@@ -5,16 +5,6 @@ import pytest
 import xarray as xr
 from icechunk import Repository, Session
 from stub_processor import Processor
-from virtualizarr_processor.typing import VirtualizarrProcessor
-
-
-def protocol_type_check(processor: VirtualizarrProcessor) -> None:
-    assert processor
-
-
-def test_follows_protocol() -> None:
-    processor = Processor()
-    protocol_type_check(processor=processor)
 
 
 def test_initialize_repo() -> None:

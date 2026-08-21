@@ -16,16 +16,17 @@ reported as its own finding.
 ``--offline`` falls back to manifest-provided URLs (no CMR access), which
 still detects corrupt references and mutated source objects.
 ``--completeness`` additionally lists the collection's granules from CMR
-and diffs their URs against the store manifest plus the pending ledger.
+and diffs their URs against the store manifest plus the pending ledger,
+both read from the `main` branch's own snapshot.
 
 Any mismatch, missing granule, or read failure (including the checksum
 error a source object overwritten after ingest produces) is reported and
 the script exits non-zero.
 
-Uses the same environment variables as the processor Lambdas; the state
-artifact URIs default to the deployment layout when unset, so a
-per-collection env file is enough. Reading s3:// sources requires
-Earthdata credentials; CMR metadata does not.
+Uses the same environment variables as the processor Lambdas; the manifest
+and pending ledger live inside the store itself, so a per-collection env
+file is enough. Reading s3:// sources requires Earthdata credentials; CMR
+metadata does not.
 
 Usage:
     uv run scripts/verify_store.py --samples 8 --window 5
@@ -37,7 +38,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 import urllib.parse
 import urllib.request
@@ -51,7 +51,11 @@ import xarray as xr
 import zarr
 from icechunk import Repository
 from virtualizarr_processor.inventory import BackfillInventory
-from virtualizarr_processor.manifest import PendingLedger, StoreManifest
+from virtualizarr_processor.manifest import (
+    MANIFEST_ARRAYS,
+    PendingLedger,
+    StoreManifest,
+)
 
 COORDINATES = ("time", "latitude", "longitude")
 TEMPO_EPOCH = datetime(1980, 1, 6, tzinfo=timezone.utc)
@@ -178,14 +182,14 @@ def verify_store(
         cast(Any, session.store), engine="zarr", consolidated=False
     )
     axis = np.asarray(zarr.open_array(session.store, path="time")[:])
-    StoreManifest.validate_against_axis(manifest, axis)
 
     rng = np.random.default_rng(seed)
     indices = sorted(
         int(i)
         for i in rng.choice(axis.size, size=min(samples, axis.size), replace=False)
     )
-    variables = [name for name in group.array_keys() if name not in COORDINATES]
+    skip = COORDINATES + MANIFEST_ARRAYS
+    variables = [name for name in group.array_keys() if name not in skip]
 
     problems: list[str] = []
     for index in indices:
@@ -313,29 +317,22 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    from virtualizarr_processor.manifest import default_state_uri
     from virtualizarr_processor.processor import Processor
 
     processor = Processor()
     repo = processor.open_backfill_repo()
-    manifest_uri = os.environ.get("STORE_MANIFEST_URI") or default_state_uri(
-        "store-manifest.json"
-    )
-    manifest = StoreManifest.read(manifest_uri)
+    pinned = repo.readonly_session("main").store
+    manifest = StoreManifest.read(pinned)
+    if manifest is None:
+        print("FAIL: store carries no manifest", file=sys.stderr)
+        return 1
     lookup = None if args.offline else cmr_lookup_for(processor.config.concept_id)
     problems = verify_store(
-        repo,
-        manifest,
-        samples=args.samples,
-        window=args.window,
-        seed=args.seed,
-        cmr_lookup=lookup,
+        repo, manifest, samples=args.samples, window=args.window,
+        seed=args.seed, cmr_lookup=lookup,
     )
     if args.completeness:
-        ledger_uri = os.environ.get("PENDING_LEDGER_URI") or default_state_uri(
-            "pending-ledger.json"
-        )
-        ledger_urs = {entry.granule_ur for entry in PendingLedger.read(ledger_uri)}
+        ledger_urs = {entry.granule_ur for entry in PendingLedger.read(pinned)}
         problems += verify_completeness(
             processor.config.concept_id, manifest, ledger_urs
         )

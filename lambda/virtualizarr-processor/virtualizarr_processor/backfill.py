@@ -1,9 +1,9 @@
 """Generic Icechunk fork/merge/promote helpers for backfill.
 
-These operations are identical for every VirtualizarrProcessor implementation,
-so they live here rather than on the Protocol. The fork/merge mechanics are
-covered by tests/backfill_mechanics against the pinned icechunk (>=2.1): a
-fresh writable session can merge forks created by an earlier (now-discarded)
+These operations are processor-independent, so they live here rather than
+on the Processor. The fork/merge mechanics are covered by
+tests/backfill_mechanics against the pinned icechunk (>=2.1): a fresh
+writable session can merge forks created by an earlier (now-discarded)
 session and commit, as long as the fork's base is a committed branch-tip
 snapshot.
 """

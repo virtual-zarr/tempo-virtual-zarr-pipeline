@@ -29,7 +29,7 @@ repos:
         # reduced several checks to no-ops.
         entry: >-
           uv run mypy lambda cdk
-          scripts/verify_store.py scripts/rebuild_manifest.py
+          scripts/verify_store.py
         language: system
         pass_filenames: false
         types_or: [python, toml]

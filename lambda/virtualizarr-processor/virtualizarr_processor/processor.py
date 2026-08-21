@@ -89,7 +89,7 @@ def _granule_ur(file_key: str) -> str:
 
 
 class Processor:
-    """TEMPO implementation of the VirtualizarrProcessor protocol."""
+    """The TEMPO L3 processor: parsing, validation, routing, and store lifecycle."""
 
     def __init__(self, config: CollectionConfig | None = None) -> None:
         self.config = config or load_collection()
