@@ -94,16 +94,18 @@ The store manifest (which granule owns which slot, as two arrays on the time axi
 Each collection deploys as its own stack from a committed env file:
 [`.env_hcho`](./.env_hcho) and [`.env_no2`](./.env_no2). Fill in `ACCOUNT_ID`
 and `ICECHUNK_BUCKET`, one shared bucket in us-west-2 created once with
-`aws s3 mb s3://<bucket> --region us-west-2`; `S3_PREFIX` plus the
-per-collection `ICECHUNK_PREFIX` keep the stacks' output separate. Both files
+`aws s3 mb s3://<bucket> --region us-west-2`; the per-collection `S3_PREFIX`
+(`tempo/hcho`, `tempo/no2`) keeps the stacks' output separate, and every IAM
+grant in a stack is scoped to its own prefix, so neither stack's roles can
+touch the other's keys. Both files
 ship backfill-first: forward processing (consumer, poller, re-sort job) stays
 undeployed while the backfill runs.
 
 Per collection, hcho shown:
 
 1. Deploy: `uv run --env-file .env_hcho cdk deploy`
-2. Build and upload the inventory: `uv run exploration/build_backfill_inventory.py --collection hcho --s3-uri s3://<bucket>/tempo/inventory/hcho.json`
-3. Start the backfill: `./scripts/start_backfill.sh -e .env_hcho hcho-backfill-<date> s3://<bucket>/tempo/inventory/hcho.json`. A failed run can be restarted under a new execution name; Init resets the leftover branch.
+2. Build and upload the inventory: `uv run exploration/build_backfill_inventory.py --collection hcho --s3-uri s3://<bucket>/tempo/hcho/inventory/hcho.json`. It must land under `INVENTORY_PREFIX` (default `<S3_PREFIX>/inventory/`) — the partition Lambda can only read that prefix.
+3. Start the backfill: `./scripts/start_backfill.sh -e .env_hcho hcho-backfill-<date> s3://<bucket>/tempo/hcho/inventory/hcho.json`. A failed run can be restarted under a new execution name; Init resets the leftover branch.
 4. When it has promoted, set `FORWARD_QUEUE_ENABLED=true` and `POLL_START_ISO` to the inventory's build time in `.env_hcho`, then redeploy, so the poller's first poll picks up granules published while the backfill ran; the re-sort job folds in anything that arrived out of order.
 5. Run `uv run --env-file .env_hcho scripts/verify_store.py` after the promote (and periodically) to spot-check the store against its sources.
 
@@ -112,9 +114,9 @@ Then repeat with `.env_no2` for the second stack:
 ```bash
 uv run --env-file .env_no2 cdk deploy
 uv run exploration/build_backfill_inventory.py --collection no2 \
-  --s3-uri s3://<bucket>/tempo/inventory/no2.json
+  --s3-uri s3://<bucket>/tempo/no2/inventory/no2.json
 ./scripts/start_backfill.sh -e .env_no2 no2-backfill-<date> \
-  s3://<bucket>/tempo/inventory/no2.json
+  s3://<bucket>/tempo/no2/inventory/no2.json
 ```
 
 Settings live in [`cdk/settings.py`](./cdk/settings.py) and a `.env` file ([sample](./.env.sample)). The ones that matter most:
@@ -124,8 +126,9 @@ Settings live in [`cdk/settings.py`](./cdk/settings.py) and a `.env` file ([samp
 | `TEMPO_COLLECTION` | — | `hcho` or `no2`; one deployment per collection |
 | `ICECHUNK_BUCKET` | — | existing bucket for the store; must be in the stack's region (checked at deploy) |
 | `ICECHUNK_BUCKET_NAME` | — | bucket to create when `ICECHUNK_BUCKET` is unset |
-| `S3_PREFIX` | — | common key prefix for all pipeline output (run artifacts land at `<S3_PREFIX>/backfill/`) |
+| `S3_PREFIX` | — | common key prefix for all pipeline output (run artifacts land at `<S3_PREFIX>/backfill/`); per collection, since every IAM grant is scoped under it |
 | `ICECHUNK_PREFIX` | — | the repository's key prefix, relative to `S3_PREFIX` |
+| `INVENTORY_PREFIX` | `<S3_PREFIX>/inventory` | key prefix the backfill partition Lambda may read inventories from |
 | `DATA_BUCKET_NAME` | — | source bucket workers read granules from |
 | `BACKFILL_ENABLED` | `false` | deploy the backfill Step Functions pipeline |
 | `BACKFILL_PARTITION_SIZE` | 500 | files per partition (one merged commit each) |

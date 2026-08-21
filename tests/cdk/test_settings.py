@@ -52,6 +52,21 @@ def test_s3_prefix_scopes_the_icechunk_prefix() -> None:
     assert settings.icechunk_storage_prefix == "tempo/hcho-v04"
 
 
+def test_inventory_prefix_defaults_under_s3_prefix() -> None:
+    s = StackSettings(STAGE="dev", S3_PREFIX="tempo/hcho", INVENTORY_PREFIX=None)
+    assert s.inventory_prefix == "tempo/hcho/inventory"
+
+
+def test_inventory_prefix_without_s3_prefix() -> None:
+    s = StackSettings(STAGE="dev", S3_PREFIX=None, INVENTORY_PREFIX=None)
+    assert s.inventory_prefix == "inventory"
+
+
+def test_inventory_prefix_explicit_overrides_and_strips() -> None:
+    s = StackSettings(STAGE="dev", S3_PREFIX="tempo/hcho", INVENTORY_PREFIX="/inv/")
+    assert s.inventory_prefix == "inv"
+
+
 def test_icechunk_prefix_must_be_relative_to_s3_prefix() -> None:
     import pytest
 

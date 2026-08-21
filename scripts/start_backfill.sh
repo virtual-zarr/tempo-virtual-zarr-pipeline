@@ -12,11 +12,11 @@
 #
 # Examples:
 #   scripts/start_backfill.sh -s tempo-hcho -r us-west-2 \
-#     hcho-backfill-20260820 s3://my-bucket/tempo/inventory/hcho.json
+#     hcho-backfill-20260820 s3://my-bucket/tempo/hcho/inventory/hcho.json
 #
 #   # Take the stack and region from one of the per-collection env files:
 #   scripts/start_backfill.sh -e .env_hcho \
-#     hcho-backfill-20260820 s3://my-bucket/tempo/inventory/hcho.json
+#     hcho-backfill-20260820 s3://my-bucket/tempo/hcho/inventory/hcho.json
 #
 # Stack and region are resolved in this order, first hit wins:
 #   1. -s / -r flags
@@ -36,7 +36,7 @@ Usage: start_backfill.sh [-s STACK] [-r REGION] [-e ENV_FILE] <execution-name> <
   -e ENV_FILE  read STACK_NAME / ACCOUNT_REGION from this file (e.g. .env_hcho)
 
   e.g. start_backfill.sh -e .env_hcho \
-         hcho-backfill-20260820 s3://my-bucket/tempo/inventory/hcho.json
+         hcho-backfill-20260820 s3://my-bucket/tempo/hcho/inventory/hcho.json
 EOF
   exit 2
 }

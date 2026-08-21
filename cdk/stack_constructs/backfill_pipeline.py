@@ -10,6 +10,7 @@ from aws_cdk import aws_stepfunctions as sfn
 from aws_cdk import aws_stepfunctions_tasks as tasks
 from constructs import Construct
 
+from .grants import grant_prefixed_read_write
 from .log_groups import function_log_group
 
 _ACTIONS = ["partition", "init", "fork", "worker", "reduce", "promote"]
@@ -33,6 +34,7 @@ class BackfillPipeline(Construct):
         icechunk_bucket: s3.IBucket,
         icechunk_prefix: str | None,
         s3_prefix: str | None = None,
+        inventory_prefix: str | None = None,
         data_bucket_name: str,
         earthdata_secret_arn: str | None = None,
         partition_size: int,
@@ -66,6 +68,11 @@ class BackfillPipeline(Construct):
             else None
         )
 
+        # Backfill scratch space (partition manifests + pickled forks) lives
+        # under {s3_prefix}/backfill/, outside the store prefix; keep this in
+        # step with run_prefix in _build_state_machine.
+        run_key_prefix = f"{s3_prefix}/backfill" if s3_prefix else "backfill"
+
         self.functions: dict[str, lmb.DockerImageFunction] = {}
         for action in _ACTIONS:
             fn = lmb.DockerImageFunction(
@@ -83,7 +90,16 @@ class BackfillPipeline(Construct):
                 memory_size=2048,
                 environment=dict(env),
             )
-            icechunk_bucket.grant_read_write(fn)
+            if not icechunk_prefix:
+                icechunk_bucket.grant_read_write(fn)
+            elif action == "partition":
+                # partition never opens the repo: it reads the inventory and
+                # writes partition manifests under the run prefix.
+                grant_prefixed_read_write(fn, icechunk_bucket, [run_key_prefix])
+            else:
+                grant_prefixed_read_write(
+                    fn, icechunk_bucket, [icechunk_prefix, run_key_prefix]
+                )
             # Handlers that open the repo need to read the Earthdata secret.
             if earthdata_secret is not None and action in _REPO_ACTIONS:
                 earthdata_secret.grant_read(fn)
@@ -100,6 +116,18 @@ class BackfillPipeline(Construct):
         )
         self.functions["worker"].add_to_role_policy(data_policy)
         self.functions["partition"].add_to_role_policy(data_policy)
+
+        if icechunk_prefix and inventory_prefix:
+            self.functions["partition"].add_to_role_policy(
+                iam.PolicyStatement(
+                    actions=["s3:GetObject"],
+                    resources=[
+                        icechunk_bucket.arn_for_objects(
+                            f"{inventory_prefix.strip('/')}/*"
+                        )
+                    ],
+                )
+            )
 
         self.state_machine = self._build_state_machine(
             icechunk_bucket,

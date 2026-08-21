@@ -26,6 +26,10 @@ class StackSettings(BaseSettings):
     # create a repo at the bucket root, so S3_PREFIX or ICECHUNK_PREFIX must be
     # non-empty to bootstrap a new store. Passed into Lambda as the combined path.
     ICECHUNK_PREFIX: str | None = None
+    # Key prefix in the Icechunk bucket where backfill inventories are uploaded
+    # (see README: s3://<bucket>/<S3_PREFIX>/inventory/). The backfill partition
+    # Lambda is granted read on this prefix only.
+    INVENTORY_PREFIX: str | None = None
     DATA_BUCKET_NAME: str | None = None
     PROJECT: str = "virtualizarr-data-pipelines"
     SNS_TOPIC: str | None = None
@@ -107,6 +111,13 @@ class StackSettings(BaseSettings):
             )
             or None
         )
+
+    @property
+    def inventory_prefix(self) -> str:
+        """Key prefix the backfill partition Lambda may read inventories from."""
+        if self.INVENTORY_PREFIX:
+            return self.INVENTORY_PREFIX.strip("/")
+        return "/".join(p for p in (self.s3_key_prefix, "inventory") if p)
 
     @model_validator(mode="after")
     def _validate_prefixes(self) -> "StackSettings":
