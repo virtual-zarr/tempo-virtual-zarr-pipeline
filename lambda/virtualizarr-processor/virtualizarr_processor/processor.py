@@ -29,7 +29,9 @@ The store manifest and pending ledger live inside the store itself (see
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import math
 import os
 import time as time_module
 from collections.abc import Iterable
@@ -66,6 +68,7 @@ from virtualizarr_processor.manifest import (
 )
 from virtualizarr_processor.resort import first_shifted_index
 from virtualizarr_processor.store_template import (
+    AnyGroupSpec,
     GranuleValidationError,
     StoreValidationError,
     create_empty_store,
@@ -367,6 +370,11 @@ class Processor:
         concurrent run of the same job that resets ``branch`` between this
         run's commit and its validate/promote gets validated (and then
         promoted) in this run's place.
+
+        Beyond the metadata, axis, coordinate, and manifest checks, every
+        data array must hold a chunk reference for every chunk of its grid
+        (see :meth:`_missing_chunk_references`): a slot no worker wrote
+        reads as fill values and passes every other check.
         """
         session = (
             repo.readonly_session(snapshot_id=snapshot_id)
@@ -398,8 +406,55 @@ class Processor:
         urls = np.asarray(zarr.open_array(session.store, path=MANIFEST_ARRAYS[1])[:])
         if [str(v) for v in urls] != [e.url for e in inventory.granules]:
             differences.append("store granule_url array differs from the inventory")
+        differences += self._missing_chunk_references(session, template)
         if differences:
             raise StoreValidationError(differences)
+
+    def _missing_chunk_references(
+        self, session: Session, template: AnyGroupSpec
+    ) -> list[str]:
+        """One line per data array holding fewer chunk references than its grid.
+
+        A slot without references reads as fill values, which no metadata
+        or coordinate check can see, so the promote gate counts the stored
+        chunks of every array carrying the append dimension (the axis and
+        manifest arrays are compared by value instead, and the reference
+        grid never changes). TEMPO L3 granules allocate every HDF5 chunk,
+        so a fully ingested store references every chunk; a shortfall
+        means unwritten or lost slots and must never reach ``main``.
+        """
+        targets = []
+        for path, node in template.to_flat().items():
+            if (
+                not isinstance(node, ArraySpec)
+                or not node.dimension_names
+                or self.config.append_dim not in node.dimension_names
+            ):
+                continue
+            name = path.lstrip("/")
+            if name in (self.config.append_dim, *MANIFEST_ARRAYS):
+                continue
+            chunk_shape = node.chunk_grid["configuration"]["chunk_shape"]
+            expected = math.prod(
+                -(-extent // size) for extent, size in zip(node.shape, chunk_shape)
+            )
+            targets.append((name, expected))
+
+        async def shortfalls() -> list[str]:
+            differences = []
+            for name, expected in targets:
+                actual = 0
+                async for _ in session.chunk_coordinates(f"/{name}"):
+                    actual += 1
+                if actual != expected:
+                    differences.append(
+                        f"/{name}: store holds {actual} of {expected} expected "
+                        "chunk references; missing slots would read as fill "
+                        "values"
+                    )
+            return differences
+
+        return asyncio.run(shortfalls())
 
     def _write_region(
         self, vds: xr.Dataset, store: object, index: int, stamp: datetime

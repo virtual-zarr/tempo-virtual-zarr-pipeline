@@ -162,6 +162,36 @@ def test_promote_gate_rejects_manifest_array_mismatch(tiny: TinyCollection) -> N
         processor.validate_backfill_store(repo, tiny.inventory, branch="backfill")
 
 
+def test_promote_gate_rejects_missing_chunk_references(tiny: TinyCollection) -> None:
+    """Unwritten slots read as fill values and pass every metadata check;
+    only counting the stored chunk references catches them."""
+    processor = Processor()
+    repo = processor.open_backfill_repo()
+    processor.initialize_backfill_store(repo, tiny.inventory)
+
+    # Freshly initialized: axis, coordinates, and manifest are all perfect,
+    # yet no data variable holds a single reference.
+    with pytest.raises(StoreValidationError, match="chunk references"):
+        processor.validate_backfill_store(repo, tiny.inventory, branch="backfill")
+
+    # All but the last granule written: still short, still rejected.
+    shared = pickle.loads(backfill.create_fork(repo))
+    children = []
+    for url in tiny.urls[:-1]:
+        child = shared.fork()
+        assert processor.process_backfill_file(url, child)
+        children.append(pickle.dumps(child))
+    backfill.merge_and_commit(repo, children, message="all but one")
+    with pytest.raises(StoreValidationError, match="chunk references"):
+        processor.validate_backfill_store(repo, tiny.inventory, branch="backfill")
+
+    # The last write completes coverage and the gate passes.
+    child = pickle.loads(backfill.create_fork(repo)).fork()
+    assert processor.process_backfill_file(tiny.urls[-1], child)
+    backfill.merge_and_commit(repo, [pickle.dumps(child)], message="last one")
+    processor.validate_backfill_store(repo, tiny.inventory, branch="backfill")
+
+
 # --- Real-granule integration (skipped when the context data is absent) ---
 
 
