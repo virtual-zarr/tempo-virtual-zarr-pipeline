@@ -143,7 +143,7 @@ separately. For the later client deployment, also set the `CLIENT` tag and
 Per collection, hcho shown:
 
 1. Deploy: `uv run --env-file .env_hcho cdk deploy`
-2. Build and upload the inventory: `uv run --env-file .env_hcho scripts/build_backfill_inventory.py --collection hcho --max-count 50 --s3-uri s3://tempo-virtual-store-sandbox/tempo/hcho/inventory/hcho.json` (`--max-count 50` is the trial cap; drop it for the full run). The env file supplies `AWS_PROFILE` for the upload; Earthdata credentials come from `~/.netrc` or `$EARTHDATA_TOKEN`. It must land under `INVENTORY_PREFIX` (default `<S3_PREFIX>/inventory/`) — the partition Lambda can only read that prefix.
+2. Build and upload the inventory: `./scripts/build_inventory_remote.sh -e .env_hcho -m 50` (`-m 50` is the trial cap; drop it for the full run). This runs the committed `build_backfill_inventory.py` inside the stack's CodeBuild project, because the DAAC's temporary S3 credentials only work from us-west-2 — a laptop run with the default `--access direct` fails on every granule read. The Earthdata token comes from the stack's `EARTHDATA_SECRET_ARN`; the inventory lands at `s3://<bucket>/<INVENTORY_PREFIX>/hcho.json` (the only prefix the partition Lambda may read). On a us-west-2 machine, `uv run --env-file .env_hcho scripts/build_backfill_inventory.py ...` still works directly, with Earthdata credentials from `~/.netrc` or `$EARTHDATA_TOKEN`.
 3. Start the backfill: `./scripts/start_backfill.sh -e .env_hcho hcho-backfill-<date> s3://tempo-virtual-store-sandbox/tempo/hcho/inventory/hcho.json`. A failed run can be restarted under a new execution name; Init resets the leftover branch.
 4. When it has promoted, set `FORWARD_QUEUE_ENABLED=true` and `POLL_START_ISO` to the inventory's build time in `.env_hcho`, then redeploy, so the poller's first poll picks up granules published while the backfill ran; the re-sort job folds in anything that arrived out of order.
 5. Run `uv run --env-file .env_hcho scripts/verify_store.py` after the promote (and periodically) to spot-check the store against its sources.
@@ -152,13 +152,12 @@ Then repeat with `.env_no2` for the second stack:
 
 ```bash
 uv run --env-file .env_no2 cdk deploy
-uv run --env-file .env_no2 scripts/build_backfill_inventory.py --collection no2 \
-  --s3-uri s3://tempo-virtual-store-sandbox/tempo/no2/inventory/no2.json
+./scripts/build_inventory_remote.sh -e .env_no2
 ./scripts/start_backfill.sh -e .env_no2 no2-backfill-<date> \
   s3://tempo-virtual-store-sandbox/tempo/no2/inventory/no2.json
 ```
 
-To trial the no2 stack the same way, add `--max-count 50` and set
+To trial the no2 stack the same way, add `-m 50` and set
 `ICECHUNK_PREFIX=v04-trial` in `.env_no2` first (`.env_no2` ships pointed at
 the real `v04`).
 
