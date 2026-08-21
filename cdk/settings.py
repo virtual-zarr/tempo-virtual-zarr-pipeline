@@ -48,6 +48,11 @@ class StackSettings(BaseSettings):
     # window: a bad promote can only be reset to a snapshot younger than this.
     GC_EXPIRY_DAYS: int = 30
 
+    # Optional cost-allocation tags applied to every resource (see app.py);
+    # unset means the tag is not applied.
+    OWNER: str | None = None
+    CLIENT: str | None = None
+
     # Email for CloudWatch alarm notifications (DLQ depth, scheduled-job
     # failures). Without it the alarms are console-only.
     ALARM_EMAIL: str | None = None

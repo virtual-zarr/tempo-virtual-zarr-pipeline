@@ -144,6 +144,8 @@ Settings live in [`cdk/settings.py`](./cdk/settings.py) and a `.env` file ([samp
 | `GARBAGE_COLLECTION_FREQUENCY` | — | days between Icechunk GC runs (needs `VPC_ID`) |
 | `GC_EXPIRY_DAYS` | 30 | snapshot expiry for GC runs — also the store's rollback window |
 | `ALARM_EMAIL` | — | notification email for the DLQ-depth and scheduled-job-failure alarms |
+| `OWNER` | — | `Owner` cost-allocation tag on every resource; unset applies no tag |
+| `CLIENT` | — | `Client` cost-allocation tag on every resource; unset applies no tag |
 
 The Lambda images install against [`lambda/constraints.txt`](./lambda/constraints.txt), an export of the repo's `uv.lock`, so deploys run the dependency versions the test suite ran; regenerate it with the command in its header whenever the lock changes. Concurrent backfill runs are not supported.
 

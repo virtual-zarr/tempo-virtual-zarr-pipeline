@@ -33,10 +33,12 @@ tags = dict(
     Project=settings.PROJECT_NAME,
     Stack=settings.STACK_NAME,
     Stage=settings.STAGE,
+    Collection=settings.TEMPO_COLLECTION,
+    Owner=settings.OWNER,
+    Client=settings.CLIENT,
 )
-if settings.TEMPO_COLLECTION:
-    tags["Collection"] = settings.TEMPO_COLLECTION
 for k, v in tags.items():
-    Tags.of(app).add(k, v, apply_to_launched_instances=True)
+    if v:
+        Tags.of(app).add(k, v, apply_to_launched_instances=True)
 
 app.synth()
