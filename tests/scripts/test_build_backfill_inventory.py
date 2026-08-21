@@ -1,7 +1,7 @@
 """Tests for the pure inventory-building logic in build_backfill_inventory.
 
 The CMR query, the per-granule header reads, and the S3 upload edges need
-live network and stay untested, like the other exploration scripts;
+live network and stay untested, like the exploration scripts;
 everything between them is covered here via an injectable ``read_time``.
 """
 

@@ -1,7 +1,7 @@
 """The typed backfill inventory: the file enumerating granules to backfill.
 
 The inventory is a JSON document produced by
-``exploration/build_backfill_inventory.py`` and consumed by the backfill
+``scripts/build_backfill_inventory.py`` and consumed by the backfill
 Init and Partition steps. Each entry carries the granule's exact
 ``/time[0]`` value as read from the file, which differs from the CMR and
 filename timestamps. Init builds the store's time axis from these values,

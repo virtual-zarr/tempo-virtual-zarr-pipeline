@@ -32,10 +32,10 @@ the per-granule reads; run in us-west-2 with ``--access direct`` for the
 production inventory.
 
 Usage:
-    uv run exploration/build_backfill_inventory.py
-    uv run exploration/build_backfill_inventory.py --collection no2
-    uv run exploration/build_backfill_inventory.py --start 2024-01-01 --end 2024-02-01
-    uv run exploration/build_backfill_inventory.py --max-count 100 \
+    uv run scripts/build_backfill_inventory.py
+    uv run scripts/build_backfill_inventory.py --collection no2
+    uv run scripts/build_backfill_inventory.py --start 2024-01-01 --end 2024-02-01
+    uv run scripts/build_backfill_inventory.py --max-count 100 \
         --s3-uri s3://my-bucket/inventory/tempo-hcho-test.json
 """
 
@@ -47,7 +47,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from tempo_collections import add_collection_argument, resolve_concept_id
+from virtualizarr_processor.collection import load_collection
 from virtualizarr_processor.inventory import SCHEMA_ID, BackfillInventory, GranuleEntry
 
 TIME_UNITS = "seconds since 1980-01-06T00:00:00Z"
@@ -208,9 +208,18 @@ def main() -> int:
         "--s3-uri",
         help="Also upload the inventory to this s3://bucket/key location",
     )
-    add_collection_argument(parser)
+    parser.add_argument(
+        "--collection",
+        choices=["hcho", "no2"],
+        default="hcho",
+        help="TEMPO L3 collection to target (default hcho)",
+    )
+    parser.add_argument(
+        "--concept-id",
+        help="Explicit CMR collection concept ID (overrides --collection)",
+    )
     args = parser.parse_args()
-    concept_id = resolve_concept_id(args)
+    concept_id = args.concept_id or load_collection(args.collection).concept_id
     output = Path(args.output or f"inventories/tempo-{args.collection}-inventory.json")
 
     import earthaccess

@@ -56,7 +56,7 @@ Points worth knowing:
 
 **Collection configuration.** `virtualizarr_processor/collections/{hcho,no2}.toml` declares each collection: which groups to flatten, which variables to promote or drop, the volatile (per-granule) attributes, the time-axis chunk size, and the names of two generated artifacts — the store template (a pydantic-zarr `GroupSpec` as JSON) and the reference `latitude`/`longitude` arrays. A deployment selects its collection with `TEMPO_COLLECTION`. Regenerate the artifacts from reference granules with `uv run scripts/generate_template.py`; generation fails if the granules disagree on anything not declared volatile.
 
-**Backfill inventory.** `uv run exploration/build_backfill_inventory.py` produces the input for a backfill: a validated JSON document with one entry per granule — its `.nc` link, its granule UR, and its exact in-file `/time[0]`. The in-file time differs from the CMR and filename timestamps (`...T174200Z` has `/time` = 17:42:18.02), and the store's time axis is built from these exact values, so the builder reads a few KB of every granule's header. The document is rejected if it is empty, unsorted, or contains duplicate times or granule URs — checked again when the pipeline reads it.
+**Backfill inventory.** `uv run scripts/build_backfill_inventory.py` produces the input for a backfill: a validated JSON document with one entry per granule — its `.nc` link, its granule UR, and its exact in-file `/time[0]`. The in-file time differs from the CMR and filename timestamps (`...T174200Z` has `/time` = 17:42:18.02), and the store's time axis is built from these exact values, so the builder reads a few KB of every granule's header. The document is rejected if it is empty, unsorted, or contains duplicate times or granule URs — checked again when the pipeline reads it.
 
 **Backfill.** The Step Functions run partitions the inventory, creates the full-shape store on a `backfill` branch (metadata plus the native coordinates, nothing else), and fans out workers. Each worker parses its granule, validates it, finds its slot by matching the granule's time against the axis exactly, and writes its references into a disjoint region of an Icechunk fork; a reducer merges each partition's forks into one commit. Any worker failure fails the run before anything reaches `main`. The manifest (as two vlen-string arrays on the time axis) and an empty pending ledger are committed on the `backfill` branch alongside the data, so the final promote step only re-validates the store against the template, the axis and manifest against the inventory, the coordinates against the reference arrays, and every data array's stored chunk-reference count against its chunk grid (an unwritten slot reads as fill values and passes every metadata check), then moves `main` to the already-committed backfill tip. The tip is looked up once and pinned: the gate validates that snapshot and the move promotes that same snapshot, so a concurrent run resetting the branch mid-promote cannot swap in an unfilled store. The move is a compare-and-swap against the tip the branch was created from, so a commit that landed on `main` mid-run fails the promote instead of being discarded; nothing is written after the CAS.
 
@@ -104,7 +104,7 @@ undeployed while the backfill runs.
 Per collection, hcho shown:
 
 1. Deploy: `uv run --env-file .env_hcho cdk deploy`
-2. Build and upload the inventory: `uv run exploration/build_backfill_inventory.py --collection hcho --s3-uri s3://<bucket>/tempo/hcho/inventory/hcho.json`. It must land under `INVENTORY_PREFIX` (default `<S3_PREFIX>/inventory/`) — the partition Lambda can only read that prefix.
+2. Build and upload the inventory: `uv run scripts/build_backfill_inventory.py --collection hcho --s3-uri s3://<bucket>/tempo/hcho/inventory/hcho.json`. It must land under `INVENTORY_PREFIX` (default `<S3_PREFIX>/inventory/`) — the partition Lambda can only read that prefix.
 3. Start the backfill: `./scripts/start_backfill.sh -e .env_hcho hcho-backfill-<date> s3://<bucket>/tempo/hcho/inventory/hcho.json`. A failed run can be restarted under a new execution name; Init resets the leftover branch.
 4. When it has promoted, set `FORWARD_QUEUE_ENABLED=true` and `POLL_START_ISO` to the inventory's build time in `.env_hcho`, then redeploy, so the poller's first poll picks up granules published while the backfill ran; the re-sort job folds in anything that arrived out of order.
 5. Run `uv run --env-file .env_hcho scripts/verify_store.py` after the promote (and periodically) to spot-check the store against its sources.
@@ -113,7 +113,7 @@ Then repeat with `.env_no2` for the second stack:
 
 ```bash
 uv run --env-file .env_no2 cdk deploy
-uv run exploration/build_backfill_inventory.py --collection no2 \
+uv run scripts/build_backfill_inventory.py --collection no2 \
   --s3-uri s3://<bucket>/tempo/no2/inventory/no2.json
 ./scripts/start_backfill.sh -e .env_no2 no2-backfill-<date> \
   s3://<bucket>/tempo/no2/inventory/no2.json
@@ -175,7 +175,8 @@ The `Processor` class in [`virtualizarr_processor/processor.py`](./lambda/virtua
 - [`combine_twenty_spread_virtual.py`](./exploration/combine_twenty_spread_virtual.py) — virtualizes N granules spread across the collection's temporal extent, combines them in an in-memory Icechunk store, and reads data back to prove the path end to end.
 - [`build_titiler_test_store.py`](./exploration/build_titiler_test_store.py) — small local store (12 recent granules) for titiler-multidim smoke tests.
 - [`build_s3_test_store.py`](./exploration/build_s3_test_store.py) — realistic S3-hosted store (100 recent granules, credential-less virtual chunk container); run on in-region compute.
-- [`build_backfill_inventory.py`](./exploration/build_backfill_inventory.py) — the production inventory builder described above.
+
+The production inventory builder ([`scripts/build_backfill_inventory.py`](./scripts/build_backfill_inventory.py), described above) lives in `scripts/` with the other production tooling; it follows the same PEP 723 + `--collection` conventions.
 
 ### titiler-multidim smoke test takeaways (2026-08-06)
 
