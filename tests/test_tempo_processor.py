@@ -341,6 +341,41 @@ def test_forward_rejects_republication_with_moved_timestamp(
     assert PendingLedger.read(repo.readonly_session("main").store) == ()
 
 
+def test_forward_rejects_moved_timestamp_within_same_batch(
+    tiny: TinyCollection,
+) -> None:
+    """The moved-timestamp gate must see the current batch's own writes too:
+    a same-batch record sharing an earlier record's UR at a shifted,
+    off-axis time must be rejected. Before the fix, both checks only read
+    the granule_ur array (synced at commit time), so an in-batch UR was
+    invisible and the second record slipped through as DEFERRED."""
+    from virtualizarr_processor.manifest import PendingLedger, StoreManifest
+
+    processor = backfilled(tiny)
+    new_time = tiny.times[-1] + 3600.0
+    first_dir = tiny.granule_paths[0].parent
+    second_dir = first_dir / "resend"
+    second_dir.mkdir()
+    # Same basename in both directories => same derived granule UR.
+    first = write_tempo_granule(first_dir / "batch_new.nc", time_value=new_time)
+    second = write_tempo_granule(
+        second_dir / "batch_new.nc",
+        time_value=new_time - 7.0,  # off-axis, before it
+    )
+    assert forward(processor, [f"file://{first}", f"file://{second}"]) == [
+        ProcessOutcome.WRITTEN,
+        ProcessOutcome.REJECTED,
+    ]
+
+    repo = processor.open_backfill_repo()
+    assert PendingLedger.read(repo.readonly_session("main").store) == ()
+    manifest = StoreManifest.read(repo.readonly_session("main").store)
+    assert manifest is not None
+    matches = [e for e in manifest.granules if e.granule_ur == "batch_new"]
+    assert len(matches) == 1
+    assert matches[0].time == new_time
+
+
 def test_forward_republication_overwrites_in_place(tiny: TinyCollection) -> None:
     processor = backfilled(tiny)
     # The producer replaces granule 1's file in place: same name, same time,

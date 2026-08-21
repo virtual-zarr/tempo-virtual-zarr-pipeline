@@ -508,6 +508,21 @@ class Processor:
         self._replaced = {}
         return repo.writable_session("main")
 
+    def _batch_ur_at(self, index: int, axis_size: int) -> str | None:
+        """The UR this batch has already written to slot ``index``, if any.
+
+        Appended/replaced slots aren't synced to the ``granule_ur`` array
+        until :meth:`commit_processed_files`, so a same-batch record that
+        lands on a slot an earlier record in the batch just wrote must
+        check batch state first or it sees a stale (or fill-value) UR.
+        """
+        if index in self._replaced:
+            return self._replaced[index].granule_ur
+        appended_start = axis_size - len(self._appended)
+        if index >= appended_start:
+            return self._appended[index - appended_start].granule_ur
+        return None
+
     def process_file(self, file_key: str, session: Session) -> ProcessOutcome:
         """Validate one granule and route it: append, overwrite, defer, or reject."""
         try:
@@ -525,7 +540,9 @@ class Processor:
 
             if occupied.size == 1:
                 index = int(occupied[0])
-                known_ur = str(zarr.open_array(session.store, path="granule_ur")[index])
+                known_ur = self._batch_ur_at(index, axis.size) or str(
+                    zarr.open_array(session.store, path="granule_ur")[index]
+                )
                 if known_ur != entry.granule_ur:
                     # A different granule claiming an occupied time step is a
                     # data inconsistency; never overwrite.
@@ -556,12 +573,16 @@ class Processor:
                 return ProcessOutcome.WRITTEN
 
             # Out of order: appending would break axis monotonicity.
-            owned = {
-                str(v)
-                for v in np.asarray(
-                    zarr.open_array(session.store, path="granule_ur")[:]
-                )
-            }
+            owned = (
+                {
+                    str(v)
+                    for v in np.asarray(
+                        zarr.open_array(session.store, path="granule_ur")[:]
+                    )
+                }
+                | {e.granule_ur for e in self._appended}
+                | {e.granule_ur for e in self._replaced.values()}
+            )
             if entry.granule_ur in owned:
                 # Same granule, shifted time: folding it in would give the
                 # manifest a duplicate UR and wedge every future re-sort.
