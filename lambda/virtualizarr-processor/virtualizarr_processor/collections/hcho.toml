@@ -1,0 +1,25 @@
+# TEMPO_HCHO_L3 V04 — gridded formaldehyde total column
+name = "hcho"
+collection_shortname = "TEMPO_HCHO_L3"
+concept_id = "C3685897141-LARC_CLOUD"
+append_dim = "time"
+time_units = "seconds since 1980-01-06T00:00:00Z"
+# Groups whose variables are flattened to the root group (the layout proven
+# end-to-end with titiler-multidim; collision-checked at parse time).
+flatten_groups = ["product", "geolocation", "qa_statistics", "support_data"]
+# Variables stored per scan without a time dimension that vary per scan and
+# must be promoted to (time, latitude, longitude) before writing.
+promote_to_time = ["weight"]
+# Empty = virtualize all variables.
+drop_variables = []
+# Per-granule attributes beyond the base TEMPO_L3_VOLATILE_ATTRIBUTES list:
+# the geospatial bounds vary with each scan's footprint.
+extra_volatile_attributes = [
+    "geospatial_lat_min",
+    "geospatial_lat_max",
+    "geospatial_lon_min",
+    "geospatial_lon_max",
+]
+time_chunk_size = 16384
+template_file = "hcho_template.json"
+coordinates_file = "coordinates.npz"

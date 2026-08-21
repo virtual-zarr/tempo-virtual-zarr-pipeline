@@ -1,6 +1,7 @@
 import aws_cdk as cdk
 import aws_cdk.aws_s3 as s3
 from aws_cdk.assertions import Match, Template
+from conftest import actions_of, iam_statements, resources_of
 from stack_constructs.backfill_pipeline import BackfillPipeline
 
 
@@ -16,6 +17,7 @@ def _template() -> Template:
         stack,
         "Backfill",
         icechunk_bucket=bucket,
+        icechunk_prefix=None,
         data_bucket_name="my-data-bucket",
         partition_size=500,
         max_items_per_batch=10,
@@ -74,6 +76,8 @@ def _state_machine_asl() -> str:
         stack,
         "Backfill",
         icechunk_bucket=bucket,
+        icechunk_prefix=None,
+        s3_prefix="tempo",
         data_bucket_name="my-data-bucket",
         partition_size=500,
         max_items_per_batch=10,
@@ -107,5 +111,92 @@ def test_state_machine_shape() -> None:
     assert '"fork_in_uri.$":"$.forkResult.fork_in_uri"' in asl
     # reduce is reshaped to the flat event its handler expects
     assert '"forks_out_prefix.$":"$.forkResult.forks_out_prefix"' in asl
-    # run_prefix derives from the execution name
+    # run_prefix is scoped under the configured global output prefix and
+    # derives from the execution name
+    assert "tempo/backfill" in asl
     assert "Execution.Name" in asl
+
+
+def test_init_and_promote_receive_the_inventory_uri() -> None:
+    """Init builds the axis from the typed inventory and promote gates the
+    store against it, so both states need the execution's inventory_uri."""
+    asl = _state_machine_asl()
+    assert asl.count('"inventory_uri.$":"$.inventory_uri"') >= 3  # partition too
+
+
+def test_promote_receives_the_cas_expectation() -> None:
+    """Promote's compare-and-swap needs the main tip Init branched from."""
+    asl = _state_machine_asl()
+    assert '"branched_from.$":"$.initResult.branched_from"' in asl
+
+
+def test_worker_retries_transient_failures() -> None:
+    """One object-store hiccup must not fail a multi-hour run outright."""
+    asl = _state_machine_asl()
+    assert '"ErrorEquals":["States.ALL"]' in asl
+    assert '"MaxAttempts":2' in asl
+
+
+STORE = "arn:<REF>:s3:::ice-test/tempo/hcho/v04/*"
+RUN = "arn:<REF>:s3:::ice-test/tempo/hcho/backfill/*"
+INVENTORY = "arn:<REF>:s3:::ice-test/tempo/hcho/inventory/*"
+
+
+def _scoped_template() -> Template:
+    app = cdk.App()
+    stack = cdk.Stack(
+        app,
+        "TestStack",
+        env=cdk.Environment(account="111111111111", region="us-east-1"),
+    )
+    bucket = s3.Bucket.from_bucket_name(stack, "IceBucket", "ice-test")
+    BackfillPipeline(
+        stack,
+        "Backfill",
+        icechunk_bucket=bucket,
+        icechunk_prefix="tempo/hcho/v04",
+        s3_prefix="tempo/hcho",
+        inventory_prefix="tempo/hcho/inventory",
+        data_bucket_name="my-data-bucket",
+        partition_size=500,
+        max_items_per_batch=10,
+        max_concurrency=50,
+    )
+    return Template.from_stack(stack)
+
+
+def test_partition_reads_inventory_and_writes_run_prefix_only() -> None:
+    stmts = list(iam_statements(_scoped_template(), "partitionfn"))
+    all_resources = [r for s in stmts for r in resources_of(s)]
+    assert INVENTORY in all_resources
+    assert STORE not in all_resources
+    writes = [s for s in stmts if "s3:PutObject" in actions_of(s)]
+    assert writes and all(resources_of(s) == [RUN] for s in writes)
+
+
+def test_repo_lambdas_scoped_to_store_and_run_prefixes() -> None:
+    template = _scoped_template()
+    for action in ["init", "fork", "worker", "reduce", "promote"]:
+        stmts = list(iam_statements(template, f"{action}fn"))
+        writes = [s for s in stmts if "s3:PutObject" in actions_of(s)]
+        assert writes, action
+        assert all(resources_of(s) == [STORE, RUN] for s in writes), action
+        assert any(
+            "s3:ListBucket" in actions_of(s)
+            and s.get("Condition")
+            == {
+                "StringLike": {
+                    "s3:prefix": ["tempo/hcho/v04/*", "tempo/hcho/backfill/*"]
+                }
+            }
+            for s in stmts
+        ), action
+
+
+def test_no_icechunk_prefix_keeps_bucket_wide_grant() -> None:
+    stmts = list(iam_statements(_template(), "initfn"))
+    assert any(
+        "s3:DeleteObject*" in actions_of(s)
+        and any(isinstance(r, str) and r.endswith("/*") for r in resources_of(s))
+        for s in stmts
+    )

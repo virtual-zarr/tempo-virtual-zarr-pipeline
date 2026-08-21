@@ -4,7 +4,8 @@ from aws_cdk import App, Tags
 from settings import StackSettings
 from stack import VirtualizarrSqsStack
 
-settings = StackSettings()
+# Required fields (e.g. STAGE) are populated from the environment/.env at runtime.
+settings = StackSettings()  # type: ignore[call-arg]
 
 # Resolve the target environment. Prefer explicit settings; fall back to the CDK
 # CLI's ambient account/region (from the active AWS credentials) so a blank
@@ -26,10 +27,18 @@ stack = VirtualizarrSqsStack(
     env={"account": account, "region": region},
 )
 
-for k, v in dict(
+# Cost-allocation tags: activate them in the Billing console so per-stage
+# and per-collection costs are separable (one deployment per collection).
+tags = dict(
     Project=settings.PROJECT_NAME,
     Stack=settings.STACK_NAME,
-).items():
-    Tags.of(app).add(k, v, apply_to_launched_instances=True)
+    Stage=settings.STAGE,
+    Collection=settings.TEMPO_COLLECTION,
+    Owner=settings.OWNER,
+    Client=settings.CLIENT,
+)
+for k, v in tags.items():
+    if v:
+        Tags.of(app).add(k, v, apply_to_launched_instances=True)
 
 app.synth()

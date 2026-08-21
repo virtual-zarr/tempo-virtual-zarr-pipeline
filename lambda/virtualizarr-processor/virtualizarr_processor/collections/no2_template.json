@@ -1,0 +1,2544 @@
+{
+ "zarr_format": 3,
+ "node_type": "group",
+ "attributes": {
+  "product_type": "NO2",
+  "processing_level": "3",
+  "processing_version": 4,
+  "sdpc_version": "TEMPO_SDPC_v4.8.4",
+  "version_id": 4,
+  "pge_version": "1.0.0",
+  "shortname": "TEMPO_NO2_L3",
+  "geospatial_bounds_crs": "EPSG:4326",
+  "time_reference": "1980-01-06T00:00:00Z",
+  "project": "TEMPO",
+  "platform": "Intelsat 40e",
+  "source": "UV-VIS hyperspectral imaging",
+  "institution": "Smithsonian Astrophysical Observatory",
+  "creator_url": "http://tempo.si.edu",
+  "Conventions": "CF-1.6, ACDD-1.3",
+  "title": "TEMPO Level 3 nitrogen dioxide product",
+  "collection_shortname": "TEMPO_NO2_L3",
+  "collection_version": 1,
+  "keywords": "EARTH SCIENCE>ATMOSPHERE>AIR QUALITY>NITROGEN OXIDES, EARTH SCIENCE>ATMOSPHERE>ATMOSPHERIC CHEMISTRY>NITROGEN COMPOUNDS>NITROGEN DIOXIDE",
+  "summary": "Nitrogen dioxide Level 3 files provide trace gas information on a regular grid covering the TEMPO field of regard for nominal TEMPO observations. Level 3 files are derived by combining information from all Level 2 files constituting a TEMPO East-West scan cycle. The files are provided in netCDF4 format, and contain information on tropospheric, stratospheric and total nitrogen dioxide vertical columns, ancillary data used in air mass factor and stratospheric/tropospheric separation calculations, and retrieval quality flags. The re-gridding algorithm uses an area-weighted approach."
+ },
+ "members": {
+  "time": {
+   "zarr_format": 3,
+   "node_type": "array",
+   "attributes": {
+    "units": "seconds since 1980-01-06T00:00:00Z",
+    "standard_name": "time",
+    "long_name": "scan start time",
+    "calendar": "gregorian"
+   },
+   "shape": [
+    1
+   ],
+   "data_type": "float64",
+   "chunk_grid": {
+    "name": "regular",
+    "configuration": {
+     "chunk_shape": [
+      16384
+     ]
+    }
+   },
+   "chunk_key_encoding": {
+    "name": "default",
+    "configuration": {
+     "separator": "/"
+    }
+   },
+   "fill_value": "NaN",
+   "codecs": [
+    {
+     "name": "bytes",
+     "configuration": {
+      "endian": "little"
+     }
+    }
+   ],
+   "storage_transformers": [],
+   "dimension_names": [
+    "time"
+   ]
+  },
+  "albedo": {
+   "zarr_format": 3,
+   "node_type": "array",
+   "attributes": {
+    "_FillValue": "AAAAQFk+KcY=",
+    "long_name": "surface albedo",
+    "valid_min": 0.0,
+    "valid_max": 1.0,
+    "coordinates": "time latitude longitude"
+   },
+   "shape": [
+    1,
+    2950,
+    7750
+   ],
+   "data_type": "float32",
+   "chunk_grid": {
+    "name": "regular",
+    "configuration": {
+     "chunk_shape": [
+      1,
+      984,
+      2584
+     ]
+    }
+   },
+   "chunk_key_encoding": {
+    "name": "default",
+    "configuration": {
+     "separator": "/"
+    }
+   },
+   "fill_value": -1.0000000150474662e30,
+   "codecs": [
+    {
+     "name": "bytes",
+     "configuration": {
+      "endian": "little"
+     }
+    },
+    {
+     "name": "numcodecs.shuffle",
+     "configuration": {
+      "elementsize": 4
+     }
+    },
+    {
+     "name": "numcodecs.zlib",
+     "configuration": {
+      "level": 1
+     }
+    }
+   ],
+   "storage_transformers": [],
+   "dimension_names": [
+    "time",
+    "latitude",
+    "longitude"
+   ]
+  },
+  "weight": {
+   "zarr_format": 3,
+   "node_type": "array",
+   "attributes": {
+    "_FillValue": "AAAAAAAAnkc=",
+    "long_name": "sum of area weights",
+    "comment": "sum of Level 2 pixel overlap areas",
+    "units": "km^2",
+    "coordinates": "time latitude longitude"
+   },
+   "shape": [
+    1,
+    2950,
+    7750
+   ],
+   "data_type": "float32",
+   "chunk_grid": {
+    "name": "regular",
+    "configuration": {
+     "chunk_shape": [
+      1,
+      590,
+      1550
+     ]
+    }
+   },
+   "chunk_key_encoding": {
+    "name": "default",
+    "configuration": {
+     "separator": "/"
+    }
+   },
+   "fill_value": 9.969209968386869e36,
+   "codecs": [
+    {
+     "name": "bytes",
+     "configuration": {
+      "endian": "little"
+     }
+    },
+    {
+     "name": "numcodecs.shuffle",
+     "configuration": {
+      "elementsize": 4
+     }
+    },
+    {
+     "name": "numcodecs.zlib",
+     "configuration": {
+      "level": 1
+     }
+    }
+   ],
+   "storage_transformers": [],
+   "dimension_names": [
+    "time",
+    "latitude",
+    "longitude"
+   ]
+  },
+  "latitude": {
+   "zarr_format": 3,
+   "node_type": "array",
+   "attributes": {
+    "standard_name": "latitude",
+    "long_name": "latitude",
+    "comment": "latitude at grid box center",
+    "units": "degrees_north",
+    "valid_min": -90.0,
+    "valid_max": 90.0
+   },
+   "shape": [
+    2950
+   ],
+   "data_type": "float32",
+   "chunk_grid": {
+    "name": "regular",
+    "configuration": {
+     "chunk_shape": [
+      2950
+     ]
+    }
+   },
+   "chunk_key_encoding": {
+    "name": "default",
+    "configuration": {
+     "separator": "/"
+    }
+   },
+   "fill_value": "NaN",
+   "codecs": [
+    {
+     "name": "bytes",
+     "configuration": {
+      "endian": "little"
+     }
+    }
+   ],
+   "storage_transformers": [],
+   "dimension_names": [
+    "latitude"
+   ]
+  },
+  "longitude": {
+   "zarr_format": 3,
+   "node_type": "array",
+   "attributes": {
+    "standard_name": "longitude",
+    "long_name": "longitude",
+    "comment": "longitude at grid box center",
+    "units": "degrees_east",
+    "valid_min": -180.0,
+    "valid_max": 180.0
+   },
+   "shape": [
+    7750
+   ],
+   "data_type": "float32",
+   "chunk_grid": {
+    "name": "regular",
+    "configuration": {
+     "chunk_shape": [
+      7750
+     ]
+    }
+   },
+   "chunk_key_encoding": {
+    "name": "default",
+    "configuration": {
+     "separator": "/"
+    }
+   },
+   "fill_value": "NaN",
+   "codecs": [
+    {
+     "name": "bytes",
+     "configuration": {
+      "endian": "little"
+     }
+    }
+   ],
+   "storage_transformers": [],
+   "dimension_names": [
+    "longitude"
+   ]
+  },
+  "amf_total": {
+   "zarr_format": 3,
+   "node_type": "array",
+   "attributes": {
+    "_FillValue": "AAAAQFk+KcY=",
+    "long_name": "nitrogen dioxide air mass factor",
+    "comment": "total nitrogen dioxide air mass factor (AMF) calculated from surface to top of atmosphere",
+    "valid_min": 0.0,
+    "coordinates": "time latitude longitude"
+   },
+   "shape": [
+    1,
+    2950,
+    7750
+   ],
+   "data_type": "float32",
+   "chunk_grid": {
+    "name": "regular",
+    "configuration": {
+     "chunk_shape": [
+      1,
+      984,
+      2584
+     ]
+    }
+   },
+   "chunk_key_encoding": {
+    "name": "default",
+    "configuration": {
+     "separator": "/"
+    }
+   },
+   "fill_value": -1.0000000150474662e30,
+   "codecs": [
+    {
+     "name": "bytes",
+     "configuration": {
+      "endian": "little"
+     }
+    },
+    {
+     "name": "numcodecs.shuffle",
+     "configuration": {
+      "elementsize": 4
+     }
+    },
+    {
+     "name": "numcodecs.zlib",
+     "configuration": {
+      "level": 1
+     }
+    }
+   ],
+   "storage_transformers": [],
+   "dimension_names": [
+    "time",
+    "latitude",
+    "longitude"
+   ]
+  },
+  "pbl_height": {
+   "zarr_format": 3,
+   "node_type": "array",
+   "attributes": {
+    "_FillValue": -9999,
+    "long_name": "planetary boundary layer height",
+    "units": "m",
+    "valid_min": 0,
+    "valid_max": 10000,
+    "coordinates": "time latitude longitude"
+   },
+   "shape": [
+    1,
+    2950,
+    7750
+   ],
+   "data_type": "int16",
+   "chunk_grid": {
+    "name": "regular",
+    "configuration": {
+     "chunk_shape": [
+      1,
+      984,
+      2584
+     ]
+    }
+   },
+   "chunk_key_encoding": {
+    "name": "default",
+    "configuration": {
+     "separator": "/"
+    }
+   },
+   "fill_value": -9999,
+   "codecs": [
+    {
+     "name": "bytes",
+     "configuration": {
+      "endian": "little"
+     }
+    },
+    {
+     "name": "numcodecs.shuffle",
+     "configuration": {
+      "elementsize": 2
+     }
+    },
+    {
+     "name": "numcodecs.zlib",
+     "configuration": {
+      "level": 1
+     }
+    }
+   ],
+   "storage_transformers": [],
+   "dimension_names": [
+    "time",
+    "latitude",
+    "longitude"
+   ]
+  },
+  "granule_ur": {
+   "zarr_format": 3,
+   "node_type": "array",
+   "attributes": {},
+   "shape": [
+    1
+   ],
+   "data_type": "string",
+   "chunk_grid": {
+    "name": "regular",
+    "configuration": {
+     "chunk_shape": [
+      16384
+     ]
+    }
+   },
+   "chunk_key_encoding": {
+    "name": "default",
+    "configuration": {
+     "separator": "/"
+    }
+   },
+   "fill_value": "",
+   "codecs": [
+    {
+     "name": "vlen-utf8",
+     "configuration": {}
+    },
+    {
+     "name": "zstd",
+     "configuration": {
+      "level": 0,
+      "checksum": false
+     }
+    }
+   ],
+   "storage_transformers": [],
+   "dimension_names": [
+    "time"
+   ]
+  },
+  "granule_url": {
+   "zarr_format": 3,
+   "node_type": "array",
+   "attributes": {},
+   "shape": [
+    1
+   ],
+   "data_type": "string",
+   "chunk_grid": {
+    "name": "regular",
+    "configuration": {
+     "chunk_shape": [
+      16384
+     ]
+    }
+   },
+   "chunk_key_encoding": {
+    "name": "default",
+    "configuration": {
+     "separator": "/"
+    }
+   },
+   "fill_value": "",
+   "codecs": [
+    {
+     "name": "vlen-utf8",
+     "configuration": {}
+    },
+    {
+     "name": "zstd",
+     "configuration": {
+      "level": 0,
+      "checksum": false
+     }
+    }
+   ],
+   "storage_transformers": [],
+   "dimension_names": [
+    "time"
+   ]
+  },
+  "terrain_height": {
+   "zarr_format": 3,
+   "node_type": "array",
+   "attributes": {
+    "_FillValue": -9999,
+    "long_name": "terrain height",
+    "units": "m",
+    "valid_min": -1000,
+    "valid_max": 10000,
+    "coordinates": "time latitude longitude"
+   },
+   "shape": [
+    1,
+    2950,
+    7750
+   ],
+   "data_type": "int16",
+   "chunk_grid": {
+    "name": "regular",
+    "configuration": {
+     "chunk_shape": [
+      1,
+      984,
+      2584
+     ]
+    }
+   },
+   "chunk_key_encoding": {
+    "name": "default",
+    "configuration": {
+     "separator": "/"
+    }
+   },
+   "fill_value": -9999,
+   "codecs": [
+    {
+     "name": "bytes",
+     "configuration": {
+      "endian": "little"
+     }
+    },
+    {
+     "name": "numcodecs.shuffle",
+     "configuration": {
+      "elementsize": 2
+     }
+    },
+    {
+     "name": "numcodecs.zlib",
+     "configuration": {
+      "level": 1
+     }
+    }
+   ],
+   "storage_transformers": [],
+   "dimension_names": [
+    "time",
+    "latitude",
+    "longitude"
+   ]
+  },
+  "amf_troposphere": {
+   "zarr_format": 3,
+   "node_type": "array",
+   "attributes": {
+    "_FillValue": "AAAAQFk+KcY=",
+    "long_name": "nitrogen dioxide tropospheric air mass factor",
+    "valid_min": 0.0,
+    "coordinates": "time latitude longitude"
+   },
+   "shape": [
+    1,
+    2950,
+    7750
+   ],
+   "data_type": "float32",
+   "chunk_grid": {
+    "name": "regular",
+    "configuration": {
+     "chunk_shape": [
+      1,
+      984,
+      2584
+     ]
+    }
+   },
+   "chunk_key_encoding": {
+    "name": "default",
+    "configuration": {
+     "separator": "/"
+    }
+   },
+   "fill_value": -1.0000000150474662e30,
+   "codecs": [
+    {
+     "name": "bytes",
+     "configuration": {
+      "endian": "little"
+     }
+    },
+    {
+     "name": "numcodecs.shuffle",
+     "configuration": {
+      "elementsize": 4
+     }
+    },
+    {
+     "name": "numcodecs.zlib",
+     "configuration": {
+      "level": 1
+     }
+    }
+   ],
+   "storage_transformers": [],
+   "dimension_names": [
+    "time",
+    "latitude",
+    "longitude"
+   ]
+  },
+  "amf_stratosphere": {
+   "zarr_format": 3,
+   "node_type": "array",
+   "attributes": {
+    "_FillValue": "AAAAQFk+KcY=",
+    "long_name": "nitrogen dioxide stratospheric air mass factor",
+    "valid_min": 0.0,
+    "coordinates": "time latitude longitude"
+   },
+   "shape": [
+    1,
+    2950,
+    7750
+   ],
+   "data_type": "float32",
+   "chunk_grid": {
+    "name": "regular",
+    "configuration": {
+     "chunk_shape": [
+      1,
+      984,
+      2584
+     ]
+    }
+   },
+   "chunk_key_encoding": {
+    "name": "default",
+    "configuration": {
+     "separator": "/"
+    }
+   },
+   "fill_value": -1.0000000150474662e30,
+   "codecs": [
+    {
+     "name": "bytes",
+     "configuration": {
+      "endian": "little"
+     }
+    },
+    {
+     "name": "numcodecs.shuffle",
+     "configuration": {
+      "elementsize": 4
+     }
+    },
+    {
+     "name": "numcodecs.zlib",
+     "configuration": {
+      "level": 1
+     }
+    }
+   ],
+   "storage_transformers": [],
+   "dimension_names": [
+    "time",
+    "latitude",
+    "longitude"
+   ]
+  },
+  "surface_pressure": {
+   "zarr_format": 3,
+   "node_type": "array",
+   "attributes": {
+    "_FillValue": "AAAAQFk+KcY=",
+    "long_name": "surface pressure",
+    "units": "hPa",
+    "valid_min": 0.0,
+    "valid_max": 1200.0,
+    "coordinates": "time latitude longitude",
+    "Eta_A": [
+     0.0,
+     0.04804826155304909,
+     6.593751907348633,
+     13.13479995727539,
+     19.613109588623047,
+     26.092010498046875,
+     32.57080841064453,
+     38.98200988769531,
+     45.33900833129883,
+     51.696109771728516,
+     58.0532112121582,
+     64.36264038085938,
+     70.62197875976562,
+     78.83422088623047,
+     89.09992218017578,
+     99.3652114868164,
+     109.18170166015625,
+     118.95860290527344,
+     128.69590759277344,
+     142.91000366210938,
+     156.25999450683594,
+     169.60899353027344,
+     181.61900329589844,
+     193.0970001220703,
+     203.25900268554688,
+     212.14999389648438,
+     218.7760009765625,
+     223.8979949951172,
+     224.36300659179688,
+     216.86500549316406,
+     201.19200134277344,
+     176.92999267578125,
+     150.39300537109375,
+     127.83699798583984,
+     108.66300201416016,
+     92.36572265625,
+     78.5123062133789,
+     66.60340881347656,
+     56.387908935546875,
+     47.6439094543457,
+     40.175411224365234,
+     33.81000900268555,
+     28.367809295654297,
+     23.730409622192383,
+     19.79159927368164,
+     16.45709991455078,
+     13.643400192260742,
+     11.276900291442871,
+     9.29294204711914,
+     7.619842052459717,
+     6.216801166534424,
+     5.0468010902404785,
+     4.076570987701416,
+     3.276431083679199,
+     2.620210886001587,
+     2.084969997406006,
+     1.6507899761199951,
+     1.300510048866272,
+     1.0194400548934937,
+     0.7951341271400452,
+     0.616779088973999,
+     0.4758060872554779,
+     0.3650411069393158,
+     0.27852609753608704,
+     0.2113489955663681,
+     0.15949499607086182,
+     0.11970300227403641,
+     0.08934502303600311,
+     0.06600000709295273,
+     0.04758501052856445,
+     0.03269999846816063,
+     0.019999999552965164,
+     0.009999999776482582
+    ],
+    "Eta_B": [
+     1.0,
+     0.9849519729614258,
+     0.9634060263633728,
+     0.9418650269508362,
+     0.9203870296478271,
+     0.8989080190658569,
+     0.8774290084838867,
+     0.8560180068016052,
+     0.8346608877182007,
+     0.8133038878440857,
+     0.7919468879699707,
+     0.7706375122070312,
+     0.7493782043457031,
+     0.7211660146713257,
+     0.6858999133110046,
+     0.6506348848342896,
+     0.6158183813095093,
+     0.5810415148735046,
+     0.5463042259216309,
+     0.4945901930332184,
+     0.44374018907546997,
+     0.3928911089897156,
+     0.3433811068534851,
+     0.2944031059741974,
+     0.24674110114574432,
+     0.2003501057624817,
+     0.1562241017818451,
+     0.11360210180282593,
+     0.06372006237506866,
+     0.028010040521621704,
+     0.006960025057196617,
+     8.175413235278484e-9,
+     0.0,
+     0.0,
+     0.0,
+     0.0,
+     0.0,
+     0.0,
+     0.0,
+     0.0,
+     0.0,
+     0.0,
+     0.0,
+     0.0,
+     0.0,
+     0.0,
+     0.0,
+     0.0,
+     0.0,
+     0.0,
+     0.0,
+     0.0,
+     0.0,
+     0.0,
+     0.0,
+     0.0,
+     0.0,
+     0.0,
+     0.0,
+     0.0,
+     0.0,
+     0.0,
+     0.0,
+     0.0,
+     0.0,
+     0.0,
+     0.0,
+     0.0,
+     0.0,
+     0.0,
+     0.0,
+     0.0,
+     0.0
+    ]
+   },
+   "shape": [
+    1,
+    2950,
+    7750
+   ],
+   "data_type": "float32",
+   "chunk_grid": {
+    "name": "regular",
+    "configuration": {
+     "chunk_shape": [
+      1,
+      984,
+      2584
+     ]
+    }
+   },
+   "chunk_key_encoding": {
+    "name": "default",
+    "configuration": {
+     "separator": "/"
+    }
+   },
+   "fill_value": -1.0000000150474662e30,
+   "codecs": [
+    {
+     "name": "bytes",
+     "configuration": {
+      "endian": "little"
+     }
+    },
+    {
+     "name": "numcodecs.shuffle",
+     "configuration": {
+      "elementsize": 4
+     }
+    },
+    {
+     "name": "numcodecs.zlib",
+     "configuration": {
+      "level": 1
+     }
+    }
+   ],
+   "storage_transformers": [],
+   "dimension_names": [
+    "time",
+    "latitude",
+    "longitude"
+   ]
+  },
+  "snow_ice_fraction": {
+   "zarr_format": 3,
+   "node_type": "array",
+   "attributes": {
+    "_FillValue": "AAAAQFk+KcY=",
+    "long_name": "fraction of pixel area covered by snow and/or ice",
+    "valid_min": 0.0,
+    "valid_max": 1.0,
+    "coordinates": "time latitude longitude"
+   },
+   "shape": [
+    1,
+    2950,
+    7750
+   ],
+   "data_type": "float32",
+   "chunk_grid": {
+    "name": "regular",
+    "configuration": {
+     "chunk_shape": [
+      1,
+      984,
+      2584
+     ]
+    }
+   },
+   "chunk_key_encoding": {
+    "name": "default",
+    "configuration": {
+     "separator": "/"
+    }
+   },
+   "fill_value": -1.0000000150474662e30,
+   "codecs": [
+    {
+     "name": "bytes",
+     "configuration": {
+      "endian": "little"
+     }
+    },
+    {
+     "name": "numcodecs.shuffle",
+     "configuration": {
+      "elementsize": 4
+     }
+    },
+    {
+     "name": "numcodecs.zlib",
+     "configuration": {
+      "level": 1
+     }
+    }
+   ],
+   "storage_transformers": [],
+   "dimension_names": [
+    "time",
+    "latitude",
+    "longitude"
+   ]
+  },
+  "amf_cloud_fraction": {
+   "zarr_format": 3,
+   "node_type": "array",
+   "attributes": {
+    "_FillValue": "AAAAQFk+KcY=",
+    "long_name": "cloud fraction",
+    "comment": "cloud radiance fraction for AMF computation",
+    "valid_min": 0.0,
+    "valid_max": 1.0,
+    "coordinates": "time latitude longitude"
+   },
+   "shape": [
+    1,
+    2950,
+    7750
+   ],
+   "data_type": "float32",
+   "chunk_grid": {
+    "name": "regular",
+    "configuration": {
+     "chunk_shape": [
+      1,
+      984,
+      2584
+     ]
+    }
+   },
+   "chunk_key_encoding": {
+    "name": "default",
+    "configuration": {
+     "separator": "/"
+    }
+   },
+   "fill_value": -1.0000000150474662e30,
+   "codecs": [
+    {
+     "name": "bytes",
+     "configuration": {
+      "endian": "little"
+     }
+    },
+    {
+     "name": "numcodecs.shuffle",
+     "configuration": {
+      "elementsize": 4
+     }
+    },
+    {
+     "name": "numcodecs.zlib",
+     "configuration": {
+      "level": 1
+     }
+    }
+   ],
+   "storage_transformers": [],
+   "dimension_names": [
+    "time",
+    "latitude",
+    "longitude"
+   ]
+  },
+  "eff_cloud_fraction": {
+   "zarr_format": 3,
+   "node_type": "array",
+   "attributes": {
+    "_FillValue": "AAAAQFk+KcY=",
+    "long_name": "effective cloud fraction",
+    "comment": "effective cloud fraction from cloud retrieval",
+    "valid_min": 0.0,
+    "valid_max": 1.0,
+    "coordinates": "time latitude longitude"
+   },
+   "shape": [
+    1,
+    2950,
+    7750
+   ],
+   "data_type": "float32",
+   "chunk_grid": {
+    "name": "regular",
+    "configuration": {
+     "chunk_shape": [
+      1,
+      984,
+      2584
+     ]
+    }
+   },
+   "chunk_key_encoding": {
+    "name": "default",
+    "configuration": {
+     "separator": "/"
+    }
+   },
+   "fill_value": -1.0000000150474662e30,
+   "codecs": [
+    {
+     "name": "bytes",
+     "configuration": {
+      "endian": "little"
+     }
+    },
+    {
+     "name": "numcodecs.shuffle",
+     "configuration": {
+      "elementsize": 4
+     }
+    },
+    {
+     "name": "numcodecs.zlib",
+     "configuration": {
+      "level": 1
+     }
+    }
+   ],
+   "storage_transformers": [],
+   "dimension_names": [
+    "time",
+    "latitude",
+    "longitude"
+   ]
+  },
+  "amf_cloud_pressure": {
+   "zarr_format": 3,
+   "node_type": "array",
+   "attributes": {
+    "_FillValue": "AAAAQFk+KcY=",
+    "long_name": "cloud pressure",
+    "comment": "cloud pressure for AMF computation",
+    "units": "hPa",
+    "valid_min": 0.0,
+    "valid_max": 1200.0,
+    "coordinates": "time latitude longitude"
+   },
+   "shape": [
+    1,
+    2950,
+    7750
+   ],
+   "data_type": "float32",
+   "chunk_grid": {
+    "name": "regular",
+    "configuration": {
+     "chunk_shape": [
+      1,
+      984,
+      2584
+     ]
+    }
+   },
+   "chunk_key_encoding": {
+    "name": "default",
+    "configuration": {
+     "separator": "/"
+    }
+   },
+   "fill_value": -1.0000000150474662e30,
+   "codecs": [
+    {
+     "name": "bytes",
+     "configuration": {
+      "endian": "little"
+     }
+    },
+    {
+     "name": "numcodecs.shuffle",
+     "configuration": {
+      "elementsize": 4
+     }
+    },
+    {
+     "name": "numcodecs.zlib",
+     "configuration": {
+      "level": 1
+     }
+    }
+   ],
+   "storage_transformers": [],
+   "dimension_names": [
+    "time",
+    "latitude",
+    "longitude"
+   ]
+  },
+  "solar_zenith_angle": {
+   "zarr_format": 3,
+   "node_type": "array",
+   "attributes": {
+    "_FillValue": "AAAAQFk+KcY=",
+    "long_name": "solar zenith angle at pixel center",
+    "units": "degrees",
+    "valid_min": 0.0,
+    "valid_max": 90.0,
+    "coordinates": "time latitude longitude"
+   },
+   "shape": [
+    1,
+    2950,
+    7750
+   ],
+   "data_type": "float32",
+   "chunk_grid": {
+    "name": "regular",
+    "configuration": {
+     "chunk_shape": [
+      1,
+      984,
+      2584
+     ]
+    }
+   },
+   "chunk_key_encoding": {
+    "name": "default",
+    "configuration": {
+     "separator": "/"
+    }
+   },
+   "fill_value": -1.0000000150474662e30,
+   "codecs": [
+    {
+     "name": "bytes",
+     "configuration": {
+      "endian": "little"
+     }
+    },
+    {
+     "name": "numcodecs.shuffle",
+     "configuration": {
+      "elementsize": 4
+     }
+    },
+    {
+     "name": "numcodecs.zlib",
+     "configuration": {
+      "level": 1
+     }
+    }
+   ],
+   "storage_transformers": [],
+   "dimension_names": [
+    "time",
+    "latitude",
+    "longitude"
+   ]
+  },
+  "fitted_slant_column": {
+   "zarr_format": 3,
+   "node_type": "array",
+   "attributes": {
+    "_FillValue": "6oygOVk+KcY=",
+    "long_name": "nitrogen dioxide fitted slant column",
+    "units": "molecules/cm^2",
+    "coordinates": "time latitude longitude"
+   },
+   "shape": [
+    1,
+    2950,
+    7750
+   ],
+   "data_type": "float64",
+   "chunk_grid": {
+    "name": "regular",
+    "configuration": {
+     "chunk_shape": [
+      1,
+      738,
+      1938
+     ]
+    }
+   },
+   "chunk_key_encoding": {
+    "name": "default",
+    "configuration": {
+     "separator": "/"
+    }
+   },
+   "fill_value": -1e30,
+   "codecs": [
+    {
+     "name": "bytes",
+     "configuration": {
+      "endian": "little"
+     }
+    },
+    {
+     "name": "numcodecs.shuffle",
+     "configuration": {
+      "elementsize": 8
+     }
+    },
+    {
+     "name": "numcodecs.zlib",
+     "configuration": {
+      "level": 1
+     }
+    }
+   ],
+   "storage_transformers": [],
+   "dimension_names": [
+    "time",
+    "latitude",
+    "longitude"
+   ]
+  },
+  "tropopause_pressure": {
+   "zarr_format": 3,
+   "node_type": "array",
+   "attributes": {
+    "_FillValue": "AAAAQFk+KcY=",
+    "long_name": "tropopause pressure",
+    "units": "hPa",
+    "valid_min": 0.0,
+    "valid_max": 1200.0,
+    "coordinates": "time latitude longitude"
+   },
+   "shape": [
+    1,
+    2950,
+    7750
+   ],
+   "data_type": "float32",
+   "chunk_grid": {
+    "name": "regular",
+    "configuration": {
+     "chunk_shape": [
+      1,
+      984,
+      2584
+     ]
+    }
+   },
+   "chunk_key_encoding": {
+    "name": "default",
+    "configuration": {
+     "separator": "/"
+    }
+   },
+   "fill_value": -1.0000000150474662e30,
+   "codecs": [
+    {
+     "name": "bytes",
+     "configuration": {
+      "endian": "little"
+     }
+    },
+    {
+     "name": "numcodecs.shuffle",
+     "configuration": {
+      "elementsize": 4
+     }
+    },
+    {
+     "name": "numcodecs.zlib",
+     "configuration": {
+      "level": 1
+     }
+    }
+   ],
+   "storage_transformers": [],
+   "dimension_names": [
+    "time",
+    "latitude",
+    "longitude"
+   ]
+  },
+  "viewing_zenith_angle": {
+   "zarr_format": 3,
+   "node_type": "array",
+   "attributes": {
+    "_FillValue": "AAAAQFk+KcY=",
+    "long_name": "viewing zenith angle at pixel center",
+    "units": "degrees",
+    "valid_min": 0.0,
+    "valid_max": 90.0,
+    "coordinates": "time latitude longitude"
+   },
+   "shape": [
+    1,
+    2950,
+    7750
+   ],
+   "data_type": "float32",
+   "chunk_grid": {
+    "name": "regular",
+    "configuration": {
+     "chunk_shape": [
+      1,
+      984,
+      2584
+     ]
+    }
+   },
+   "chunk_key_encoding": {
+    "name": "default",
+    "configuration": {
+     "separator": "/"
+    }
+   },
+   "fill_value": -1.0000000150474662e30,
+   "codecs": [
+    {
+     "name": "bytes",
+     "configuration": {
+      "endian": "little"
+     }
+    },
+    {
+     "name": "numcodecs.shuffle",
+     "configuration": {
+      "elementsize": 4
+     }
+    },
+    {
+     "name": "numcodecs.zlib",
+     "configuration": {
+      "level": 1
+     }
+    }
+   ],
+   "storage_transformers": [],
+   "dimension_names": [
+    "time",
+    "latitude",
+    "longitude"
+   ]
+  },
+  "vertical_column_total": {
+   "zarr_format": 3,
+   "node_type": "array",
+   "attributes": {
+    "_FillValue": "6oygOVk+KcY=",
+    "long_name": "nitrogen dioxide vertical column",
+    "comment": "nitrogen dioxide vertical column determined from fitted slant column and total AMF calculated from surface to top of atmosphere",
+    "units": "molecules/cm^2",
+    "coordinates": "time latitude longitude"
+   },
+   "shape": [
+    1,
+    2950,
+    7750
+   ],
+   "data_type": "float64",
+   "chunk_grid": {
+    "name": "regular",
+    "configuration": {
+     "chunk_shape": [
+      1,
+      738,
+      1938
+     ]
+    }
+   },
+   "chunk_key_encoding": {
+    "name": "default",
+    "configuration": {
+     "separator": "/"
+    }
+   },
+   "fill_value": -1e30,
+   "codecs": [
+    {
+     "name": "bytes",
+     "configuration": {
+      "endian": "little"
+     }
+    },
+    {
+     "name": "numcodecs.shuffle",
+     "configuration": {
+      "elementsize": 8
+     }
+    },
+    {
+     "name": "numcodecs.zlib",
+     "configuration": {
+      "level": 1
+     }
+    }
+   ],
+   "storage_transformers": [],
+   "dimension_names": [
+    "time",
+    "latitude",
+    "longitude"
+   ]
+  },
+  "main_data_quality_flag": {
+   "zarr_format": 3,
+   "node_type": "array",
+   "attributes": {
+    "_FillValue": -9999,
+    "long_name": "main data quality flag",
+    "valid_min": 0,
+    "valid_max": 2,
+    "coordinates": "time latitude longitude",
+    "flag_meanings": "normal suspicious bad",
+    "flag_values": [
+     0,
+     1,
+     2
+    ]
+   },
+   "shape": [
+    1,
+    2950,
+    7750
+   ],
+   "data_type": "int16",
+   "chunk_grid": {
+    "name": "regular",
+    "configuration": {
+     "chunk_shape": [
+      1,
+      984,
+      2584
+     ]
+    }
+   },
+   "chunk_key_encoding": {
+    "name": "default",
+    "configuration": {
+     "separator": "/"
+    }
+   },
+   "fill_value": -9999,
+   "codecs": [
+    {
+     "name": "bytes",
+     "configuration": {
+      "endian": "little"
+     }
+    },
+    {
+     "name": "numcodecs.shuffle",
+     "configuration": {
+      "elementsize": 2
+     }
+    },
+    {
+     "name": "numcodecs.zlib",
+     "configuration": {
+      "level": 1
+     }
+    }
+   ],
+   "storage_transformers": [],
+   "dimension_names": [
+    "time",
+    "latitude",
+    "longitude"
+   ]
+  },
+  "relative_azimuth_angle": {
+   "zarr_format": 3,
+   "node_type": "array",
+   "attributes": {
+    "_FillValue": "AAAAQFk+KcY=",
+    "long_name": "relative azimuth angle at pixel center",
+    "units": "degrees",
+    "valid_min": -180.0,
+    "valid_max": 180.0,
+    "coordinates": "time latitude longitude"
+   },
+   "shape": [
+    1,
+    2950,
+    7750
+   ],
+   "data_type": "float32",
+   "chunk_grid": {
+    "name": "regular",
+    "configuration": {
+     "chunk_shape": [
+      1,
+      984,
+      2584
+     ]
+    }
+   },
+   "chunk_key_encoding": {
+    "name": "default",
+    "configuration": {
+     "separator": "/"
+    }
+   },
+   "fill_value": -1.0000000150474662e30,
+   "codecs": [
+    {
+     "name": "bytes",
+     "configuration": {
+      "endian": "little"
+     }
+    },
+    {
+     "name": "numcodecs.shuffle",
+     "configuration": {
+      "elementsize": 4
+     }
+    },
+    {
+     "name": "numcodecs.zlib",
+     "configuration": {
+      "level": 1
+     }
+    }
+   ],
+   "storage_transformers": [],
+   "dimension_names": [
+    "time",
+    "latitude",
+    "longitude"
+   ]
+  },
+  "vertical_column_troposphere": {
+   "zarr_format": 3,
+   "node_type": "array",
+   "attributes": {
+    "_FillValue": "6oygOVk+KcY=",
+    "coordinates": "time latitude longitude",
+    "long_name": "troposphere nitrogen dioxide vertical column",
+    "units": "molecules/cm^2"
+   },
+   "shape": [
+    1,
+    2950,
+    7750
+   ],
+   "data_type": "float64",
+   "chunk_grid": {
+    "name": "regular",
+    "configuration": {
+     "chunk_shape": [
+      1,
+      738,
+      1938
+     ]
+    }
+   },
+   "chunk_key_encoding": {
+    "name": "default",
+    "configuration": {
+     "separator": "/"
+    }
+   },
+   "fill_value": -1e30,
+   "codecs": [
+    {
+     "name": "bytes",
+     "configuration": {
+      "endian": "little"
+     }
+    },
+    {
+     "name": "numcodecs.shuffle",
+     "configuration": {
+      "elementsize": 8
+     }
+    },
+    {
+     "name": "numcodecs.zlib",
+     "configuration": {
+      "level": 1
+     }
+    }
+   ],
+   "storage_transformers": [],
+   "dimension_names": [
+    "time",
+    "latitude",
+    "longitude"
+   ]
+  },
+  "vertical_column_stratosphere": {
+   "zarr_format": 3,
+   "node_type": "array",
+   "attributes": {
+    "_FillValue": "6oygOVk+KcY=",
+    "coordinates": "time latitude longitude",
+    "long_name": "stratosphere nitrogen dioxide vertical column",
+    "units": "molecules/cm^2"
+   },
+   "shape": [
+    1,
+    2950,
+    7750
+   ],
+   "data_type": "float64",
+   "chunk_grid": {
+    "name": "regular",
+    "configuration": {
+     "chunk_shape": [
+      1,
+      738,
+      1938
+     ]
+    }
+   },
+   "chunk_key_encoding": {
+    "name": "default",
+    "configuration": {
+     "separator": "/"
+    }
+   },
+   "fill_value": -1e30,
+   "codecs": [
+    {
+     "name": "bytes",
+     "configuration": {
+      "endian": "little"
+     }
+    },
+    {
+     "name": "numcodecs.shuffle",
+     "configuration": {
+      "elementsize": 8
+     }
+    },
+    {
+     "name": "numcodecs.zlib",
+     "configuration": {
+      "level": 1
+     }
+    }
+   ],
+   "storage_transformers": [],
+   "dimension_names": [
+    "time",
+    "latitude",
+    "longitude"
+   ]
+  },
+  "fitted_slant_column_uncertainty": {
+   "zarr_format": 3,
+   "node_type": "array",
+   "attributes": {
+    "_FillValue": "6oygOVk+KcY=",
+    "long_name": "nitrogen dioxide fitted slant column uncertainty",
+    "units": "molecules/cm^2",
+    "coordinates": "time latitude longitude"
+   },
+   "shape": [
+    1,
+    2950,
+    7750
+   ],
+   "data_type": "float64",
+   "chunk_grid": {
+    "name": "regular",
+    "configuration": {
+     "chunk_shape": [
+      1,
+      738,
+      1938
+     ]
+    }
+   },
+   "chunk_key_encoding": {
+    "name": "default",
+    "configuration": {
+     "separator": "/"
+    }
+   },
+   "fill_value": -1e30,
+   "codecs": [
+    {
+     "name": "bytes",
+     "configuration": {
+      "endian": "little"
+     }
+    },
+    {
+     "name": "numcodecs.shuffle",
+     "configuration": {
+      "elementsize": 8
+     }
+    },
+    {
+     "name": "numcodecs.zlib",
+     "configuration": {
+      "level": 1
+     }
+    }
+   ],
+   "storage_transformers": [],
+   "dimension_names": [
+    "time",
+    "latitude",
+    "longitude"
+   ]
+  },
+  "max_vertical_column_total_sample": {
+   "zarr_format": 3,
+   "node_type": "array",
+   "attributes": {
+    "long_name": "nitrogen dioxide vertical column",
+    "comment": "Largest Level 2 pixel values contributing to the area-weighted Level 3 pixel value",
+    "units": "molecules/cm^2",
+    "_FillValue": "6oygOVk+KcY=",
+    "coordinates": "time longitude latitude"
+   },
+   "shape": [
+    1,
+    2950,
+    7750
+   ],
+   "data_type": "float64",
+   "chunk_grid": {
+    "name": "regular",
+    "configuration": {
+     "chunk_shape": [
+      1,
+      738,
+      1938
+     ]
+    }
+   },
+   "chunk_key_encoding": {
+    "name": "default",
+    "configuration": {
+     "separator": "/"
+    }
+   },
+   "fill_value": -1e30,
+   "codecs": [
+    {
+     "name": "bytes",
+     "configuration": {
+      "endian": "little"
+     }
+    },
+    {
+     "name": "numcodecs.shuffle",
+     "configuration": {
+      "elementsize": 8
+     }
+    },
+    {
+     "name": "numcodecs.zlib",
+     "configuration": {
+      "level": 1
+     }
+    }
+   ],
+   "storage_transformers": [],
+   "dimension_names": [
+    "time",
+    "latitude",
+    "longitude"
+   ]
+  },
+  "min_vertical_column_total_sample": {
+   "zarr_format": 3,
+   "node_type": "array",
+   "attributes": {
+    "long_name": "nitrogen dioxide vertical column",
+    "comment": "Smallest Level 2 pixel value contributing to the area-weighted Level 3 pixel value",
+    "units": "molecules/cm^2",
+    "_FillValue": "6oygOVk+KcY=",
+    "coordinates": "time longitude latitude"
+   },
+   "shape": [
+    1,
+    2950,
+    7750
+   ],
+   "data_type": "float64",
+   "chunk_grid": {
+    "name": "regular",
+    "configuration": {
+     "chunk_shape": [
+      1,
+      738,
+      1938
+     ]
+    }
+   },
+   "chunk_key_encoding": {
+    "name": "default",
+    "configuration": {
+     "separator": "/"
+    }
+   },
+   "fill_value": -1e30,
+   "codecs": [
+    {
+     "name": "bytes",
+     "configuration": {
+      "endian": "little"
+     }
+    },
+    {
+     "name": "numcodecs.shuffle",
+     "configuration": {
+      "elementsize": 8
+     }
+    },
+    {
+     "name": "numcodecs.zlib",
+     "configuration": {
+      "level": 1
+     }
+    }
+   ],
+   "storage_transformers": [],
+   "dimension_names": [
+    "time",
+    "latitude",
+    "longitude"
+   ]
+  },
+  "vertical_column_total_uncertainty": {
+   "zarr_format": 3,
+   "node_type": "array",
+   "attributes": {
+    "_FillValue": "6oygOVk+KcY=",
+    "long_name": "nitrogen dioxide vertical column uncertainty",
+    "units": "molecules/cm^2",
+    "coordinates": "time latitude longitude"
+   },
+   "shape": [
+    1,
+    2950,
+    7750
+   ],
+   "data_type": "float64",
+   "chunk_grid": {
+    "name": "regular",
+    "configuration": {
+     "chunk_shape": [
+      1,
+      738,
+      1938
+     ]
+    }
+   },
+   "chunk_key_encoding": {
+    "name": "default",
+    "configuration": {
+     "separator": "/"
+    }
+   },
+   "fill_value": -1e30,
+   "codecs": [
+    {
+     "name": "bytes",
+     "configuration": {
+      "endian": "little"
+     }
+    },
+    {
+     "name": "numcodecs.shuffle",
+     "configuration": {
+      "elementsize": 8
+     }
+    },
+    {
+     "name": "numcodecs.zlib",
+     "configuration": {
+      "level": 1
+     }
+    }
+   ],
+   "storage_transformers": [],
+   "dimension_names": [
+    "time",
+    "latitude",
+    "longitude"
+   ]
+  },
+  "num_vertical_column_total_samples": {
+   "zarr_format": 3,
+   "node_type": "array",
+   "attributes": {
+    "comment": "Number of Level 2 pixel values contributing to the area-weighted Level 3 pixel value",
+    "_FillValue": -1
+   },
+   "shape": [
+    1,
+    2950,
+    7750
+   ],
+   "data_type": "int32",
+   "chunk_grid": {
+    "name": "regular",
+    "configuration": {
+     "chunk_shape": [
+      1,
+      984,
+      2584
+     ]
+    }
+   },
+   "chunk_key_encoding": {
+    "name": "default",
+    "configuration": {
+     "separator": "/"
+    }
+   },
+   "fill_value": -1,
+   "codecs": [
+    {
+     "name": "bytes",
+     "configuration": {
+      "endian": "little"
+     }
+    },
+    {
+     "name": "numcodecs.shuffle",
+     "configuration": {
+      "elementsize": 4
+     }
+    },
+    {
+     "name": "numcodecs.zlib",
+     "configuration": {
+      "level": 1
+     }
+    }
+   ],
+   "storage_transformers": [],
+   "dimension_names": [
+    "time",
+    "latitude",
+    "longitude"
+   ]
+  },
+  "max_vertical_column_troposphere_sample": {
+   "zarr_format": 3,
+   "node_type": "array",
+   "attributes": {
+    "_FillValue": "6oygOVk+KcY=",
+    "coordinates": "time longitude latitude",
+    "long_name": "troposphere nitrogen dioxide vertical column",
+    "units": "molecules/cm^2",
+    "comment": "Largest Level 2 pixel values contributing to the area-weighted Level 3 pixel value"
+   },
+   "shape": [
+    1,
+    2950,
+    7750
+   ],
+   "data_type": "float64",
+   "chunk_grid": {
+    "name": "regular",
+    "configuration": {
+     "chunk_shape": [
+      1,
+      738,
+      1938
+     ]
+    }
+   },
+   "chunk_key_encoding": {
+    "name": "default",
+    "configuration": {
+     "separator": "/"
+    }
+   },
+   "fill_value": -1e30,
+   "codecs": [
+    {
+     "name": "bytes",
+     "configuration": {
+      "endian": "little"
+     }
+    },
+    {
+     "name": "numcodecs.shuffle",
+     "configuration": {
+      "elementsize": 8
+     }
+    },
+    {
+     "name": "numcodecs.zlib",
+     "configuration": {
+      "level": 1
+     }
+    }
+   ],
+   "storage_transformers": [],
+   "dimension_names": [
+    "time",
+    "latitude",
+    "longitude"
+   ]
+  },
+  "min_vertical_column_troposphere_sample": {
+   "zarr_format": 3,
+   "node_type": "array",
+   "attributes": {
+    "_FillValue": "6oygOVk+KcY=",
+    "coordinates": "time longitude latitude",
+    "long_name": "troposphere nitrogen dioxide vertical column",
+    "units": "molecules/cm^2",
+    "comment": "Smallest Level 2 pixel value contributing to the area-weighted Level 3 pixel value"
+   },
+   "shape": [
+    1,
+    2950,
+    7750
+   ],
+   "data_type": "float64",
+   "chunk_grid": {
+    "name": "regular",
+    "configuration": {
+     "chunk_shape": [
+      1,
+      738,
+      1938
+     ]
+    }
+   },
+   "chunk_key_encoding": {
+    "name": "default",
+    "configuration": {
+     "separator": "/"
+    }
+   },
+   "fill_value": -1e30,
+   "codecs": [
+    {
+     "name": "bytes",
+     "configuration": {
+      "endian": "little"
+     }
+    },
+    {
+     "name": "numcodecs.shuffle",
+     "configuration": {
+      "elementsize": 8
+     }
+    },
+    {
+     "name": "numcodecs.zlib",
+     "configuration": {
+      "level": 1
+     }
+    }
+   ],
+   "storage_transformers": [],
+   "dimension_names": [
+    "time",
+    "latitude",
+    "longitude"
+   ]
+  },
+  "min_vertical_column_stratosphere_sample": {
+   "zarr_format": 3,
+   "node_type": "array",
+   "attributes": {
+    "_FillValue": "6oygOVk+KcY=",
+    "coordinates": "time longitude latitude",
+    "long_name": "stratosphere nitrogen dioxide vertical column",
+    "units": "molecules/cm^2",
+    "comment": "Smallest Level 2 pixel value contributing to the area-weighted Level 3 pixel value"
+   },
+   "shape": [
+    1,
+    2950,
+    7750
+   ],
+   "data_type": "float64",
+   "chunk_grid": {
+    "name": "regular",
+    "configuration": {
+     "chunk_shape": [
+      1,
+      738,
+      1938
+     ]
+    }
+   },
+   "chunk_key_encoding": {
+    "name": "default",
+    "configuration": {
+     "separator": "/"
+    }
+   },
+   "fill_value": -1e30,
+   "codecs": [
+    {
+     "name": "bytes",
+     "configuration": {
+      "endian": "little"
+     }
+    },
+    {
+     "name": "numcodecs.shuffle",
+     "configuration": {
+      "elementsize": 8
+     }
+    },
+    {
+     "name": "numcodecs.zlib",
+     "configuration": {
+      "level": 1
+     }
+    }
+   ],
+   "storage_transformers": [],
+   "dimension_names": [
+    "time",
+    "latitude",
+    "longitude"
+   ]
+  },
+  "num_vertical_column_troposphere_samples": {
+   "zarr_format": 3,
+   "node_type": "array",
+   "attributes": {
+    "comment": "Number of Level 2 pixel values contributing to the area-weighted Level 3 pixel value",
+    "_FillValue": -1
+   },
+   "shape": [
+    1,
+    2950,
+    7750
+   ],
+   "data_type": "int32",
+   "chunk_grid": {
+    "name": "regular",
+    "configuration": {
+     "chunk_shape": [
+      1,
+      984,
+      2584
+     ]
+    }
+   },
+   "chunk_key_encoding": {
+    "name": "default",
+    "configuration": {
+     "separator": "/"
+    }
+   },
+   "fill_value": -1,
+   "codecs": [
+    {
+     "name": "bytes",
+     "configuration": {
+      "endian": "little"
+     }
+    },
+    {
+     "name": "numcodecs.shuffle",
+     "configuration": {
+      "elementsize": 4
+     }
+    },
+    {
+     "name": "numcodecs.zlib",
+     "configuration": {
+      "level": 1
+     }
+    }
+   ],
+   "storage_transformers": [],
+   "dimension_names": [
+    "time",
+    "latitude",
+    "longitude"
+   ]
+  },
+  "vertical_column_troposphere_uncertainty": {
+   "zarr_format": 3,
+   "node_type": "array",
+   "attributes": {
+    "_FillValue": "6oygOVk+KcY=",
+    "coordinates": "time latitude longitude",
+    "long_name": "troposphere nitrogen dioxide vertical column uncertainty",
+    "units": "molecules/cm^2"
+   },
+   "shape": [
+    1,
+    2950,
+    7750
+   ],
+   "data_type": "float64",
+   "chunk_grid": {
+    "name": "regular",
+    "configuration": {
+     "chunk_shape": [
+      1,
+      738,
+      1938
+     ]
+    }
+   },
+   "chunk_key_encoding": {
+    "name": "default",
+    "configuration": {
+     "separator": "/"
+    }
+   },
+   "fill_value": -1e30,
+   "codecs": [
+    {
+     "name": "bytes",
+     "configuration": {
+      "endian": "little"
+     }
+    },
+    {
+     "name": "numcodecs.shuffle",
+     "configuration": {
+      "elementsize": 8
+     }
+    },
+    {
+     "name": "numcodecs.zlib",
+     "configuration": {
+      "level": 1
+     }
+    }
+   ],
+   "storage_transformers": [],
+   "dimension_names": [
+    "time",
+    "latitude",
+    "longitude"
+   ]
+  },
+  "max_vertical_column_stratosphere_sample": {
+   "zarr_format": 3,
+   "node_type": "array",
+   "attributes": {
+    "_FillValue": "6oygOVk+KcY=",
+    "coordinates": "time longitude latitude",
+    "long_name": "stratosphere nitrogen dioxide vertical column",
+    "units": "molecules/cm^2",
+    "comment": "Largest Level 2 pixel values contributing to the area-weighted Level 3 pixel value"
+   },
+   "shape": [
+    1,
+    2950,
+    7750
+   ],
+   "data_type": "float64",
+   "chunk_grid": {
+    "name": "regular",
+    "configuration": {
+     "chunk_shape": [
+      1,
+      738,
+      1938
+     ]
+    }
+   },
+   "chunk_key_encoding": {
+    "name": "default",
+    "configuration": {
+     "separator": "/"
+    }
+   },
+   "fill_value": -1e30,
+   "codecs": [
+    {
+     "name": "bytes",
+     "configuration": {
+      "endian": "little"
+     }
+    },
+    {
+     "name": "numcodecs.shuffle",
+     "configuration": {
+      "elementsize": 8
+     }
+    },
+    {
+     "name": "numcodecs.zlib",
+     "configuration": {
+      "level": 1
+     }
+    }
+   ],
+   "storage_transformers": [],
+   "dimension_names": [
+    "time",
+    "latitude",
+    "longitude"
+   ]
+  },
+  "num_vertical_column_stratosphere_samples": {
+   "zarr_format": 3,
+   "node_type": "array",
+   "attributes": {
+    "comment": "Number of Level 2 pixel values contributing to the area-weighted Level 3 pixel value",
+    "_FillValue": -1
+   },
+   "shape": [
+    1,
+    2950,
+    7750
+   ],
+   "data_type": "int32",
+   "chunk_grid": {
+    "name": "regular",
+    "configuration": {
+     "chunk_shape": [
+      1,
+      984,
+      2584
+     ]
+    }
+   },
+   "chunk_key_encoding": {
+    "name": "default",
+    "configuration": {
+     "separator": "/"
+    }
+   },
+   "fill_value": -1,
+   "codecs": [
+    {
+     "name": "bytes",
+     "configuration": {
+      "endian": "little"
+     }
+    },
+    {
+     "name": "numcodecs.shuffle",
+     "configuration": {
+      "elementsize": 4
+     }
+    },
+    {
+     "name": "numcodecs.zlib",
+     "configuration": {
+      "level": 1
+     }
+    }
+   ],
+   "storage_transformers": [],
+   "dimension_names": [
+    "time",
+    "latitude",
+    "longitude"
+   ]
+  },
+  "max_vertical_column_troposphere_uncertainty_sample": {
+   "zarr_format": 3,
+   "node_type": "array",
+   "attributes": {
+    "_FillValue": "6oygOVk+KcY=",
+    "coordinates": "time longitude latitude",
+    "long_name": "troposphere nitrogen dioxide vertical column uncertainty",
+    "units": "molecules/cm^2",
+    "comment": "Largest Level 2 pixel values contributing to the area-weighted Level 3 pixel value"
+   },
+   "shape": [
+    1,
+    2950,
+    7750
+   ],
+   "data_type": "float64",
+   "chunk_grid": {
+    "name": "regular",
+    "configuration": {
+     "chunk_shape": [
+      1,
+      738,
+      1938
+     ]
+    }
+   },
+   "chunk_key_encoding": {
+    "name": "default",
+    "configuration": {
+     "separator": "/"
+    }
+   },
+   "fill_value": -1e30,
+   "codecs": [
+    {
+     "name": "bytes",
+     "configuration": {
+      "endian": "little"
+     }
+    },
+    {
+     "name": "numcodecs.shuffle",
+     "configuration": {
+      "elementsize": 8
+     }
+    },
+    {
+     "name": "numcodecs.zlib",
+     "configuration": {
+      "level": 1
+     }
+    }
+   ],
+   "storage_transformers": [],
+   "dimension_names": [
+    "time",
+    "latitude",
+    "longitude"
+   ]
+  },
+  "min_vertical_column_troposphere_uncertainty_sample": {
+   "zarr_format": 3,
+   "node_type": "array",
+   "attributes": {
+    "_FillValue": "6oygOVk+KcY=",
+    "coordinates": "time longitude latitude",
+    "long_name": "troposphere nitrogen dioxide vertical column uncertainty",
+    "units": "molecules/cm^2",
+    "comment": "Smallest Level 2 pixel value contributing to the area-weighted Level 3 pixel value"
+   },
+   "shape": [
+    1,
+    2950,
+    7750
+   ],
+   "data_type": "float64",
+   "chunk_grid": {
+    "name": "regular",
+    "configuration": {
+     "chunk_shape": [
+      1,
+      738,
+      1938
+     ]
+    }
+   },
+   "chunk_key_encoding": {
+    "name": "default",
+    "configuration": {
+     "separator": "/"
+    }
+   },
+   "fill_value": -1e30,
+   "codecs": [
+    {
+     "name": "bytes",
+     "configuration": {
+      "endian": "little"
+     }
+    },
+    {
+     "name": "numcodecs.shuffle",
+     "configuration": {
+      "elementsize": 8
+     }
+    },
+    {
+     "name": "numcodecs.zlib",
+     "configuration": {
+      "level": 1
+     }
+    }
+   ],
+   "storage_transformers": [],
+   "dimension_names": [
+    "time",
+    "latitude",
+    "longitude"
+   ]
+  },
+  "num_vertical_column_troposphere_uncertainty_samples": {
+   "zarr_format": 3,
+   "node_type": "array",
+   "attributes": {
+    "comment": "Number of Level 2 pixel values contributing to the area-weighted Level 3 pixel value",
+    "_FillValue": -1
+   },
+   "shape": [
+    1,
+    2950,
+    7750
+   ],
+   "data_type": "int32",
+   "chunk_grid": {
+    "name": "regular",
+    "configuration": {
+     "chunk_shape": [
+      1,
+      984,
+      2584
+     ]
+    }
+   },
+   "chunk_key_encoding": {
+    "name": "default",
+    "configuration": {
+     "separator": "/"
+    }
+   },
+   "fill_value": -1,
+   "codecs": [
+    {
+     "name": "bytes",
+     "configuration": {
+      "endian": "little"
+     }
+    },
+    {
+     "name": "numcodecs.shuffle",
+     "configuration": {
+      "elementsize": 4
+     }
+    },
+    {
+     "name": "numcodecs.zlib",
+     "configuration": {
+      "level": 1
+     }
+    }
+   ],
+   "storage_transformers": [],
+   "dimension_names": [
+    "time",
+    "latitude",
+    "longitude"
+   ]
+  }
+ }
+}

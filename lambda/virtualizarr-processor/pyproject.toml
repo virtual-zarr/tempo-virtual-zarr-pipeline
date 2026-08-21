@@ -5,7 +5,12 @@ description = "Module for ingesting virtualizarr data to Icechunk"
 requires-python = ">=3.12"
 dependencies = [
     "icechunk>=2.1",
-    "virtualizarr>=2.7",
+    "obspec-utils",
+    "obstore",
+    "opentelemetry-api>=1.20",
+    "pydantic>=2",
+    "pydantic-zarr>=0.10",
+    "virtualizarr[hdf]>=2.7",
     "zarr>=3.2.1",
 ]
 

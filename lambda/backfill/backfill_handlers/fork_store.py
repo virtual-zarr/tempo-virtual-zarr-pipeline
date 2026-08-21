@@ -1,7 +1,5 @@
 """Save, load, and list pickled fork blobs in S3."""
 
-from typing import cast
-
 from backfill_handlers.config import parse_s3_uri, s3_client
 
 
@@ -14,8 +12,7 @@ def save_fork(uri: str, data: bytes) -> None:
 def load_fork(uri: str) -> bytes:
     """Read a pickled fork blob from S3."""
     bucket, key = parse_s3_uri(uri)
-    # cast: .read() returns Any; the isolated mypy env would flag the return.
-    return cast(bytes, s3_client().get_object(Bucket=bucket, Key=key)["Body"].read())
+    return bytes(s3_client().get_object(Bucket=bucket, Key=key)["Body"].read())
 
 
 def list_forks(prefix: str) -> list[str]:

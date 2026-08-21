@@ -3,15 +3,20 @@
 import json
 from typing import cast
 
+from virtualizarr_processor.inventory import BackfillInventory
+
 from backfill_handlers.config import parse_s3_uri, s3_client
 
 
-def read_inventory(uri: str) -> list[str]:
-    """Read a JSON array of file keys from the inventory object."""
+def read_inventory(uri: str) -> BackfillInventory:
+    """Read and validate the typed inventory document from S3.
+
+    The model validators run again on the consume side, so a hand-edited
+    or corrupted inventory fails the run before anything is written.
+    """
     bucket, key = parse_s3_uri(uri)
     body = s3_client().get_object(Bucket=bucket, Key=key)["Body"].read()
-    # cast: json.loads returns Any; the isolated mypy env would flag the return.
-    return cast(list[str], json.loads(body))
+    return BackfillInventory.from_json(body)
 
 
 def write_manifest(uri: str, keys: list[str]) -> None:

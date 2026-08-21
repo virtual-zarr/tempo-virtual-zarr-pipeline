@@ -1,159 +1,24 @@
 from __future__ import annotations
 
-from datetime import datetime
-from typing import Protocol, runtime_checkable
-
-import icechunk
-from icechunk import ForkSession, Repository, Session
+import enum
+from typing import NamedTuple
 
 
-@runtime_checkable
-class VirtualizarrProcessor(Protocol):
-    def initialize_repo(self) -> Repository:
-        """
-        Initialize an Icechunk Store with the necessary structure and return
-        a Repository handle.
+class BranchInit(NamedTuple):
+    """Result of creating a work branch off the promote target.
 
-        This store should have a dimension that can be used with an append function.
+    ``branched_from`` is :func:`virtualizarr_processor.backfill.promote`'s
+    compare-and-swap expectation: if the target moved while the work branch
+    was built, the promote fails instead of discarding that commit.
+    """
 
-        Parameters
-        ----------
+    snapshot: str  # the init commit on the work branch
+    branched_from: str  # the promote target's tip at branch time
 
-        Returns
-        -------
-        Repository
-            An Icechunk Repository.
-        """
-        ...
 
-    def initialize_session(self, repo: Repository) -> Session:
-        """
-        Initialize an Icechunk writable Session.
+class ProcessOutcome(enum.Enum):
+    """What became of one forward-processed granule."""
 
-        Parameters
-        ----------
-            repo: An Icechunk Repository.
-        Returns
-        -------
-        Session
-            An Icechunk writable Session.
-        """
-        ...
-
-    def process_file(self, file_key: str, session: Session) -> bool:
-        """
-        Uses a Virtualizarr parser to parse the file, manipulate the resulting
-        ManifestStore and add it to the Icechunk store
-
-        Parameters
-        ----------
-            file_key: The full key path to the source file.
-            session: The Icechunk writable Session to use for adding the file.
-        Returns
-        -------
-        bool
-            True if file was successfully processed.
-        """
-        ...
-
-    def commit_processed_files(self, session: Session) -> str:
-        """
-        Commits the updates made by one or multiple calls to process_file
-
-        Parameters
-        ----------
-            session: The Icechunk writable Session used with process_file.
-        Returns
-        -------
-        str
-            A snapshot id of the append commit.
-        """
-        ...
-
-    def initialize_backfill_store(self, repo: Repository) -> str:
-        """
-        Create the `backfill` branch off the current `main` tip and build the
-        full-shape array(s) and coordinates (metadata only), commit, and return
-        the base snapshot id.
-
-        The store is declared at its full extent up front because backfill writes
-        disjoint regions via region writes rather than appending. It also writes
-        the coordinate arrays (e.g. `time`) that region writes rely on to align
-        each per-file virtual dataset to the correct position. The session MUST
-        have no uncommitted changes after this returns, so that forks taken from
-        a fresh session share the committed branch-tip snapshot as their base.
-
-        The `backfill` branch must not already exist. This method is intended to
-        be called exactly once per backfill run.
-
-        Parameters
-        ----------
-            repo: An Icechunk Repository (durable storage; not in-memory).
-        Returns
-        -------
-        str
-            The base snapshot id of the committed full-shape store.
-        """
-        ...
-
-    def open_backfill_repo(self) -> Repository:
-        """
-        Open (or create) the durable backfill repository.
-
-        Storage is chosen by the implementation (e.g. S3 in a deployed Lambda,
-        local filesystem in tests). Must use durable, shared storage — a pickled
-        ForkSession cannot resolve its base snapshot from in-memory storage.
-        Uses open_or_create semantics so the `main` branch exists for
-        initialize_backfill_store to branch off.
-
-        Returns
-        -------
-        Repository
-            An Icechunk Repository backed by durable storage.
-        """
-        ...
-
-    def process_backfill_file(self, file_key: str, fork: ForkSession) -> bool:
-        """
-        Write a per-file virtual dataset into the fork's store via
-        `vz.to_icechunk(store, region="auto")`, which aligns the dataset to its
-        target position by coordinate. Must NOT commit.
-
-        Parameters
-        ----------
-            file_key: The full key path to the source file.
-            fork: An Icechunk ForkSession to write references into.
-        Returns
-        -------
-        bool
-            True if the file was successfully processed.
-        """
-        ...
-
-    def garbage_collect(self, expiry_time: datetime) -> icechunk.GCSummary:
-        """
-        Run Icechunk garbage collection and snapshot removal.
-
-        Parameters
-        ----------
-            repo: And Icechunk Repository.
-            expiry_time: Remove snapshots older than this time.
-        Returns
-        -------
-        GCSummary
-        """
-        ...
-
-    # def cron_processing(self, store: IcechunkStore) -> str:
-    # """
-    # Variable level operations that need to be run periodically and then
-    # released as a tag.
-
-    # Parameters
-    # ----------
-    # store: And Icechunk store.
-    # Returns
-    # -------
-    # str
-    # """
-    # ...
+    WRITTEN = "written"  # appended, or republication overwritten in place
+    DEFERRED = "deferred"  # out of order: recorded in the pending ledger
+    REJECTED = "rejected"  # validation failure — SQS retry, then DLQ

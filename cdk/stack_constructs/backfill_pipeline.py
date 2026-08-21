@@ -10,11 +10,14 @@ from aws_cdk import aws_stepfunctions as sfn
 from aws_cdk import aws_stepfunctions_tasks as tasks
 from constructs import Construct
 
+from .grants import grant_prefixed_read_write
+from .log_groups import function_log_group
+
 _ACTIONS = ["partition", "init", "fork", "worker", "reduce", "promote"]
 
-# Actions whose handler opens the icechunk repo and therefore needs Earthdata
-# credentials to authorize reading protected GES DISC virtual chunks. ``partition``
-# only reads the inventory object, so it is excluded.
+# Actions whose handler opens the icechunk repo and may need Earthdata
+# credentials to read protected source granules. ``partition`` only reads
+# the inventory object, so it is excluded.
 _REPO_ACTIONS = ["init", "fork", "worker", "reduce", "promote"]
 
 
@@ -30,11 +33,14 @@ class BackfillPipeline(Construct):
         *,
         icechunk_bucket: s3.IBucket,
         icechunk_prefix: str | None,
+        s3_prefix: str | None = None,
+        inventory_prefix: str | None = None,
         data_bucket_name: str,
         earthdata_secret_arn: str | None = None,
         partition_size: int,
         max_items_per_batch: int,
         max_concurrency: int,
+        extra_env: dict[str, str] | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)
@@ -50,6 +56,9 @@ class BackfillPipeline(Construct):
             env["ICECHUNK_PREFIX"] = icechunk_prefix
         if earthdata_secret_arn:
             env["EARTHDATA_SECRET_ARN"] = earthdata_secret_arn
+        # Collection selection, virtual chunk container, and the state
+        # artifacts (promote writes the initial store manifest).
+        env.update(extra_env or {})
 
         earthdata_secret = (
             secretsmanager.Secret.from_secret_complete_arn(
@@ -59,11 +68,17 @@ class BackfillPipeline(Construct):
             else None
         )
 
+        # Backfill scratch space (partition manifests + pickled forks) lives
+        # under {s3_prefix}/backfill/, outside the store prefix; keep this in
+        # step with run_prefix in _build_state_machine.
+        run_key_prefix = f"{s3_prefix}/backfill" if s3_prefix else "backfill"
+
         self.functions: dict[str, lmb.DockerImageFunction] = {}
         for action in _ACTIONS:
             fn = lmb.DockerImageFunction(
                 self,
                 f"{action}-fn",
+                log_group=function_log_group(self, f"{action}-logs"),
                 code=lmb.DockerImageCode.from_image_asset(
                     "lambda",
                     file="backfill/Dockerfile",
@@ -75,7 +90,16 @@ class BackfillPipeline(Construct):
                 memory_size=2048,
                 environment=dict(env),
             )
-            icechunk_bucket.grant_read_write(fn)
+            if not icechunk_prefix:
+                icechunk_bucket.grant_read_write(fn)
+            elif action == "partition":
+                # partition never opens the repo: it reads the inventory and
+                # writes partition manifests under the run prefix.
+                grant_prefixed_read_write(fn, icechunk_bucket, [run_key_prefix])
+            else:
+                grant_prefixed_read_write(
+                    fn, icechunk_bucket, [icechunk_prefix, run_key_prefix]
+                )
             # Handlers that open the repo need to read the Earthdata secret.
             if earthdata_secret is not None and action in _REPO_ACTIONS:
                 earthdata_secret.grant_read(fn)
@@ -93,17 +117,43 @@ class BackfillPipeline(Construct):
         self.functions["worker"].add_to_role_policy(data_policy)
         self.functions["partition"].add_to_role_policy(data_policy)
 
+        if icechunk_prefix and inventory_prefix:
+            self.functions["partition"].add_to_role_policy(
+                iam.PolicyStatement(
+                    actions=["s3:GetObject"],
+                    resources=[
+                        icechunk_bucket.arn_for_objects(
+                            f"{inventory_prefix.strip('/')}/*"
+                        )
+                    ],
+                )
+            )
+
         self.state_machine = self._build_state_machine(
-            icechunk_bucket, partition_size, max_items_per_batch, max_concurrency
+            icechunk_bucket,
+            s3_prefix,
+            partition_size,
+            max_items_per_batch,
+            max_concurrency,
         )
 
     def _build_state_machine(
         self,
         icechunk_bucket: s3.IBucket,
+        s3_prefix: str | None,
         partition_size: int,
         max_items_per_batch: int,
         max_concurrency: int,
     ) -> sfn.StateMachine:
+        # Run artifacts are scoped under the deployment's output prefix so
+        # stacks sharing a bucket keep their runs separate.
+        run_prefix = sfn.JsonPath.format(
+            f"s3://{{}}/{s3_prefix}/backfill/{{}}/"
+            if s3_prefix
+            else "s3://{}/backfill/{}/",
+            icechunk_bucket.bucket_name,
+            sfn.JsonPath.string_at("$$.Execution.Name"),
+        )
         partition = tasks.LambdaInvoke(
             self,
             "PartitionTask",
@@ -111,11 +161,7 @@ class BackfillPipeline(Construct):
             payload=sfn.TaskInput.from_object(
                 {
                     "inventory_uri": sfn.JsonPath.string_at("$.inventory_uri"),
-                    "run_prefix": sfn.JsonPath.format(
-                        "s3://{}/backfill/{}/",
-                        icechunk_bucket.bucket_name,
-                        sfn.JsonPath.string_at("$$.Execution.Name"),
-                    ),
+                    "run_prefix": run_prefix,
                     "partition_size": partition_size,
                 }
             ),
@@ -127,7 +173,9 @@ class BackfillPipeline(Construct):
             self,
             "InitTask",
             lambda_function=self.functions["init"],
-            payload=sfn.TaskInput.from_object({}),
+            payload=sfn.TaskInput.from_object(
+                {"inventory_uri": sfn.JsonPath.string_at("$.inventory_uri")}
+            ),
             payload_response_only=True,
             result_path="$.initResult",
         )
@@ -154,6 +202,16 @@ class BackfillPipeline(Construct):
                 }
             ),
             payload_response_only=True,
+        )
+        # Retry transient failures that outlive the in-code parse retries;
+        # deterministic (validation) failures fail again quickly and still
+        # gate the promote. A retried worker that already saved its fork
+        # writes a second, identical one; merge is last-writer-wins.
+        worker.add_retry(
+            errors=[sfn.Errors.ALL],
+            interval=Duration.seconds(30),
+            backoff_rate=2,
+            max_attempts=2,
         )
 
         inner_map = sfn.DistributedMap(
@@ -215,7 +273,16 @@ class BackfillPipeline(Construct):
             self,
             "PromoteTask",
             lambda_function=self.functions["promote"],
-            payload=sfn.TaskInput.from_object({}),
+            payload=sfn.TaskInput.from_object(
+                {
+                    "inventory_uri": sfn.JsonPath.string_at("$.inventory_uri"),
+                    # The `main` tip Init branched from: the promote's
+                    # compare-and-swap expectation.
+                    "branched_from": sfn.JsonPath.string_at(
+                        "$.initResult.branched_from"
+                    ),
+                }
+            ),
             payload_response_only=True,
         )
 

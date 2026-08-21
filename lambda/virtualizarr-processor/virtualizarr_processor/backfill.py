@@ -1,14 +1,14 @@
 """Generic Icechunk fork/merge/promote helpers for backfill.
 
-These operations are identical for every VirtualizarrProcessor implementation,
-so they live here rather than on the Protocol. All were verified against
-icechunk 1.1.14: a fresh writable session can merge forks created by an earlier
-(now-discarded) session and commit, as long as the fork's base is a committed
-branch-tip snapshot.
+These operations are processor-independent, so they live here rather than
+on the Processor. The fork/merge mechanics are covered by
+tests/backfill_mechanics against the pinned icechunk (>=2.1): a fresh
+writable session can merge forks created by an earlier (now-discarded)
+session and commit, as long as the fork's base is a committed branch-tip
+snapshot.
 """
 
 import pickle
-from typing import cast
 
 from icechunk import Repository
 
@@ -38,13 +38,34 @@ def merge_and_commit(
     session = repo.writable_session(branch)
     forks = [pickle.loads(b) for b in child_fork_bytes]
     session.merge(*forks)
-    # cast: pre-commit mypy runs without icechunk, so commit() is Any there and
-    # warn_return_any flags a bare return. Do not remove.
-    return cast(str, session.commit(message))
+    return session.commit(message)
 
 
 def promote(
-    repo: Repository, *, source: str = "backfill", target: str = "main"
+    repo: Repository,
+    *,
+    source: str = "backfill",
+    source_snapshot: str | None = None,
+    target: str = "main",
+    expected_target_tip: str,
 ) -> None:
-    """Fast-forward `target` to the current tip of `source`."""
-    repo.reset_branch(target, repo.lookup_branch(source))
+    """Move `target` to the tip of `source`, compare-and-swap style.
+
+    `expected_target_tip` is the `target` tip the `source` branch was
+    created from (BranchInit.branched_from). If `target` has moved since,
+    for example because the consumer committed an append mid-run, the reset
+    raises instead of discarding that commit; the run is retried against
+    the new tip.
+
+    By default the promoted snapshot is looked up as `source`'s branch tip
+    at call time — fine when nothing else can reset that branch mid-run.
+    When a concurrent run of the same job could reset `source` between this
+    run's own commit and its promote (the resort job, run twice), pass the
+    exact `source_snapshot` this run committed instead: the CAS then either
+    promotes this run's own commit or fails, never a stranger's.
+    """
+    repo.reset_branch(
+        target,
+        source_snapshot if source_snapshot is not None else repo.lookup_branch(source),
+        from_snapshot_id=expected_target_tip,
+    )

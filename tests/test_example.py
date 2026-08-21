@@ -1,18 +1,10 @@
 from datetime import datetime, timedelta, timezone
 
 import icechunk
+import pytest
+import xarray as xr
 from icechunk import Repository, Session
-from virtualizarr_processor.processor import Processor
-from virtualizarr_processor.typing import VirtualizarrProcessor
-
-
-def protocol_type_check(processor: VirtualizarrProcessor) -> None:
-    assert processor
-
-
-def test_follows_protocol() -> None:
-    processor = Processor()
-    protocol_type_check(processor=processor)
+from stub_processor import Processor
 
 
 def test_initialize_repo() -> None:
@@ -38,3 +30,25 @@ def test_garbage_collect() -> None:
     expiry_time = datetime.now(timezone.utc) - timedelta(days=2)
     gcs = processor.garbage_collect(expiry_time=expiry_time)
     assert isinstance(gcs, icechunk.GCSummary)
+
+
+def test_process_file_warns_on_unexpected_granule_attrs(
+    icechunk_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    import stub_processor as processor_module
+
+    original = processor_module.synthetic_vds
+
+    def noisy(date: str) -> xr.Dataset:
+        vds = original(date)
+        vds["foo"].attrs["made_up_attr"] = "surprise"
+        return vds
+
+    monkeypatch.setattr(processor_module, "synthetic_vds", noisy)
+
+    with caplog.at_level("WARNING", logger="virtualizarr_processor.store_template"):
+        Processor().process_file(file_key="2024-01-02", session=icechunk_session)
+
+    assert any("made_up_attr" in record.message for record in caplog.records)

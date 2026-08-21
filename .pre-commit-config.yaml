@@ -19,11 +19,20 @@ repos:
         args: [ --fix ]
       # Run the formatter.
       - id: ruff-format
-  - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v1.15.0
+  - repo: local
     hooks:
       - id: mypy
-        additional_dependencies: [types-requests, pydantic]
+        name: mypy (project env)
+        # Runs against the real dependency set (icechunk, zarr, boto3-stubs,
+        # ...) so production code and the operational scripts are actually
+        # type-checked; the isolated mirrors-mypy hook saw only stubs and
+        # reduced several checks to no-ops.
+        entry: >-
+          uv run mypy lambda cdk
+          scripts/verify_store.py
+        language: system
+        pass_filenames: false
+        types_or: [python, toml]
   - repo: https://github.com/citation-file-format/cff-converter-python
     rev: ebf0b5e44d67f8beaa1cd13a0d0393ea04c6058d
     hooks:
