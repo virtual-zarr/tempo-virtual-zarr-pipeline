@@ -110,7 +110,7 @@ One-time setup for the sandbox test run:
 ```bash
 aws sso login --profile ds-sandbox-max                 # or however the profile authenticates
 cdk bootstrap aws://755329541016/us-west-2 --profile ds-sandbox-max   # fresh account only
-aws s3 mb s3://tempo-virtual-store-755329541016 --region us-west-2 --profile ds-sandbox-max
+aws s3 mb s3://tempo-virtual-store-sandbox --region us-west-2 --profile ds-sandbox-max
 ```
 
 `AWS_PROFILE` is set inside the env files, so every `uv run --env-file ...`
