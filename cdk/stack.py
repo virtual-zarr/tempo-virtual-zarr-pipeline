@@ -273,7 +273,10 @@ class VirtualizarrSqsStack(Stack):
                 self.queue,
                 batch_size=settings.SQS_BATCH_SIZE,
                 report_batch_item_failures=True,
-                max_concurrency=settings.MAX_CONCURRENCY,
+                # No max_concurrency: Lambda rejects a mapping whose maximum
+                # exceeds the function's reserved concurrency (1, above), and
+                # the setting's floor is 2. Excess pollers are throttled and
+                # the event source scales itself down.
                 enabled=settings.FORWARD_QUEUE_ENABLED,
             )
         )

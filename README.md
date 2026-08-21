@@ -125,6 +125,14 @@ check the account's Lambda concurrent-executions quota — fresh sub-accounts
 can start as low as 10, and the backfill fans out to
 `BACKFILL_MAX_CONCURRENCY=50`; request an increase or lower that setting.
 
+The steps below are written for the first trial: a backfill of only the 50
+most recent granules (`--max-count 50` on the inventory command) into a
+scratch store — the time axis is sized from the inventory, so `.env_hcho`
+points at `ICECHUNK_PREFIX=v04-trial` rather than the real `v04`. To graduate
+to the full backfill: drop `--max-count`, rebuild and re-upload the inventory,
+set `ICECHUNK_PREFIX=v04`, and redeploy first (the prefix is baked into the
+Lambda environment).
+
 `AWS_PROFILE` is set inside the env files, so every `uv run --env-file ...`
 command and `start_backfill.sh -e ...` targets the sandbox without exporting
 anything. To tear the test down, run `uv run --env-file .env_hcho cdk destroy`
@@ -135,8 +143,8 @@ separately. For the later client deployment, also set the `CLIENT` tag and
 Per collection, hcho shown:
 
 1. Deploy: `uv run --env-file .env_hcho cdk deploy`
-2. Build and upload the inventory: `uv run scripts/build_backfill_inventory.py --collection hcho --s3-uri s3://<bucket>/tempo/hcho/inventory/hcho.json`. It must land under `INVENTORY_PREFIX` (default `<S3_PREFIX>/inventory/`) — the partition Lambda can only read that prefix.
-3. Start the backfill: `./scripts/start_backfill.sh -e .env_hcho hcho-backfill-<date> s3://<bucket>/tempo/hcho/inventory/hcho.json`. A failed run can be restarted under a new execution name; Init resets the leftover branch.
+2. Build and upload the inventory: `uv run --env-file .env_hcho scripts/build_backfill_inventory.py --collection hcho --max-count 50 --s3-uri s3://tempo-virtual-store-sandbox/tempo/hcho/inventory/hcho.json` (`--max-count 50` is the trial cap; drop it for the full run). The env file supplies `AWS_PROFILE` for the upload; Earthdata credentials come from `~/.netrc` or `$EARTHDATA_TOKEN`. It must land under `INVENTORY_PREFIX` (default `<S3_PREFIX>/inventory/`) — the partition Lambda can only read that prefix.
+3. Start the backfill: `./scripts/start_backfill.sh -e .env_hcho hcho-backfill-<date> s3://tempo-virtual-store-sandbox/tempo/hcho/inventory/hcho.json`. A failed run can be restarted under a new execution name; Init resets the leftover branch.
 4. When it has promoted, set `FORWARD_QUEUE_ENABLED=true` and `POLL_START_ISO` to the inventory's build time in `.env_hcho`, then redeploy, so the poller's first poll picks up granules published while the backfill ran; the re-sort job folds in anything that arrived out of order.
 5. Run `uv run --env-file .env_hcho scripts/verify_store.py` after the promote (and periodically) to spot-check the store against its sources.
 
@@ -144,11 +152,15 @@ Then repeat with `.env_no2` for the second stack:
 
 ```bash
 uv run --env-file .env_no2 cdk deploy
-uv run scripts/build_backfill_inventory.py --collection no2 \
-  --s3-uri s3://<bucket>/tempo/no2/inventory/no2.json
+uv run --env-file .env_no2 scripts/build_backfill_inventory.py --collection no2 \
+  --s3-uri s3://tempo-virtual-store-sandbox/tempo/no2/inventory/no2.json
 ./scripts/start_backfill.sh -e .env_no2 no2-backfill-<date> \
-  s3://<bucket>/tempo/no2/inventory/no2.json
+  s3://tempo-virtual-store-sandbox/tempo/no2/inventory/no2.json
 ```
+
+To trial the no2 stack the same way, add `--max-count 50` and set
+`ICECHUNK_PREFIX=v04-trial` in `.env_no2` first (`.env_no2` ships pointed at
+the real `v04`).
 
 Settings live in [`cdk/settings.py`](./cdk/settings.py) and a `.env` file ([sample](./.env.sample)). The ones that matter most:
 
