@@ -92,14 +92,33 @@ The store manifest (which granule owns which slot, as two arrays on the time axi
 ## Deploying and running
 
 Each collection deploys as its own stack from a committed env file:
-[`.env_hcho`](./.env_hcho) and [`.env_no2`](./.env_no2). Fill in `ACCOUNT_ID`
-and `ICECHUNK_BUCKET`, one shared bucket in us-west-2 created once with
-`aws s3 mb s3://<bucket> --region us-west-2`; the per-collection `S3_PREFIX`
+[`.env_hcho`](./.env_hcho) and [`.env_no2`](./.env_no2). Both are currently
+filled in for a test run in the `ds-sandbox-max` sub-account (`755329541016`,
+profile `ds-sandbox-max`, `us-west-2`); for another account change
+`ACCOUNT_ID`, `AWS_PROFILE`, and `ICECHUNK_BUCKET` — one shared bucket in
+us-west-2 created once with
+`aws s3 mb s3://<bucket> --region us-west-2 --profile <profile>`. The
+per-collection `S3_PREFIX`
 (`tempo/hcho`, `tempo/no2`) keeps the stacks' output separate, and every IAM
 grant in a stack is scoped to its own prefix, so neither stack's roles can
 touch the other's keys. Both files
 ship backfill-first: forward processing (consumer, poller, re-sort job) stays
 undeployed while the backfill runs.
+
+One-time setup for the sandbox test run:
+
+```bash
+aws sso login --profile ds-sandbox-max                 # or however the profile authenticates
+cdk bootstrap aws://755329541016/us-west-2 --profile ds-sandbox-max   # fresh account only
+aws s3 mb s3://tempo-virtual-store-755329541016 --region us-west-2 --profile ds-sandbox-max
+```
+
+`AWS_PROFILE` is set inside the env files, so every `uv run --env-file ...`
+command and `start_backfill.sh -e ...` targets the sandbox without exporting
+anything. To tear the test down, run `uv run --env-file .env_hcho cdk destroy`
+(and `.env_no2`); the shared bucket is not stack-owned, so empty and delete it
+separately. For the later client deployment, also set the `CLIENT` tag and
+`STAGE=prod` in the env files.
 
 Per collection, hcho shown:
 
