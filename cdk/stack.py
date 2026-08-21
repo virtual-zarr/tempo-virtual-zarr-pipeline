@@ -164,12 +164,6 @@ class VirtualizarrSqsStack(Stack):
             f"s3://{self.icechunk_bucket.bucket_name}/"
             f"{storage_prefix + '/' if storage_prefix else ''}state/"
         )
-        self.store_manifest_uri = (
-            settings.STORE_MANIFEST_URI or f"{state_prefix}store-manifest.json"
-        )
-        self.pending_ledger_uri = (
-            settings.PENDING_LEDGER_URI or f"{state_prefix}pending-ledger.json"
-        )
         self.poll_watermark_uri = (
             settings.POLL_WATERMARK_URI or f"{state_prefix}cmr-watermark.json"
         )
@@ -180,8 +174,6 @@ class VirtualizarrSqsStack(Stack):
         self.processor_env = {
             "ICECHUNK_BUCKET": self.icechunk_bucket.bucket_name,
             "ICECHUNK_REGION": settings.ACCOUNT_REGION,
-            "STORE_MANIFEST_URI": self.store_manifest_uri,
-            "PENDING_LEDGER_URI": self.pending_ledger_uri,
         }
         if settings.TEMPO_COLLECTION:
             self.processor_env["TEMPO_COLLECTION"] = settings.TEMPO_COLLECTION
@@ -463,11 +455,9 @@ class VirtualizarrSqsStack(Stack):
             poller_env = {
                 "QUEUE_URL": self.queue.queue_url,
                 "POLL_WATERMARK_URI": self.poll_watermark_uri,
-                # A first poll with no watermark starts from the store
-                # manifest's built_at, covering everything published while
-                # the backfill ran.
-                "STORE_MANIFEST_URI": self.store_manifest_uri,
             }
+            if settings.POLL_START_ISO:
+                poller_env["POLL_START_ISO"] = settings.POLL_START_ISO
             if settings.TEMPO_COLLECTION:
                 # Resolved at synth from the collection's declarative TOML so
                 # the lightweight poller image needs no processor package.
@@ -527,8 +517,6 @@ class VirtualizarrSqsStack(Stack):
                     for key in (
                         "TEMPO_COLLECTION",
                         "VIRTUAL_CHUNK_PREFIX",
-                        "STORE_MANIFEST_URI",
-                        "PENDING_LEDGER_URI",
                     )
                     if key in self.processor_env
                 },

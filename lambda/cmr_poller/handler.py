@@ -93,18 +93,17 @@ def write_watermark(uri: str, value: datetime) -> None:
     _write_bytes(uri, json.dumps({"revision_date": value.isoformat()}).encode())
 
 
-def initial_watermark(manifest_uri: str | None, now: datetime) -> datetime:
+def initial_watermark(now: datetime) -> datetime:
     """Choose the starting point for a first poll (no watermark yet).
 
-    The store manifest's ``built_at`` is when the backfill inventory was
-    built, so starting there covers everything published while the
-    backfill ran, however long it took. Without a manifest, fall back to a
-    fixed lookback.
+    ``$POLL_START_ISO`` (typically the backfill inventory's build time,
+    covering everything published while the backfill ran) wins; otherwise
+    a fixed lookback. The overlap window and the consumer's idempotent
+    routing absorb any imprecision.
     """
-    if manifest_uri:
-        data = _read_bytes(manifest_uri)
-        if data is not None:
-            return datetime.fromisoformat(json.loads(data)["built_at"])
+    start = os.environ.get("POLL_START_ISO")
+    if start:
+        return datetime.fromisoformat(start)
     return now - DEFAULT_LOOKBACK
 
 
@@ -176,9 +175,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     watermark_uri = os.environ["POLL_WATERMARK_URI"]
 
     started = datetime.now(timezone.utc)
-    watermark = read_watermark(watermark_uri) or initial_watermark(
-        os.environ.get("STORE_MANIFEST_URI"), started
-    )
+    watermark = read_watermark(watermark_uri) or initial_watermark(started)
     since = watermark - OVERLAP
 
     items = search_granules(concept_id, since.isoformat())

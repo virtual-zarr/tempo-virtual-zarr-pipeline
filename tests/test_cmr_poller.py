@@ -115,35 +115,22 @@ def test_handler_enqueues_and_advances_watermark(
     assert second_since == watermark - poller.OVERLAP
 
 
-def test_first_poll_starts_from_the_store_manifest(
-    sqs_queue: str,
-    tmp_path: pathlib.Path,
+def test_initial_watermark_uses_poll_start_env(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """With no watermark, the first poll covers everything published since
-    the backfill inventory was built."""
-    built_at = "2026-07-01T00:00:00+00:00"
-    manifest_uri = tmp_path / "store-manifest.json"
-    manifest_uri.write_text(json.dumps({"built_at": built_at}))
-    monkeypatch.setenv("CONCEPT_ID", "C1")
-    monkeypatch.setenv("QUEUE_URL", sqs_queue)
-    monkeypatch.setenv("POLL_WATERMARK_URI", str(tmp_path / "watermark.json"))
-    monkeypatch.setenv("STORE_MANIFEST_URI", str(manifest_uri))
-    monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
+    monkeypatch.setenv("POLL_START_ISO", "2026-08-01T00:00:00+00:00")
+    now = datetime(2026, 8, 20, tzinfo=timezone.utc)
+    assert poller.initial_watermark(now) == datetime(
+        2026, 8, 1, tzinfo=timezone.utc
+    )
 
-    since_seen: list[str] = []
 
-    def fetch(
-        concept_id: str, since: str, search_after: str | None
-    ) -> tuple[list[dict], str | None]:
-        since_seen.append(since)
-        return [], None
-
-    monkeypatch.setattr(poller, "_http_fetch", fetch)
-    poller.handler({}, MagicMock())
-
-    expected = datetime.fromisoformat(built_at) - poller.OVERLAP
-    assert datetime.fromisoformat(since_seen[0]) == expected
+def test_initial_watermark_falls_back_to_lookback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("POLL_START_ISO", raising=False)
+    now = datetime(2026, 8, 20, tzinfo=timezone.utc)
+    assert poller.initial_watermark(now) == now - poller.DEFAULT_LOOKBACK
 
 
 class _FlakySqs:

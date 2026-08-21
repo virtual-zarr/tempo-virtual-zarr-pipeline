@@ -48,8 +48,6 @@ def test_forward_state_env_reaches_lambdas() -> None:
                     "Variables": Match.object_like(
                         {
                             "TEMPO_COLLECTION": "hcho",
-                            "STORE_MANIFEST_URI": Match.any_value(),
-                            "PENDING_LEDGER_URI": Match.any_value(),
                         }
                     )
                 },
@@ -111,8 +109,8 @@ def test_s3_prefix_scopes_state_env_and_run_artifact_lifecycle() -> None:
             }
         ),
     )
-    # The state URIs embed the bucket ref, so match the serialized template.
-    assert "tempo/tempo-hcho/state/store-manifest.json" in str(template.to_json())
+    # The state URI embeds the bucket ref, so match the serialized template.
+    assert "tempo/tempo-hcho/state/cmr-watermark.json" in str(template.to_json())
     # The run-artifact lifecycle rule follows the scoped run prefix.
     template.has_resource_properties(
         "AWS::S3::Bucket",

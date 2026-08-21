@@ -54,11 +54,12 @@ class StackSettings(BaseSettings):
     # Virtual chunk container prefix (defaults inside the processor to
     # s3://asdc-prod-protected/).
     VIRTUAL_CHUNK_PREFIX: str | None = None
-    # Forward-processing state artifacts. When unset they default
+    # Forward-processing watermark artifact. When unset it defaults
     # to s3://<icechunk bucket>/<prefix>state/<name>.json, derived in the stack.
-    STORE_MANIFEST_URI: str | None = None
-    PENDING_LEDGER_URI: str | None = None
     POLL_WATERMARK_URI: str | None = None
+    # First poll's starting point when no watermark exists yet (typically the
+    # backfill inventory's build time). Unset falls back to a fixed lookback.
+    POLL_START_ISO: str | None = None
     # Scheduled forward-processing jobs; deployed only when the forward queue is
     # enabled. None disables the individual schedule.
     RESORT_SCHEDULE_HOURS: int | None = 24
