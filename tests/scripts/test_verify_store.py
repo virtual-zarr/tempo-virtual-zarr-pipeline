@@ -55,7 +55,7 @@ def lookup_from(inventory: BackfillInventory) -> vs.CmrLookup:
 
 def test_clean_store_verifies_offline(tiny: TinyCollection) -> None:
     processor = backfill_and_promote(tiny)
-    repo = processor.open_backfill_repo()
+    repo = processor.open_backfill_repo(authorize_virtual_reads=True)
     assert verify(repo, tiny.inventory) == []
 
 
@@ -66,7 +66,7 @@ def test_mutated_source_object_is_detected(tiny: TinyCollection) -> None:
     write_tempo_granule(
         tiny.granule_paths[1], time_value=tiny.times[1], weight_scale=99.0
     )
-    repo = processor.open_backfill_repo()
+    repo = processor.open_backfill_repo(authorize_virtual_reads=True)
     problems = verify(repo, tiny.inventory)
     assert any("granule_1" in line for line in problems)
 
@@ -80,7 +80,7 @@ def verify(repo: object, manifest: BackfillInventory, **kwargs: object) -> list[
 
 def test_clean_store_verifies_against_cmr(tiny: TinyCollection) -> None:
     processor = backfill_and_promote(tiny)
-    repo = processor.open_backfill_repo()
+    repo = processor.open_backfill_repo(authorize_virtual_reads=True)
     problems = verify(repo, tiny.inventory, cmr_lookup=lookup_from(tiny.inventory))
     assert problems == []
 
@@ -100,7 +100,7 @@ def test_superseded_revision_is_detected_only_via_cmr(tiny: TinyCollection) -> N
             return f"file://{revised}", "revised_1"
         return lookup_from(tiny.inventory)(when)
 
-    repo = processor.open_backfill_repo()
+    repo = processor.open_backfill_repo(authorize_virtual_reads=True)
     assert verify(repo, tiny.inventory) == []  # offline mode cannot see it
     problems = verify(repo, tiny.inventory, cmr_lookup=lookup)
     assert any("differs from CMR's current url" in line for line in problems)
@@ -115,7 +115,7 @@ def test_missing_cmr_granule_is_reported(tiny: TinyCollection) -> None:
             return None
         return lookup_from(tiny.inventory)(when)
 
-    repo = processor.open_backfill_repo()
+    repo = processor.open_backfill_repo(authorize_virtual_reads=True)
     problems = verify(repo, tiny.inventory, cmr_lookup=lookup)
     assert any("CMR has no granule near" in line for line in problems)
 
@@ -179,7 +179,7 @@ def test_fill_values_decode_to_nan_and_verify_clean(tiny: TinyCollection) -> Non
         data[0, 0, 0] = -1.0e30
         f["product/vertical_column"][...] = data
     processor = backfill_and_promote(tiny)
-    repo = processor.open_backfill_repo()
+    repo = processor.open_backfill_repo(authorize_virtual_reads=True)
     problems = vs.verify_store(
         repo, tiny.inventory, samples=len(tiny.urls), window=6, seed=0
     )

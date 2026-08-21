@@ -22,6 +22,7 @@ from functools import lru_cache
 from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
+import icechunk
 import numpy as np
 import obstore
 import xarray as xr
@@ -101,6 +102,52 @@ def _s3_credential_provider(bucket: str) -> "NasaEarthdataCredentialProvider | N
     from obstore.auth.earthdata import NasaEarthdataCredentialProvider
 
     return NasaEarthdataCredentialProvider(endpoint, auth=auth)
+
+
+class EarthdataIcechunkCredentialFetcher:
+    """Picklable ``get_credentials`` for icechunk's refreshable S3 credentials.
+
+    icechunk pickles the callable into the repository handle, so this holds
+    only the bucket name; the EDL provider is resolved from the environment
+    on each refresh, through the same resolution the granule read path uses.
+    """
+
+    def __init__(self, bucket: str) -> None:
+        self.bucket = bucket
+
+    def __call__(self) -> icechunk.S3StaticCredentials:
+        provider = _s3_credential_provider(self.bucket)
+        if provider is None:
+            raise RuntimeError(
+                f"no Earthdata credential source for bucket {self.bucket!r}: "
+                "set EARTHDATA_TOKEN, EARTHDATA_USERNAME/EARTHDATA_PASSWORD, "
+                "or EARTHDATA_SECRET_ARN (and, for buckets without a known "
+                "endpoint, EARTHDATA_S3_CREDENTIALS_ENDPOINT)"
+            )
+        creds = provider()
+        return icechunk.S3StaticCredentials(
+            access_key_id=creds["access_key_id"],
+            secret_access_key=creds["secret_access_key"],
+            session_token=creds.get("token"),
+            expires_after=creds["expires_at"],
+        )
+
+
+def icechunk_virtual_credentials(
+    bucket: str,
+) -> "icechunk.S3Credentials.Refreshable | icechunk.S3Credentials.FromEnv":
+    """Credentials authorizing icechunk to read virtual chunks from ``bucket``.
+
+    With EDL material configured and a known ``s3credentials`` endpoint:
+    refreshable temporary DAAC credentials, the same flow the granule read
+    path uses. Otherwise ambient AWS credentials, which need a bucket-policy
+    grant on the source bucket — also matching the read path's fallback.
+    """
+    if _s3_credential_provider(bucket) is None:
+        return icechunk.s3_from_env_credentials()
+    return icechunk.s3_refreshable_credentials(
+        EarthdataIcechunkCredentialFetcher(bucket)
+    )
 
 
 def make_registry(url: str) -> ObjectStoreRegistry:

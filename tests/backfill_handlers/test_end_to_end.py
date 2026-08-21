@@ -68,7 +68,7 @@ def test_full_backfill_chain(
         },
         lambda_context,
     )
-    repo = Processor().open_backfill_repo()
+    repo = Processor().open_backfill_repo(authorize_virtual_reads=True)
     group = zarr.open_group(repo.readonly_session("main").store, mode="r")
     np.testing.assert_array_equal(np.asarray(group["time"][:]), tempo_pipeline.times)
     for i, time_value in enumerate(tempo_pipeline.times):

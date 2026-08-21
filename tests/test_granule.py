@@ -244,6 +244,64 @@ def test_s3_credential_provider_selection(no_edl_env: pytest.MonkeyPatch) -> Non
     assert _s3_credential_provider("my-staging-bucket") is not None
 
 
+def test_icechunk_virtual_credentials_without_edl_fall_back_to_env(
+    no_edl_env: pytest.MonkeyPatch,
+) -> None:
+    """No EDL material: readers rely on ambient IAM, matching the worker path."""
+    import icechunk
+    from virtualizarr_processor.granule import icechunk_virtual_credentials
+
+    creds = icechunk_virtual_credentials("asdc-prod-protected")
+    assert isinstance(creds, icechunk.S3Credentials.FromEnv)
+
+
+def test_icechunk_virtual_credentials_with_edl_are_refreshable(
+    no_edl_env: pytest.MonkeyPatch,
+) -> None:
+    import icechunk
+    from virtualizarr_processor.granule import icechunk_virtual_credentials
+
+    no_edl_env.setenv("EARTHDATA_TOKEN", "tok")
+    creds = icechunk_virtual_credentials("asdc-prod-protected")
+    assert isinstance(creds, icechunk.S3Credentials.Refreshable)
+
+
+def test_earthdata_fetcher_converts_provider_credentials(
+    no_edl_env: pytest.MonkeyPatch,
+) -> None:
+    """The fetcher survives the pickling icechunk applies and maps the
+    obstore credential dict onto icechunk's static credentials."""
+    import pickle
+    from datetime import datetime, timezone
+
+    from virtualizarr_processor import granule
+
+    fetcher = pickle.loads(
+        pickle.dumps(granule.EarthdataIcechunkCredentialFetcher("asdc-prod-protected"))
+    )
+
+    # No EDL material resolvable at refresh time: fail with a real message.
+    with pytest.raises(RuntimeError, match="asdc-prod-protected"):
+        fetcher()
+
+    expires = datetime(2026, 8, 21, 12, tzinfo=timezone.utc)
+    no_edl_env.setattr(
+        granule,
+        "_s3_credential_provider",
+        lambda bucket: lambda: {
+            "access_key_id": "AKID",
+            "secret_access_key": "SECRET",
+            "token": "SESSION",
+            "expires_at": expires,
+        },
+    )
+    creds = fetcher()
+    assert creds.access_key_id == "AKID"
+    assert creds.secret_access_key == "SECRET"
+    assert creds.session_token == "SESSION"
+    assert creds.expires_after == expires
+
+
 # --- Real-granule integration (skipped when the context data is absent) ---
 
 

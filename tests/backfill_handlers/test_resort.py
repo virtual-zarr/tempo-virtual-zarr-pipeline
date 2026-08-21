@@ -89,7 +89,7 @@ def test_resort_folds_pending_granules_in(
     assert result["inserted"] == 2
     assert result["first_shifted_index"] == 1  # slot 0 kept, rest rewritten
 
-    repo = processor.open_backfill_repo()
+    repo = processor.open_backfill_repo(authorize_virtual_reads=True)
     group = zarr.open_group(repo.readonly_session("main").store, mode="r")
     merged_times = [tiny.times[0], deep_time, *tiny.times[1:], tail_time]
     np.testing.assert_array_equal(np.asarray(group["time"][:]), merged_times)
@@ -148,7 +148,7 @@ def test_resort_relocates_without_rereading_ingested_sources(
             away.rename(path)
 
     assert result["resorted"] is True
-    repo = processor.open_backfill_repo()
+    repo = processor.open_backfill_repo(authorize_virtual_reads=True)
     group = zarr.open_group(repo.readonly_session("main").store, mode="r")
     merged_times = [tiny.times[0], deep_time, *tiny.times[1:]]
     np.testing.assert_array_equal(np.asarray(group["time"][:]), merged_times)
@@ -340,7 +340,7 @@ def test_resort_promotes_own_fold_snapshot_despite_concurrent_resort_reinit(
     result = resort.handler({}, lambda_context)
     assert result["resorted"] is True
 
-    repo = processor.open_backfill_repo()
+    repo = processor.open_backfill_repo(authorize_virtual_reads=True)
     main_store = repo.readonly_session("main").store
     manifest = StoreManifest.read(main_store)
     assert manifest is not None

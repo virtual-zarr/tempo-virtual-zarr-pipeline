@@ -15,9 +15,11 @@ Environment variables:
   repository storage, or ``ICECHUNK_LOCAL_PATH`` for a local repository
   in tests.
 - ``VIRTUAL_CHUNK_PREFIX``: virtual chunk container prefix (default
-  ``s3://asdc-prod-protected/``; tests use ``file:///...``). S3
-  containers are registered without credentials; readers authorize with
-  temporary ASDC credentials at open time.
+  ``s3://asdc-prod-protected/``; tests use ``file:///...``). Writers
+  register the S3 container without credentials (writing refs needs no
+  chunk access); readers open with ``authorize_virtual_reads=True``,
+  which authorizes it with EDL-derived temporary credentials or ambient
+  AWS credentials.
 - ``VIRTUAL_CHUNK_REGION``: region of the S3 container (default
   ``us-west-2``).
 
@@ -50,6 +52,7 @@ from virtualizarr_processor.collection import (
 )
 from virtualizarr_processor.granule import (
     granule_time,
+    icechunk_virtual_credentials,
     open_flat_granule,
     source_last_modified,
 )
@@ -101,8 +104,20 @@ class Processor:
 
     # -- repository ---------------------------------------------------------
 
-    def open_backfill_repo(self) -> Repository:
-        """Open or create the repository per the environment contract above."""
+    def open_backfill_repo(
+        self, *, authorize_virtual_reads: bool = False
+    ) -> Repository:
+        """Open or create the repository per the environment contract above.
+
+        Writers leave ``authorize_virtual_reads`` off: writing references
+        needs no chunk access, and icechunk blocks fetches from unauthorized
+        containers. Readers that fetch virtual chunk bytes (verify_store,
+        tests asserting written data) must pass ``True``, which authorizes
+        exactly the configured container: for ``s3://`` with temporary DAAC
+        credentials via EDL when configured, else ambient AWS credentials
+        (see :func:`icechunk_virtual_credentials`); for ``file://`` with the
+        no-credential local-filesystem sentinel, scoped to the prefix.
+        """
         bucket = os.environ.get("ICECHUNK_BUCKET")
         if bucket:
             storage = icechunk.s3_storage(
@@ -118,22 +133,23 @@ class Processor:
 
         prefix = os.environ.get("VIRTUAL_CHUNK_PREFIX", DEFAULT_VIRTUAL_CHUNK_PREFIX)
         config = icechunk.RepositoryConfig.default()
-        authorize: dict[str, object] | None = None
         chunk_store: (
             icechunk.ObjectStoreConfig.LocalFileSystem
             | icechunk.ObjectStoreConfig.S3Compatible
             | icechunk.ObjectStoreConfig.S3
         )
+        credential: object
         if prefix.startswith("file://"):
             chunk_store = icechunk.local_filesystem_store(
                 prefix.removeprefix("file://")
             )
-            authorize = {prefix: icechunk.credentials.LocalFileSystemAccess}
+            credential = icechunk.credentials.LocalFileSystemAccess
         elif prefix.startswith("s3://"):
-            # Credential-less container: writing refs needs no chunk access;
-            # readers authorize with temporary ASDC credentials at open time.
             chunk_store = icechunk.s3_store(
                 region=os.environ.get("VIRTUAL_CHUNK_REGION", "us-west-2")
+            )
+            credential = icechunk_virtual_credentials(
+                prefix.removeprefix("s3://").split("/", 1)[0]
             )
         else:
             raise ValueError(f"Unsupported VIRTUAL_CHUNK_PREFIX {prefix!r}")
@@ -143,7 +159,13 @@ class Processor:
         return icechunk.Repository.open_or_create(
             storage=storage,
             config=config,
-            authorize_virtual_chunk_access=authorize,  # type: ignore[arg-type]
+            # Authorization never exceeds the one configured container, and
+            # is granted only to callers that actually read chunk bytes.
+            authorize_virtual_chunk_access=(
+                icechunk.containers_credentials({prefix: credential})  # type: ignore[dict-item]
+                if authorize_virtual_reads
+                else None
+            ),
         )
 
     # -- backfill -----------------------------------------------------------

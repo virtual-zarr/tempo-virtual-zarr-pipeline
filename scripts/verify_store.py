@@ -25,7 +25,9 @@ the script exits non-zero.
 
 Uses the same environment variables as the processor Lambdas; the manifest
 and pending ledger live inside the store itself, so a per-collection env
-file is enough. Reading s3:// sources requires Earthdata credentials; CMR
+file is enough. Reading the store's virtual chunks and the s3:// sources
+requires Earthdata credentials (EARTHDATA_TOKEN, username/password, or
+EARTHDATA_SECRET_ARN) or ambient AWS access to the source bucket; CMR
 metadata does not.
 
 Usage:
@@ -320,7 +322,9 @@ def main() -> int:
     from virtualizarr_processor.processor import Processor
 
     processor = Processor()
-    repo = processor.open_backfill_repo()
+    # Readers must authorize the virtual chunk container; without it,
+    # icechunk blocks every chunk fetch as UnauthorizedVirtualChunkContainer.
+    repo = processor.open_backfill_repo(authorize_virtual_reads=True)
     pinned = repo.readonly_session("main").store
     manifest = StoreManifest.read(pinned)
     if manifest is None:

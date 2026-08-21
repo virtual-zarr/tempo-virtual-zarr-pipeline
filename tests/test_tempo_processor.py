@@ -46,7 +46,9 @@ def run_backfill(processor: Processor, tiny: TinyCollection) -> zarr.Group:
     backfill.merge_and_commit(repo, children, message="partition 0")
     processor.validate_backfill_store(repo, tiny.inventory, branch="backfill")
     backfill.promote(repo, expected_target_tip=init.branched_from)
-    return zarr.open_group(repo.readonly_session("main").store, mode="r")
+    # Reading data back needs the container authorized; writing did not.
+    reader = processor.open_backfill_repo(authorize_virtual_reads=True)
+    return zarr.open_group(reader.readonly_session("main").store, mode="r")
 
 
 def test_backfill_end_to_end(tiny: TinyCollection) -> None:
@@ -205,7 +207,8 @@ def test_real_backfill_two_granules(
     processor.validate_backfill_store(repo, inventory, branch="backfill")
     backfill.promote(repo, expected_target_tip=init.branched_from)
 
-    group = zarr.open_group(repo.readonly_session("main").store, mode="r")
+    reader = processor.open_backfill_repo(authorize_virtual_reads=True)
+    group = zarr.open_group(reader.readonly_session("main").store, mode="r")
     window = np.s_[1200:1205, 3200:3205]
     for i, path in enumerate(paths):
         with h5py.File(path) as f:
@@ -247,7 +250,7 @@ def test_forward_appends_in_order(tiny: TinyCollection) -> None:
     )
     assert forward(processor, [f"file://{new}"]) == [ProcessOutcome.WRITTEN]
 
-    repo = processor.open_backfill_repo()
+    repo = processor.open_backfill_repo(authorize_virtual_reads=True)
     group = zarr.open_group(repo.readonly_session("main").store, mode="r")
     axis = np.asarray(group["time"][:])
     np.testing.assert_array_equal(axis, tiny.times + [new_time])
@@ -266,7 +269,7 @@ def test_forward_redelivery_is_idempotent(tiny: TinyCollection) -> None:
     # The already-backfilled granule 1 is redelivered: same UR, same time.
     assert forward(processor, [tiny.urls[1]]) == [ProcessOutcome.WRITTEN]
 
-    repo = processor.open_backfill_repo()
+    repo = processor.open_backfill_repo(authorize_virtual_reads=True)
     group = zarr.open_group(repo.readonly_session("main").store, mode="r")
     assert np.asarray(group["time"][:]).size == len(tiny.times)  # no growth
     np.testing.assert_array_equal(
@@ -410,7 +413,7 @@ def test_forward_republication_overwrites_in_place(tiny: TinyCollection) -> None
     )
     assert forward(processor, [tiny.urls[1]]) == [ProcessOutcome.WRITTEN]
 
-    repo = processor.open_backfill_repo()
+    repo = processor.open_backfill_repo(authorize_virtual_reads=True)
     group = zarr.open_group(repo.readonly_session("main").store, mode="r")
     np.testing.assert_array_equal(
         np.asarray(group["weight"][1]),
@@ -427,3 +430,46 @@ def test_consumer_refuses_uninitialized_store(tiny: TinyCollection) -> None:
 
     run_backfill(processor, tiny)
     assert processor.open_initialized_repo() is not None
+
+
+def test_open_backfill_repo_authorizes_container_only_for_readers(
+    tiny: TinyCollection, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Writers keep the container locked (they only write references);
+    readers opt in and are authorized for exactly the configured prefix,
+    else icechunk blocks every virtual chunk fetch with
+    UnauthorizedVirtualChunkContainer."""
+    import os
+
+    import icechunk
+
+    captured: dict = {}
+    real = icechunk.Repository.open_or_create
+
+    def spy(**kwargs):  # type: ignore[no-untyped-def]
+        captured.update(kwargs)
+        return real(**kwargs)
+
+    monkeypatch.setattr(icechunk.Repository, "open_or_create", spy)
+    processor = Processor()
+
+    # file:// (the tiny collection's prefix)
+    file_prefix = os.environ["VIRTUAL_CHUNK_PREFIX"]
+    processor.open_backfill_repo()
+    assert captured["authorize_virtual_chunk_access"] is None
+    processor.open_backfill_repo(authorize_virtual_reads=True)
+    file_auth = captured["authorize_virtual_chunk_access"]
+    assert set(file_auth) == {file_prefix}
+    assert isinstance(
+        file_auth[file_prefix], icechunk.Credentials.LocalFileSystemAccess
+    )
+
+    # s3:// with EDL material configured
+    monkeypatch.setenv("VIRTUAL_CHUNK_PREFIX", "s3://asdc-prod-protected/")
+    monkeypatch.setenv("EARTHDATA_TOKEN", "tok")
+    processor.open_backfill_repo()
+    assert captured["authorize_virtual_chunk_access"] is None
+    processor.open_backfill_repo(authorize_virtual_reads=True)
+    s3_auth = captured["authorize_virtual_chunk_access"]
+    assert set(s3_auth) == {"s3://asdc-prod-protected/"}
+    assert isinstance(s3_auth["s3://asdc-prod-protected/"], icechunk.Credentials.S3)
