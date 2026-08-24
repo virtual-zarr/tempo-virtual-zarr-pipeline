@@ -513,7 +513,27 @@ print(zarr.open_array(store, path='time').shape[0], 'slots; newest:',
 
 Close the loop with `scripts/run_codebuild.sh -e .env_hcho -V`: an appended
 granule becomes sampleable, and `-a "--completeness"` shows a deferred
-granule sitting in the pending ledger. Once this works, enabling the poller
+granule sitting in the pending ledger.
+
+To test the ledger's other half — the fold — don't wait out
+`RESORT_SCHEDULE_HOURS`: the re-sort handler ignores its event payload, so
+invoke it directly (reserved concurrency 1 makes this safe against the
+schedule; avoid folding while an append is in flight — the mid-fold append
+correctly fails the promote's compare-and-swap):
+
+```bash
+aws lambda invoke --cli-binary-format raw-in-base64-out --payload '{}' \
+  --function-name "$(aws lambda list-functions \
+    --query 'Functions[?contains(FunctionName, `resortlambda`)].FunctionName | [0]' --output text)" \
+  /dev/stdout
+```
+
+Afterwards the ledger is empty, the slot count grew, and the deferred
+granule sits at its correct axis position — the relocation of every
+already-ingested slot behind it is the part of the pipeline nothing else
+exercises. Verify with samples ≥ the slot count
+(`-a "--samples 8 --completeness"`) to check every slot's bytes, relocated
+ones included, against CMR. Once this works, enabling the poller
 for real is step 4 above — drop `POLL_SCHEDULE_MINUTES=0` (restoring the
 30-minute default) and set `POLL_START_ISO` to a recent time first, so the
 first poll enqueues a handful of granules, not the full 8-day lookback.
