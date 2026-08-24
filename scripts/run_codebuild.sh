@@ -201,7 +201,19 @@ while :; do
   sleep 30
 done
 echo "Build finished: $STATUS" >&2
+
+# Surface the build's output (verify narration, inventory summary) in the
+# terminal: a green build is otherwise just an exit code in CloudWatch.
+read -r LOG_GROUP LOG_STREAM <<<"$(aws codebuild batch-get-builds ${REGION_ARGS[@]+"${REGION_ARGS[@]}"} \
+  --ids "$BUILD_ID" --query 'builds[0].logs.[groupName,streamName]' --output text)"
+if [ -n "${LOG_STREAM:-}" ] && [ "$LOG_STREAM" != "None" ]; then
+  echo "== Last build log events ($LOG_GROUP) ==" >&2
+  aws logs get-log-events ${REGION_ARGS[@]+"${REGION_ARGS[@]}"} \
+    --log-group-name "$LOG_GROUP" --log-stream-name "$LOG_STREAM" \
+    --limit 100 --query 'events[].[message]' --output text >&2 || true
+fi
+
 if [ "$STATUS" != "SUCCEEDED" ]; then
-  echo "Logs: aws logs tail /aws/codebuild/$PROJECT ${REGION_ARGS[*]:-}" >&2
+  echo "Full logs: aws logs tail /aws/codebuild/$PROJECT ${REGION_ARGS[*]:-}" >&2
   exit 1
 fi
