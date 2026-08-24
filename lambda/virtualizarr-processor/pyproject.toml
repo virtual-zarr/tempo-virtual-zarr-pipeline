@@ -11,6 +11,9 @@ dependencies = [
     "pydantic>=2",
     "pydantic-zarr>=0.10",
     "virtualizarr[hdf]>=2.7",
+    # only pins versions, it can't add packages the tree doesn't require).
+    "requests>=2.31",
+    "virtualizarr[hdf]>=2.7",
     "zarr>=3.2.1",
 ]
 
