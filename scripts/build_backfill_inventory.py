@@ -138,6 +138,11 @@ def read_time_via_earthaccess(url: str) -> float:
             with h5py.File(f) as h5:
                 return float(h5["time"][0])
         except Exception as error:
+            # earthaccess raises this when it can't confirm us-west-2
+            # (no EC2 IMDS on CodeBuild/Lambda, earthaccess#444): it's
+            # configuration, not transient — retrying can't help.
+            if "not in-region" in str(error):
+                raise
             if attempt == READ_ATTEMPTS - 1:
                 raise
             delay = BACKOFF_SECONDS[min(attempt, len(BACKOFF_SECONDS) - 1)]

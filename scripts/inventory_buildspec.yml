@@ -1,6 +1,8 @@
 # Buildspec for the stack's InventoryBuild CodeBuild project: runs
-# scripts/build_backfill_inventory.py in-region (the DAAC's temporary S3
-# credentials only work from us-west-2). Started, with its source zip, by
+# scripts/build_backfill_inventory.py with --access external (EDL-authed
+# HTTPS). CodeBuild containers have no EC2 IMDS, so earthaccess cannot see
+# it is in us-west-2 and refuses s3:// links (earthaccess#444); HTTPS works
+# regardless. Started, with its source zip, by
 # scripts/build_inventory_remote.sh; COLLECTION / S3_URI / MAX_COUNT and the
 # EARTHDATA_TOKEN secret are wired up by the CDK project definition.
 version: 0.2
@@ -14,5 +16,6 @@ phases:
       - export PATH="$HOME/.local/bin:$PATH"
       - uv run scripts/build_backfill_inventory.py
         --collection "$COLLECTION"
+        --access external
         ${MAX_COUNT:+--max-count "$MAX_COUNT"}
         --s3-uri "$S3_URI"

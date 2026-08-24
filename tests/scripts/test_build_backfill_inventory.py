@@ -6,6 +6,8 @@ everything between them is covered here via an injectable ``read_time``.
 """
 
 import pathlib
+import sys
+import types
 
 import pydantic
 import pytest
@@ -13,6 +15,7 @@ from build_backfill_inventory import (
     InventoryError,
     build_inventory,
     dedupe_republications,
+    read_time_via_earthaccess,
     write_inventory,
 )
 from virtualizarr_processor.inventory import BackfillInventory
@@ -104,6 +107,32 @@ def test_duplicate_file_time_is_an_error() -> None:
 def test_empty_result_is_an_error() -> None:
     with pytest.raises(InventoryError, match="[Nn]o granules"):
         build([])
+
+
+def test_not_in_region_error_fails_fast(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """earthaccess's in-region refusal is config, not transient: no retries."""
+    calls = []
+
+    def refuse(urls: list[str]) -> list[object]:
+        calls.append(urls)
+        raise ValueError(
+            "We cannot open S3 links when we are not in-region, try using HTTPS links"
+        )
+
+    # The script imports earthaccess lazily inside the function; the real
+    # package is deliberately absent from the test env, so stub the module.
+    monkeypatch.setitem(sys.modules, "earthaccess", types.SimpleNamespace(open=refuse))
+    monkeypatch.setitem(sys.modules, "h5py", types.SimpleNamespace())
+    monkeypatch.setattr(
+        "build_backfill_inventory.time_module.sleep",
+        lambda _: pytest.fail("must not sleep/retry on the in-region error"),
+    )
+
+    with pytest.raises(ValueError, match="not in-region"):
+        read_time_via_earthaccess("s3://asdc-prod-protected/TEMPO/a.nc")
+    assert len(calls) == 1
 
 
 def test_written_inventory_round_trips_through_the_model(
