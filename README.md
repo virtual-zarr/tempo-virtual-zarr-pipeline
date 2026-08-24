@@ -447,27 +447,27 @@ curl -s "https://cmr.earthdata.nasa.gov/search/granules.umm_json?collection_conc
 ```
 
 Pick the test case by where the granule falls relative to the store. For the
-inventory built 2026-08-24 16:53 UTC — `S017` (00:41 UTC) plus
-`S001`–`S004` (11:00–13:00 UTC) of 2026-08-24 — the shortest full pass was
-(urls abbreviated to the granule file, all under
+inventory built 2026-08-24 19:04 UTC — `S002`–`S006` (11:40–14:40 UTC) of
+2026-08-24 — the shortest full pass was (urls abbreviated to the granule
+file, all under
 `s3://asdc-prod-protected/TEMPO/TEMPO_HCHO_L3_V04/<YYYY.MM.DD>/`):
 
 | Message url | Why | Expected consumer outcome |
 |---|---|---|
-| `TEMPO_HCHO_L3_V04_20260824T134044Z_S005.nc` | first scan after the newest slot (`S004`) | `WRITTEN` — appended to the axis |
-| `TEMPO_HCHO_L3_V04_20260824T130036Z_S004.nc` | newest slot itself, same UR | `WRITTEN` — slot overwritten in place, store unchanged |
-| `TEMPO_HCHO_L3_V04_20260824T000116Z_S016.nc` | before the oldest slot (`S017`) | `DEFERRED` — pending ledger; the re-sort job folds it in later |
+| `TEMPO_HCHO_L3_V04_20260824T154044Z_S007.nc` | first scan after the newest slot (`S006`) | `WRITTEN` — appended to the axis |
+| `TEMPO_HCHO_L3_V04_20260824T144044Z_S006.nc` | newest slot itself, same UR | `WRITTEN` — slot overwritten in place, store unchanged |
+| `TEMPO_HCHO_L3_V04_20260824T110012Z_S001.nc` | before the oldest slot (`S002`) | `DEFERRED` — pending ledger; the re-sort job folds it in later |
 
-Send appends oldest-first (`S005` before `S006`): an append lands only past
+Send appends oldest-first (`S007` before `S008`): an append lands only past
 the axis end, so a skipped-then-sent scan defers instead. Use CMR's `s3://`
-url form — it is what the poller enqueues — even where the backfill
+url form — it is what the poller enqueues — even where a backfill
 inventory recorded EDL HTTPS urls; the consumer resolves either. The queue
 is named `<stack>-queue`, the message shape is the poller's:
 
 ```bash
 aws sqs send-message \
   --queue-url "$(aws sqs get-queue-url --queue-name "$STACK_NAME-queue" --query QueueUrl --output text)" \
-  --message-body '{"url": "s3://asdc-prod-protected/TEMPO/TEMPO_HCHO_L3_V04/2026.08.24/TEMPO_HCHO_L3_V04_20260824T134044Z_S005.nc"}'
+  --message-body '{"url": "s3://asdc-prod-protected/TEMPO/TEMPO_HCHO_L3_V04/2026.08.24/TEMPO_HCHO_L3_V04_20260824T154044Z_S007.nc"}'
 ```
 
 Then watch the consumer's log for the outcome (`WRITTEN` / `DEFERRED`; a
