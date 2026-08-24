@@ -474,14 +474,41 @@ aws sqs send-message \
   --message-body '{"url": "s3://asdc-prod-protected/TEMPO/TEMPO_HCHO_L3_V04/2026.08.24/TEMPO_HCHO_L3_V04_20260824T154044Z_S007.nc"}'
 ```
 
+If nothing seems to happen, first confirm the consumer's event-source
+mapping is actually on (it prints `Enabled`; in the console this is the
+Lambda's Configuration → Triggers):
+
+```bash
+aws lambda list-event-source-mappings \
+  --query 'EventSourceMappings[?contains(FunctionArn, `processmessages`)].State' --output text
+```
+
 Then watch the consumer's log for the outcome (`WRITTEN` / `DEFERRED`; a
 `REJECTED` granule retries and lands in `<stack>-Dlq`, which should stay
-empty):
+empty). In the console: the function's Monitor tab → View CloudWatch logs →
+Live Tail; the queue's own Monitoring tab graphs messages waiting/in flight.
 
 ```bash
 aws logs tail "$(aws lambda list-functions \
   --query 'Functions[?contains(FunctionName, `processmessages`)].LoggingConfig.LogGroup | [0]' \
   --output text)" --follow
+```
+
+The store's axis and manifest are native icechunk data, readable from a
+laptop (only virtual-chunk reads are region-locked), so the result is one
+snippet away — an append grows the slot count and changes the newest
+granule; a deferred granule changes neither and shows up in the pending
+ledger instead:
+
+```bash
+uv run --env-file .env_hcho --env-file .env.local python -c "
+import zarr
+from virtualizarr_processor.processor import Processor
+from virtualizarr_processor.manifest import StoreManifest
+store = Processor().open_backfill_repo().readonly_session('main').store
+print(zarr.open_array(store, path='time').shape[0], 'slots; newest:',
+      StoreManifest.read(store).granules[-1].granule_ur)
+"
 ```
 
 Close the loop with `scripts/run_codebuild.sh -e .env_hcho -V`: an appended
