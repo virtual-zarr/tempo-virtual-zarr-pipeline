@@ -2,6 +2,7 @@
 
 import aws_cdk as cdk
 from aws_cdk.assertions import Match, Template
+from conftest import actions_of, iam_statements, resources_of
 from settings import StackSettings
 from stack import VirtualizarrSqsStack
 
@@ -56,7 +57,7 @@ def test_inventory_build_carries_processor_env() -> None:
     resolve the store from the same env contract as the Lambdas, so the
     project must carry it; VERIFY_ARGS is the per-build flags override.
     An imported bucket keeps the env values as literal strings."""
-    _template(ICECHUNK_BUCKET="ice-test").has_resource_properties(
+    _template(ICECHUNK_BUCKET="icechunk-test").has_resource_properties(
         "AWS::CodeBuild::Project",
         Match.object_like(
             {
@@ -75,7 +76,7 @@ def test_inventory_build_carries_processor_env() -> None:
                                 {
                                     "Name": "ICECHUNK_BUCKET",
                                     "Type": "PLAINTEXT",
-                                    "Value": "ice-test",
+                                    "Value": "icechunk-test",
                                 },
                                 {
                                     "Name": "ICECHUNK_PREFIX",
@@ -95,13 +96,12 @@ def test_inventory_build_reads_store_but_never_writes_it() -> None:
     """verify_store.py reads the icechunk store; the project must be able
     to read the storage prefix and must not gain writes outside the
     inventory prefix."""
-    from conftest import actions_of, iam_statements, resources_of
-
-    stmts = list(iam_statements(_template(ICECHUNK_BUCKET="ice-test"), "inventorybuild"))
+    template = _template(ICECHUNK_BUCKET="icechunk-test")
+    stmts = list(iam_statements(template, "inventorybuild"))
     assert any(
         any(a.startswith("s3:Get") for a in actions_of(s))
         and any(
-            isinstance(r, str) and r.endswith("ice-test/tempo/hcho/v04/*")
+            isinstance(r, str) and r.endswith("icechunk-test/tempo/hcho/v04/*")
             for r in resources_of(s)
         )
         for s in stmts
