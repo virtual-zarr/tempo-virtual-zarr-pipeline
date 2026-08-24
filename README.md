@@ -420,10 +420,14 @@ the real `v04`.
 ### Testing forward processing (small)
 
 The consumer and the poller are gated separately: `FORWARD_QUEUE_ENABLED=true`
-enables the SQS→consumer mapping, while the poller and its schedule exist only
-when `POLL_SCHEDULE_MINUTES` is set. Deploying with the consumer on and the
-poller off lets you feed the queue one hand-sent message at a time — the
-routing is idempotent, so a duplicate or re-sent message is harmless.
+enables the SQS→consumer mapping, while the poller and its schedule are
+created only when `POLL_SCHEDULE_MINUTES` is non-zero — and it **defaults to
+30**, so set `POLL_SCHEDULE_MINUTES=0` explicitly or the poller comes up with
+forward processing and (without `POLL_START_ISO`) floods the queue from its
+8-day first-poll lookback. Deploying with the consumer on and the poller off
+(`FORWARD_QUEUE_ENABLED=true`, `POLL_SCHEDULE_MINUTES=0`, redeploy) lets you
+feed the queue one hand-sent message at a time — the routing is idempotent,
+so a duplicate or re-sent message is harmless.
 
 The test deployment's backfill was run with `run_codebuild.sh -m 5`, so the
 store holds the five most recent granules as of the inventory build — with
@@ -483,8 +487,9 @@ aws logs tail "$(aws lambda list-functions \
 Close the loop with `scripts/run_codebuild.sh -e .env_hcho -V`: an appended
 granule becomes sampleable, and `-a "--completeness"` shows a deferred
 granule sitting in the pending ledger. Once this works, enabling the poller
-for real is step 4 above — set `POLL_START_ISO` to a recent time first so
-its first poll enqueues a handful of granules, not the full 8-day lookback.
+for real is step 4 above — drop `POLL_SCHEDULE_MINUTES=0` (restoring the
+30-minute default) and set `POLL_START_ISO` to a recent time first, so the
+first poll enqueues a handful of granules, not the full 8-day lookback.
 
 ### Teardown
 
