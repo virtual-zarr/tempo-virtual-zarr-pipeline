@@ -4,7 +4,7 @@
 
 **Goal:** Run `scripts/verify_store.py` in-region via the stack's existing InventoryBuild CodeBuild project, started from a laptop with one flag.
 
-**Architecture:** Reuse the InventoryBuild CodeBuild project instead of adding a second one: a new buildspec (`scripts/verify_buildspec.yml`) is selected at start time with CodeBuild's `--buildspec-override`, the CDK project definition gains the processor env vars and a read-only grant on the store prefix, and `scripts/build_inventory_remote.sh` gains a `-V` flag that starts a verify run instead of an inventory build. Everything else (source zip upload pinned to `git archive HEAD`, EARTHDATA_TOKEN from Secrets Manager, build polling, log pointers) is already built and is reused as-is.
+**Architecture:** Reuse the InventoryBuild CodeBuild project instead of adding a second one: a new buildspec (`scripts/verify_buildspec.yml`) is selected at start time with CodeBuild's `--buildspec-override`, the CDK project definition gains the processor env vars and a read-only grant on the store prefix, and the launcher `scripts/build_inventory_remote.sh` — no longer inventory-specific — is renamed to `scripts/run_codebuild.sh` and gains a `-V` flag that starts a verify run instead of an inventory build. Everything else (source zip upload pinned to `git archive HEAD`, EARTHDATA_TOKEN from Secrets Manager, build polling, log pointers) is already built and is reused as-is.
 
 **Tech Stack:** AWS CDK (Python), CodeBuild, bash, uv, pytest with `aws_cdk.assertions`.
 
@@ -24,6 +24,7 @@
 - **Skipped: scheduled (EventBridge) verify runs.** README says "periodically", but nothing today runs on a schedule and the human is actively debugging the test deployment; a manual launcher is the deliverable. Add a `events.Rule` targeting the project when routine cadence is actually wanted.
 - **Skipped: separate verify IAM role.** The inventory role gains read on the store prefix. It already writes the inventory prefix; read on the store is strictly less power than the pipeline lambdas hold. A dedicated role is warranted only if the project is ever exposed beyond stack operators.
 - **Both `EARTHDATA_TOKEN` and `EARTHDATA_SECRET_ARN` may end up set** on the project (the first from the existing Secrets Manager env var, the second from `processor_env`). That is fine: `virtualizarr_processor.granule` checks `EARTHDATA_TOKEN` first, and the role already has `secretsmanager:GetSecretValue` via the existing `grant_read`.
+- **The launcher is renamed (`build_inventory_remote.sh` → `run_codebuild.sh`), the CDK project is not.** Once the script starts verify runs too, its inventory-specific name misleads; the rename touches only four files. The CDK construct id `InventoryBuild` stays: renaming it would replace the deployed CodeBuild project and log group and break the `InventoryBuildProject` stack output, all for a cosmetic gain — a comment noting that verify runs share the project covers it.
 - **Timeout/compute reused** (8 h / SMALL). A default verify (8 samples, 5×5 windows) reads a few MB of ranged data; `--completeness` pages CMR listings. Both fit far inside the inventory build's envelope.
 
 ---
@@ -44,7 +45,7 @@ There is no unit test for buildspecs in this repo (`inventory_buildspec.yml` has
 ```yaml
 # Buildspec for verify runs of the stack's InventoryBuild CodeBuild project,
 # selected per-build with --buildspec-override by
-# scripts/build_inventory_remote.sh -V (the project's default buildspec stays
+# scripts/run_codebuild.sh -V (the project's default buildspec stays
 # scripts/inventory_buildspec.yml). Runs scripts/verify_store.py in-region:
 # the processor's obstore registry needs no EC2 IMDS, so s3:// sources work
 # from CodeBuild (see the script's docstring). The store location and
@@ -193,7 +194,7 @@ Extend the method docstring (after the sentence ending "Costs nothing while idle
 
 ```python
         The same project also runs ``scripts/verify_store.py`` when started
-        with ``build_inventory_remote.sh -V`` (a ``--buildspec-override`` to
+        with ``run_codebuild.sh -V`` (a ``--buildspec-override`` to
         ``scripts/verify_buildspec.yml``), which is why it carries the
         processor env and read access to the store prefix.
 ```
@@ -217,21 +218,42 @@ override, and IAM were the only differences from inventory builds."
 
 ---
 
-### Task 3: Launcher flag and docs
+### Task 3: Rename the launcher, add the verify flag, update docs
+
+The script stops being inventory-specific here, so it is renamed. `git mv`
+preserves history; only three other files reference the old name (found via
+`grep -rln build_inventory_remote --exclude-dir=.git .`): `README.md`,
+`scripts/inventory_buildspec.yml` (a comment), and `cdk/stack.py` (a
+docstring and a CfnOutput description). The CDK construct id
+`InventoryBuild` is deliberately NOT renamed — see Design Notes.
 
 **Files:**
-- Modify: `scripts/build_inventory_remote.sh`
-- Modify: `README.md:166` (the verification bullet in the deploy runbook)
+- Rename: `scripts/build_inventory_remote.sh` → `scripts/run_codebuild.sh` (via `git mv`, then modify)
+- Modify: `scripts/inventory_buildspec.yml` (comment only)
+- Modify: `cdk/stack.py:578` (docstring) and `cdk/stack.py:626-627` (CfnOutput description)
+- Modify: `README.md` (every mention of the old name, plus the verification bullet at line 166)
 
 **Interfaces:**
 - Consumes: `scripts/verify_buildspec.yml` (Task 1, exact path) and the project's `VERIFY_ARGS` env var (Task 2).
-- Produces: `build_inventory_remote.sh -e ENV_FILE -V [-a "FLAGS"]` starts a verify run and exits non-zero if the build (and therefore the verification) fails.
+- Produces: `scripts/run_codebuild.sh -e ENV_FILE` (inventory build, behavior unchanged) and `scripts/run_codebuild.sh -e ENV_FILE -V [-a "FLAGS"]` (verify run; exits non-zero if the build — and therefore the verification — fails).
+
+- [ ] **Step 0: Rename the script**
+
+```bash
+git mv scripts/build_inventory_remote.sh scripts/run_codebuild.sh
+```
 
 - [ ] **Step 1: Add `-V` / `-a` to the launcher**
 
-In `scripts/build_inventory_remote.sh`:
+In `scripts/run_codebuild.sh`:
 
-a. Usage heredoc — add after the `-u S3_URI` line:
+a. Usage heredoc — change its first line to
+
+```
+Usage: run_codebuild.sh -e ENV_FILE [-m MAX_COUNT] [-u S3_URI] [-V [-a ARGS]] [-n]
+```
+
+and add after the `-u S3_URI` line:
 
 ```
   -V            run scripts/verify_store.py instead of building an inventory
@@ -314,45 +336,72 @@ BUILD_ID="$(aws codebuild start-build ${REGION_ARGS[@]+"${REGION_ARGS[@]}"} \
 
 (the `${ARR[@]+...}` expansion form matches `REGION_ARGS` above and is safe under `set -u` with an empty array.)
 
-e. Header comment — extend the top-of-file comment's Usage/Examples block:
+e. Header comment — retitle for the widened scope. Replace the opening line
+
+```bash
+# Build a backfill inventory in-region via the stack's CodeBuild project.
+```
+
+with
+
+```bash
+# Run an in-region job via the stack's CodeBuild project: a backfill
+# inventory build (default) or a verify_store.py run (-V).
+```
+
+replace the `Usage:` line with
+
+```bash
+#   scripts/run_codebuild.sh -e ENV_FILE [-m MAX_COUNT] [-u S3_URI] [-V [-a ARGS]] [-n]
+```
+
+update the two `scripts/build_inventory_remote.sh` occurrences in the Examples block to `scripts/run_codebuild.sh`, and append to the Examples:
 
 ```bash
 #   # In-region verification of the deployed store:
-#   scripts/build_inventory_remote.sh -e .env_hcho -V
-#   scripts/build_inventory_remote.sh -e .env_hcho -V -a "--completeness"
+#   scripts/run_codebuild.sh -e .env_hcho -V
+#   scripts/run_codebuild.sh -e .env_hcho -V -a "--completeness"
 ```
 
 - [ ] **Step 2: Syntax-check and smoke the launcher**
 
-Run: `cd /workspace/repos/tempo-virtual-zarr-pipeline && bash -n scripts/build_inventory_remote.sh && bash scripts/build_inventory_remote.sh -h; echo "exit=$?"`
+Run: `cd /workspace/repos/tempo-virtual-zarr-pipeline && bash -n scripts/run_codebuild.sh && bash scripts/run_codebuild.sh -h; echo "exit=$?"`
 Expected: no syntax errors; usage text (including the new `-V` and `-a` lines) printed; `exit=2`.
 
-Also run: `uv run pre-commit run --files scripts/build_inventory_remote.sh`
+Also run: `uv run pre-commit run --files scripts/run_codebuild.sh`
 Expected: hooks pass (shellcheck, if configured, is the real check here).
 
-- [ ] **Step 3: Update the README runbook line**
+- [ ] **Step 3: Update the other references to the old name**
 
-`README.md` line 166 currently reads:
+In `scripts/inventory_buildspec.yml`, the header comment says "Started, with its source zip, by `scripts/build_inventory_remote.sh`;" — change the script name to `scripts/run_codebuild.sh`.
+
+In `cdk/stack.py` (`_build_inventory_project`): the docstring sentence "``scripts/build_inventory_remote.sh`` uploads ``git archive HEAD`` as the project's source zip..." becomes "``scripts/run_codebuild.sh`` uploads..."; the CfnOutput description "start one with scripts/build_inventory_remote.sh" becomes "start one with scripts/run_codebuild.sh".
+
+In `README.md`, replace every remaining occurrence of `build_inventory_remote.sh` with `run_codebuild.sh` (find them with `grep -n build_inventory_remote README.md`), and rewrite the verification bullet at line 166 from
 
 ```
 5. Run `uv run --env-file .env_hcho --env-file .env.local scripts/verify_store.py` after the promote (and periodically) to spot-check the store against its sources.
 ```
 
-Replace with:
+to
 
 ```
-5. Run `uv run --env-file .env_hcho --env-file .env.local scripts/verify_store.py` after the promote (and periodically) to spot-check the store against its sources — or run it in-region with `scripts/build_inventory_remote.sh -e .env_hcho -V` (add `-a "--completeness"` for extra flags), which starts the stack's CodeBuild project with a verify buildspec override.
+5. Run `uv run --env-file .env_hcho --env-file .env.local scripts/verify_store.py` after the promote (and periodically) to spot-check the store against its sources — or run it in-region with `scripts/run_codebuild.sh -e .env_hcho -V` (add `-a "--completeness"` for extra flags), which starts the stack's CodeBuild project with a verify buildspec override.
 ```
+
+Gate: `grep -rn build_inventory_remote --exclude-dir=.git --exclude-dir=docs .` from the repo root must return nothing (`docs/` is excluded because plan documents record history).
 
 - [ ] **Step 4: Commit**
 
 ```bash
-git add scripts/build_inventory_remote.sh README.md
-git commit -m "feat: -V flag starts an in-region verify_store CodeBuild run
+git add -A scripts/ cdk/stack.py README.md
+git commit -m "feat: rename launcher to run_codebuild.sh; -V runs verify_store in-region
 
-Reuses the InventoryBuild launcher end to end (source zip pinned to git
-HEAD, account guard, polling); -V only adds a buildspec override and a
-VERIFY_ARGS env override. Build failure == verification failure."
+The script is no longer inventory-specific: -V starts the same CodeBuild
+project with a buildspec override (scripts/verify_buildspec.yml) and a
+VERIFY_ARGS env override, reusing the source-zip pinning, account guard,
+and polling unchanged. Build failure == verification failure. The CDK
+construct id InventoryBuild is kept to avoid replacing deployed infra."
 ```
 
 ---
@@ -384,8 +433,8 @@ Expected: clean. (If the repo's pre-commit config runs mypy differently, prefer 
 The sandbox has no AWS credentials, so the deployed behavior is exercised by the human against the test stack:
 
 1. `cdk deploy` (or the repo's usual deploy path) to pick up the project env + grant changes.
-2. Dry run first: `scripts/build_inventory_remote.sh -e .env_hcho -V -n` — confirms account, project, and mode without starting anything.
-3. `scripts/build_inventory_remote.sh -e .env_hcho -V` — uploads `git archive HEAD`, starts the build, polls to completion. Exit 0 == store verified; on failure the script prints the `aws logs tail` command for the discrepancy list (verify_store writes findings to stderr, which lands in the build log).
+2. Dry run first: `scripts/run_codebuild.sh -e .env_hcho -V -n` — confirms account, project, and mode without starting anything.
+3. `scripts/run_codebuild.sh -e .env_hcho -V` — uploads `git archive HEAD`, starts the build, polls to completion. Exit 0 == store verified; on failure the script prints the `aws logs tail` command for the discrepancy list (verify_store writes findings to stderr, which lands in the build log).
 4. `-a "--completeness"` for the CMR diff; `-a "--offline"` if CMR is flaky.
 
 ## Self-review notes
@@ -393,4 +442,4 @@ The sandbox has no AWS credentials, so the deployed behavior is exercised by the
 - Env contract covered: `ICECHUNK_BUCKET/REGION/PREFIX`, `TEMPO_COLLECTION`, `VIRTUAL_CHUNK_PREFIX` via `processor_env` merge; Earthdata via the existing `EARTHDATA_TOKEN` Secrets Manager env var (checked first by `granule.py`'s credential chain). `VIRTUAL_CHUNK_REGION` defaults to us-west-2 in `processor.py`, correct for TEMPO.
 - IAM covered: store read via new `grant_read`; secret read pre-existing; virtual chunk reads use in-process Earthdata temporary credentials (`icechunk_virtual_credentials`), not the build role, so no grant on `asdc-prod-protected` is needed — same as the Lambdas.
 - `Repository.open_or_create` on an existing store only opens; read-only credentials suffice (the store exists in any deployment worth verifying — a missing store fails loudly, which is the correct verify outcome).
-- Names consistent across tasks: `scripts/verify_buildspec.yml`, `VERIFY_ARGS`, `-V`/`-a` appear identically in Tasks 1, 2, and 3.
+- Names consistent across tasks: `scripts/verify_buildspec.yml`, `scripts/run_codebuild.sh`, `VERIFY_ARGS`, `-V`/`-a` appear identically in Tasks 1, 2, and 3.
