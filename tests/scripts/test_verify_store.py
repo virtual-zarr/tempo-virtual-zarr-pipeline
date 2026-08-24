@@ -195,6 +195,26 @@ def test_completeness_reports_granule_missing_from_store(
     )
 
 
+def test_completeness_matches_cmr_urs_with_nc_suffix(tiny: TinyCollection) -> None:
+    """CMR's GranuleUR carries the .nc file extension for this collection;
+    the pipeline's URs are filename stems. The diff must compare stems, not
+    raw strings — otherwise every granule double-reports as missing."""
+    urs = [f"{entry.granule_ur}.nc" for entry in tiny.inventory.granules]
+    assert (
+        vs.verify_completeness("C1", tiny.inventory, set(), search=fake_search(urs))
+        == []
+    )
+    # A genuinely absent granule is still reported, suffix or not.
+    problems = vs.verify_completeness(
+        "C1", tiny.inventory, set(), search=fake_search(urs + ["brand_new.nc"])
+    )
+    assert len(problems) == 1 and "brand_new.nc" in problems[0]
+    problems = vs.verify_completeness(
+        "C1", tiny.inventory, set(), search=fake_search(urs[:-1])
+    )
+    assert len(problems) == 1 and "CMR no longer lists it" in problems[0]
+
+
 def test_completeness_narrates_counts(
     tiny: TinyCollection, capsys: pytest.CaptureFixture[str]
 ) -> None:

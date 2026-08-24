@@ -336,15 +336,27 @@ def verify_completeness(
         f"{len(manifest.granules)}, pending ledger {len(ledger_urs)}",
         file=sys.stderr,
     )
-    known = {entry.granule_ur for entry in manifest.granules} | ledger_urs
+
+    # CMR's GranuleUR carries the .nc file extension for this collection,
+    # while the pipeline's URs are filename stems (build_backfill_inventory
+    # and the processor both strip it). Diff on stems; report CMR's form
+    # verbatim.
+    def stem(ur: str) -> str:
+        return ur.removesuffix(".nc")
+
+    cmr_stems = {stem(ur) for ur in cmr_urs}
+    known = {stem(entry.granule_ur) for entry in manifest.granules}
+    known |= {stem(ur) for ur in ledger_urs}
     problems = [
         f"completeness: {ur} exists in CMR but is neither in the store "
         "manifest nor the pending ledger"
-        for ur in sorted(cmr_urs - known)
+        for ur in sorted(cmr_urs)
+        if stem(ur) not in known
     ]
     problems += [
         f"completeness: {ur} is in the store but CMR no longer lists it"
-        for ur in sorted({e.granule_ur for e in manifest.granules} - cmr_urs)
+        for ur in sorted(e.granule_ur for e in manifest.granules)
+        if stem(ur) not in cmr_stems
     ]
     return problems
 
