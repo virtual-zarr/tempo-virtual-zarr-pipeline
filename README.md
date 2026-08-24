@@ -222,72 +222,9 @@ else a fixed lookback.
 > the queue could subscribe directly, with the poller kept as a backstop for
 > missed notifications.
 
-#### Testing forward processing (small)
-
-The consumer and the poller are gated separately: `FORWARD_QUEUE_ENABLED=true`
-enables the SQS→consumer mapping, while the poller and its schedule exist only
-when `POLL_SCHEDULE_MINUTES` is set. Deploying with the consumer on and the
-poller off lets you feed the queue one hand-sent message at a time — the
-routing is idempotent, so a duplicate or re-sent message is harmless.
-
-The test deployment's backfill was run with `run_codebuild.sh -m 5`, so its
-store holds the five most recent granules as of the inventory build — with
-hourly TEMPO scans, an axis of roughly five hours. That makes every routing
-outcome easy to trigger: almost everything in CMR is older than the store
-(the defer case), and a fresh append candidate is published within the hour.
-First confirm what the store holds:
-
-```bash
-aws s3 cp "s3://$ICECHUNK_BUCKET/tempo/hcho/inventory/hcho.json" - \
-  | jq -r '.granules[] | "\(.granule_ur) \(.url)"'
-```
-
-then list CMR's most recent granules for the collection (`concept_id` is in
-`lambda/virtualizarr-processor/virtualizarr_processor/collections/<collection>.toml`;
-metadata needs no Earthdata credentials):
-
-```bash
-curl -s "https://cmr.earthdata.nasa.gov/search/granules.umm_json?collection_concept_id=C3685897141-LARC_CLOUD&sort_key=-start_date&page_size=10" \
-  | jq -r '.items[].umm | .GranuleUR + " " + (.RelatedUrls[] | select(.Type=="GET DATA VIA DIRECT ACCESS" and (.URL|endswith(".nc"))) | .URL)'
-```
-
-Pick the test case by where the granule falls relative to the store:
-
-| Granule sent | Expected consumer outcome |
-|---|---|
-| newer than the store's newest slot | `WRITTEN` — appended to the axis |
-| already in the store (same UR) | `WRITTEN` — slot overwritten in place, store unchanged |
-| older than the store's oldest slot | `DEFERRED` — recorded in the pending ledger; the re-sort job folds it in later |
-
-With the five-slot store, the shortest full pass is: the next scan after the
-store's newest (append), the store's newest itself (in-place overwrite), and
-any scan from before the store's ~5 h window (defer). For example, if the
-store ends at the `S005` scan of 2026-08-24, that day's `S006` granule tests
-a real append. Send it (the queue is named `<stack>-queue`; the message shape
-is the poller's):
-
-```bash
-aws sqs send-message \
-  --queue-url "$(aws sqs get-queue-url --queue-name "$STACK_NAME-queue" --query QueueUrl --output text)" \
-  --message-body '{"url": "s3://asdc-prod-protected/TEMPO/TEMPO_HCHO_L3_V04/2026.08.24/TEMPO_HCHO_L3_V04_20260824T144044Z_S006.nc"}'
-```
-
-Then watch the consumer's log for the outcome (`WRITTEN` / `DEFERRED`; a
-`REJECTED` granule retries and lands in `<stack>-Dlq`, which should stay
-empty):
-
-```bash
-aws logs tail "$(aws lambda list-functions \
-  --query 'Functions[?contains(FunctionName, `processmessages`)].LoggingConfig.LogGroup | [0]' \
-  --output text)" --follow
-```
-
-Close the loop with `scripts/run_codebuild.sh -e .env_hcho -V`: an appended
-granule becomes sampleable, and `-a "--completeness"` shows a deferred
-granule sitting in the pending ledger. Once this works, enabling the poller
-for real is the runbook's step 4 — set `POLL_START_ISO` to a recent time
-first so its first poll enqueues a handful of granules, not the full 8-day
-lookback.
+A hand-driven recipe for exercising this path one granule at a time is in
+[Testing forward processing (small)](#testing-forward-processing-small),
+under Deploying and running.
 
 ### Verification
 
@@ -455,7 +392,10 @@ is baked into the Lambda environment.
    `POLL_START_ISO` to the inventory's build time in `.env_hcho`, then
    redeploy. The poller's first poll then picks up granules published while
    the backfill ran, and the re-sort job folds in anything that arrived out
-   of order.
+   of order. To smoke-test the consumer with hand-sent messages before
+   turning the poller on, see
+   [Testing forward processing (small)](#testing-forward-processing-small)
+   below.
 
 5. Run
    `uv run --env-file .env_hcho --env-file .env.local scripts/verify_store.py`
@@ -476,6 +416,75 @@ uv run --env-file .env_no2 --env-file .env.local cdk deploy
 To trial the no2 stack the same way, add `-m 50` and set
 `ICECHUNK_PREFIX=v04-trial` in `.env_no2` first — `.env_no2` ships pointed at
 the real `v04`.
+
+### Testing forward processing (small)
+
+The consumer and the poller are gated separately: `FORWARD_QUEUE_ENABLED=true`
+enables the SQS→consumer mapping, while the poller and its schedule exist only
+when `POLL_SCHEDULE_MINUTES` is set. Deploying with the consumer on and the
+poller off lets you feed the queue one hand-sent message at a time — the
+routing is idempotent, so a duplicate or re-sent message is harmless.
+
+The test deployment's backfill was run with `run_codebuild.sh -m 5`, so the
+store holds the five most recent granules as of the inventory build — with
+hourly TEMPO scans, an axis a few hours long. That makes every routing
+outcome easy to trigger: almost everything in CMR is older than the store
+(the defer case), and a fresh append candidate is published within the hour.
+First confirm what the store holds:
+
+```bash
+aws s3 cp "s3://$ICECHUNK_BUCKET/tempo/hcho/inventory/hcho.json" - \
+  | jq -r '.granules[] | "\(.granule_ur) \(.url)"'
+```
+
+then list CMR's most recent granules for the collection (`concept_id` is in
+`lambda/virtualizarr-processor/virtualizarr_processor/collections/<collection>.toml`;
+metadata needs no Earthdata credentials):
+
+```bash
+curl -s "https://cmr.earthdata.nasa.gov/search/granules.umm_json?collection_concept_id=C3685897141-LARC_CLOUD&sort_key=-start_date&page_size=10" \
+  | jq -r '.items[].umm | .GranuleUR + " " + (.RelatedUrls[] | select(.Type=="GET DATA VIA DIRECT ACCESS" and (.URL|endswith(".nc"))) | .URL)'
+```
+
+Pick the test case by where the granule falls relative to the store. For the
+inventory built 2026-08-24 16:53 UTC — `S017` (00:41 UTC) plus
+`S001`–`S004` (11:00–13:00 UTC) of 2026-08-24 — the shortest full pass was
+(urls abbreviated to the granule file, all under
+`s3://asdc-prod-protected/TEMPO/TEMPO_HCHO_L3_V04/<YYYY.MM.DD>/`):
+
+| Message url | Why | Expected consumer outcome |
+|---|---|---|
+| `TEMPO_HCHO_L3_V04_20260824T134044Z_S005.nc` | first scan after the newest slot (`S004`) | `WRITTEN` — appended to the axis |
+| `TEMPO_HCHO_L3_V04_20260824T130036Z_S004.nc` | newest slot itself, same UR | `WRITTEN` — slot overwritten in place, store unchanged |
+| `TEMPO_HCHO_L3_V04_20260824T000116Z_S016.nc` | before the oldest slot (`S017`) | `DEFERRED` — pending ledger; the re-sort job folds it in later |
+
+Send appends oldest-first (`S005` before `S006`): an append lands only past
+the axis end, so a skipped-then-sent scan defers instead. Use CMR's `s3://`
+url form — it is what the poller enqueues — even where the backfill
+inventory recorded EDL HTTPS urls; the consumer resolves either. The queue
+is named `<stack>-queue`, the message shape is the poller's:
+
+```bash
+aws sqs send-message \
+  --queue-url "$(aws sqs get-queue-url --queue-name "$STACK_NAME-queue" --query QueueUrl --output text)" \
+  --message-body '{"url": "s3://asdc-prod-protected/TEMPO/TEMPO_HCHO_L3_V04/2026.08.24/TEMPO_HCHO_L3_V04_20260824T134044Z_S005.nc"}'
+```
+
+Then watch the consumer's log for the outcome (`WRITTEN` / `DEFERRED`; a
+`REJECTED` granule retries and lands in `<stack>-Dlq`, which should stay
+empty):
+
+```bash
+aws logs tail "$(aws lambda list-functions \
+  --query 'Functions[?contains(FunctionName, `processmessages`)].LoggingConfig.LogGroup | [0]' \
+  --output text)" --follow
+```
+
+Close the loop with `scripts/run_codebuild.sh -e .env_hcho -V`: an appended
+granule becomes sampleable, and `-a "--completeness"` shows a deferred
+granule sitting in the pending ledger. Once this works, enabling the poller
+for real is step 4 above — set `POLL_START_ISO` to a recent time first so
+its first poll enqueues a handful of granules, not the full 8-day lookback.
 
 ### Teardown
 
