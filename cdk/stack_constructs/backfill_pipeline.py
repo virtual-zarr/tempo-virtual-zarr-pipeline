@@ -118,16 +118,16 @@ class BackfillPipeline(Construct):
         self.functions["partition"].add_to_role_policy(data_policy)
 
         if icechunk_prefix and inventory_prefix:
-            self.functions["partition"].add_to_role_policy(
-                iam.PolicyStatement(
-                    actions=["s3:GetObject"],
-                    resources=[
-                        icechunk_bucket.arn_for_objects(
-                            f"{inventory_prefix.strip('/')}/*"
-                        )
-                    ],
-                )
+            # init and promote re-read the inventory (axis sizing, final
+            # validation), not just partition.
+            inventory_policy = iam.PolicyStatement(
+                actions=["s3:GetObject"],
+                resources=[
+                    icechunk_bucket.arn_for_objects(f"{inventory_prefix.strip('/')}/*")
+                ],
             )
+            for action in ("partition", "init", "promote"):
+                self.functions[action].add_to_role_policy(inventory_policy)
 
         self.state_machine = self._build_state_machine(
             icechunk_bucket,
