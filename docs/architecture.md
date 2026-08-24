@@ -28,8 +28,9 @@ instead of returning bytes from a changed file.
 Each collection is deployed as its own CDK stack, configured through typed
 settings (pydantic `BaseSettings`). A scheduled Lambda polls CMR for new
 revisions, an SQS queue feeds a consumer Lambda with reserved concurrency
-1, and scheduled jobs handle re-sort, garbage collection, and the backfill
-state machine. The manifest and pending ledger are stored inside the
+1, scheduled jobs handle re-sort, garbage collection, and the backfill
+state machine, and an on-demand CodeBuild project builds backfill
+inventories in-region. The manifest and pending ledger are stored inside the
 Icechunk repo and commit atomically with the data they describe.
 
 ![One CDK stack per collection](./fig2-forward-architecture.svg)
@@ -40,7 +41,10 @@ file, so errors in the pipeline's own bookkeeping are still caught.
 
 ## 3. Backfill
 
-The historical archive is loaded with a partitioned fork/merge. A
+The historical archive is loaded with a partitioned fork/merge. The
+inventory is built by the stack's CodeBuild project, because the DAAC's
+temporary source-bucket credentials only work from us-west-2; each run
+executes the committed builder script from a source zip of the repo. The
 validated inventory defines the full time axis up front, workers write
 disjoint slot ranges into Icechunk forks, and each partition is merged
 into a single commit on the `backfill` branch. The promote step

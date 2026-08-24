@@ -52,6 +52,8 @@ import numpy as np
 import xarray as xr
 import zarr
 from icechunk import Repository
+from obspec_utils.readers import BlockStoreReader
+from virtualizarr_processor.granule import make_registry
 from virtualizarr_processor.inventory import BackfillInventory
 from virtualizarr_processor.manifest import (
     MANIFEST_ARRAYS,
@@ -72,15 +74,17 @@ CmrLookup = Callable[[datetime], Optional[tuple[str, str]]]
 
 @contextmanager
 def open_source(url: str) -> Iterator[h5py.File]:
-    """Open the source granule with h5py, locally or via earthaccess."""
-    if url.startswith("file://"):
-        with h5py.File(url.removeprefix("file://")) as h5:
-            yield h5
-        return
-    import earthaccess
+    """Open the source granule with h5py over cached ranged reads.
 
-    [f] = earthaccess.open([url])
-    with h5py.File(f) as h5:
+    Uses the processor's own registry (obstore + Earthdata credentials), the
+    read path the deployed workers use: unlike earthaccess it needs no EC2
+    IMDS to prove it is in-region, so s3:// sources work from CloudShell,
+    CodeBuild, and Lambda. The block reader LRU-caches 1 MiB ranges, which
+    suits h5py's many small scattered reads.
+    """
+    registry = make_registry(url)
+    store, path = registry.resolve(url)
+    with BlockStoreReader(store, path) as reader, h5py.File(reader) as h5:
         yield h5
 
 
@@ -195,70 +199,108 @@ def verify_store(
 
     problems: list[str] = []
     for index in indices:
-        entry = manifest.granules[index]
-        url = entry.url
-        if cmr_lookup is not None:
-            found = cmr_lookup(axis_datetime(float(axis[index])))
-            if found is None:
-                problems.append(
-                    f"slot {index}: CMR has no granule near "
-                    f"{axis_datetime(float(axis[index])).isoformat()} "
-                    f"(manifest says {entry.granule_ur})"
-                )
-                continue
-            url, granule_ur = found
-            if url != entry.url:
-                problems.append(
-                    f"slot {index}: manifest url {entry.url} differs from "
-                    f"CMR's current url {url} ({granule_ur}); comparing "
-                    "against CMR's"
-                )
+        before = len(problems)
         try:
-            with open_source_file(url) as h5:
-                if float(h5["time"][0]) != float(axis[index]):
+            entry = manifest.granules[index]
+            url = entry.url
+            if cmr_lookup is not None:
+                found = cmr_lookup(axis_datetime(float(axis[index])))
+                if found is None:
                     problems.append(
-                        f"slot {index}: source /time {float(h5['time'][0])!r} != "
-                        f"store axis {float(axis[index])!r} ({url})"
+                        f"slot {index}: CMR has no granule near "
+                        f"{axis_datetime(float(axis[index])).isoformat()} "
+                        f"(manifest says {entry.granule_ur})"
                     )
                     continue
-                for name in variables:
-                    dataset = _source_dataset(h5, name)
-                    if dataset is None:
-                        problems.append(
-                            f"slot {index}: variable {name!r} missing from source {url}"
-                        )
-                        continue
-                    array = cast(zarr.Array, group[name])
-                    ny, nx = array.shape[1], array.shape[2]
-                    y0 = int(rng.integers(0, max(1, ny - window)))
-                    x0 = int(rng.integers(0, max(1, nx - window)))
-                    win = np.s_[y0 : y0 + window, x0 : x0 + window]
-                    source = np.asarray(
-                        dataset[0][win] if dataset.ndim == 3 else dataset[win]
+                url, granule_ur = found
+                if url != entry.url:
+                    problems.append(
+                        f"slot {index}: manifest url {entry.url} differs from "
+                        f"CMR's current url {url} ({granule_ur}); comparing "
+                        "against CMR's"
                     )
-                    # Index the window directly so only its chunks are read.
-                    stored = np.asarray(array[(index, *win)])
-                    if not np.array_equal(stored, source):
-                        problems.append(
-                            f"slot {index}: {name}[{y0}:{y0 + window},"
-                            f"{x0}:{x0 + window}] raw bytes differ from {url}"
-                        )
-                        continue
-                    # Window before loading: .values on the full slice would
-                    # fetch every chunk of a 2950x7750 decoded field to
-                    # compare a tiny window.
-                    read = np.asarray(decoded[name].isel(time=index)[win].values)
-                    if not _values_match(read, _mask_fill(source, dataset)):
-                        problems.append(
-                            f"slot {index}: {name}[{y0}:{y0 + window},"
-                            f"{x0}:{x0 + window}] decoded values differ from "
-                            f"the source's fill convention ({url})"
-                        )
-        except Exception as error:  # a read failure is a finding, not a crash
-            problems.append(
-                f"slot {index}: reading {url} failed: {type(error).__name__}: {error}"
+            _check_slot(
+                problems,
+                index,
+                url,
+                group,
+                decoded,
+                variables,
+                rng,
+                window,
+                open_source_file,
+                axis,
+            )
+        finally:
+            # Narrate every slot, findings or not: a green log should say
+            # what was checked, not just that nothing failed.
+            new = len(problems) - before
+            print(
+                f"slot {index} @ {axis_datetime(float(axis[index])).isoformat()}"
+                f" ({url}): {'ok' if new == 0 else f'{new} problem(s)'}",
+                file=sys.stderr,
             )
     return problems
+
+
+def _check_slot(
+    problems: list[str],
+    index: int,
+    url: str,
+    group: zarr.Group,
+    decoded: xr.Dataset,
+    variables: list[str],
+    rng: np.random.Generator,
+    window: int,
+    open_source_file: Callable[[str], Any],
+    axis: np.ndarray,
+) -> None:
+    """Compare one sampled slot against its source, appending findings."""
+    try:
+        with open_source_file(url) as h5:
+            if float(h5["time"][0]) != float(axis[index]):
+                problems.append(
+                    f"slot {index}: source /time {float(h5['time'][0])!r} != "
+                    f"store axis {float(axis[index])!r} ({url})"
+                )
+                return
+            for name in variables:
+                dataset = _source_dataset(h5, name)
+                if dataset is None:
+                    problems.append(
+                        f"slot {index}: variable {name!r} missing from source {url}"
+                    )
+                    continue
+                array = cast(zarr.Array, group[name])
+                ny, nx = array.shape[1], array.shape[2]
+                y0 = int(rng.integers(0, max(1, ny - window)))
+                x0 = int(rng.integers(0, max(1, nx - window)))
+                win = np.s_[y0 : y0 + window, x0 : x0 + window]
+                source = np.asarray(
+                    dataset[0][win] if dataset.ndim == 3 else dataset[win]
+                )
+                # Index the window directly so only its chunks are read.
+                stored = np.asarray(array[(index, *win)])
+                if not np.array_equal(stored, source):
+                    problems.append(
+                        f"slot {index}: {name}[{y0}:{y0 + window},"
+                        f"{x0}:{x0 + window}] raw bytes differ from {url}"
+                    )
+                    continue
+                # Window before loading: .values on the full slice would
+                # fetch every chunk of a 2950x7750 decoded field to
+                # compare a tiny window.
+                read = np.asarray(decoded[name].isel(time=index)[win].values)
+                if not _values_match(read, _mask_fill(source, dataset)):
+                    problems.append(
+                        f"slot {index}: {name}[{y0}:{y0 + window},"
+                        f"{x0}:{x0 + window}] decoded values differ from "
+                        f"the source's fill convention ({url})"
+                    )
+    except Exception as error:  # a read failure is a finding, not a crash
+        problems.append(
+            f"slot {index}: reading {url} failed: {type(error).__name__}: {error}"
+        )
 
 
 def _source_dataset(h5: h5py.File, name: str) -> h5py.Dataset | None:
@@ -289,15 +331,32 @@ def verify_completeness(
         if not items or not search_after:
             break
 
-    known = {entry.granule_ur for entry in manifest.granules} | ledger_urs
+    print(
+        f"completeness: CMR lists {len(cmr_urs)} granules; manifest has "
+        f"{len(manifest.granules)}, pending ledger {len(ledger_urs)}",
+        file=sys.stderr,
+    )
+
+    # CMR's GranuleUR carries the .nc file extension for this collection,
+    # while the pipeline's URs are filename stems (build_backfill_inventory
+    # and the processor both strip it). Diff on stems; report CMR's form
+    # verbatim.
+    def stem(ur: str) -> str:
+        return ur.removesuffix(".nc")
+
+    cmr_stems = {stem(ur) for ur in cmr_urs}
+    known = {stem(entry.granule_ur) for entry in manifest.granules}
+    known |= {stem(ur) for ur in ledger_urs}
     problems = [
         f"completeness: {ur} exists in CMR but is neither in the store "
         "manifest nor the pending ledger"
-        for ur in sorted(cmr_urs - known)
+        for ur in sorted(cmr_urs)
+        if stem(ur) not in known
     ]
     problems += [
         f"completeness: {ur} is in the store but CMR no longer lists it"
-        for ur in sorted({e.granule_ur for e in manifest.granules} - cmr_urs)
+        for ur in sorted(e.granule_ur for e in manifest.granules)
+        if stem(ur) not in cmr_stems
     ]
     return problems
 

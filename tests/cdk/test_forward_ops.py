@@ -38,6 +38,16 @@ def test_consumer_is_single_writer() -> None:
     )
 
 
+def test_consumer_event_source_has_no_scaling_config() -> None:
+    """Lambda rejects a mapping whose MaximumConcurrency exceeds the
+    function's reserved concurrency (1), and the setting's floor is 2 — so
+    the consumer's event source must not set one, or the deploy fails."""
+    for resource in (
+        _template().find_resources("AWS::Lambda::EventSourceMapping").values()
+    ):
+        assert "ScalingConfig" not in resource["Properties"]
+
+
 def test_forward_state_env_reaches_lambdas() -> None:
     template = _template()
     template.has_resource_properties(

@@ -1,0 +1,19 @@
+# Buildspec for verify runs of the stack's InventoryBuild CodeBuild project,
+# selected per-build with --buildspec-override by
+# scripts/run_codebuild.sh -V (the project's default buildspec stays
+# scripts/inventory_buildspec.yml). Runs scripts/verify_store.py in-region:
+# the processor's obstore registry needs no EC2 IMDS, so s3:// sources work
+# from CodeBuild (see the script's docstring). The store location and
+# Earthdata material come from the project env (processor env contract plus
+# the EARTHDATA_TOKEN secret); VERIFY_ARGS carries extra flags, e.g.
+# "--completeness" or "--samples 16".
+version: 0.2
+
+phases:
+  install:
+    commands:
+      - curl -LsSf https://astral.sh/uv/install.sh | sh
+  build:
+    commands:
+      - export PATH="$HOME/.local/bin:$PATH"
+      - uv run scripts/verify_store.py ${VERIFY_ARGS}

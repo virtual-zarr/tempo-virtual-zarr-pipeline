@@ -205,6 +205,7 @@ requests==2.34.2
     # via
     #   moto
     #   responses
+    #   virtualizarr-processor
 responses==0.26.2
     # via moto
 ruff==0.14.9

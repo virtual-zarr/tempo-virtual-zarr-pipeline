@@ -114,9 +114,10 @@ def test_no_bucket_wide_writes_remain_when_prefix_set(backfill: bool) -> None:
             assert BUCKET_WIDE not in resources_of(stmt)
 
 
-def test_backfill_partition_gets_inventory_grant_from_settings() -> None:
+@pytest.mark.parametrize("marker", ["partitionfn", "initfn", "promotefn"])
+def test_inventory_readers_get_inventory_grant_from_settings(marker: str) -> None:
     template = _stack_template(BACKFILL_ENABLED=True)
-    stmts = list(iam_statements(template, "partitionfn"))
+    stmts = list(iam_statements(template, marker))
     assert any(
         resources_of(s) == ["arn:<REF>:s3:::ice-test/tempo/hcho/inventory/*"]
         and actions_of(s) == ["s3:GetObject"]

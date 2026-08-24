@@ -29,14 +29,16 @@ set -euo pipefail
 
 usage() {
   cat >&2 <<'EOF'
-Usage: start_backfill.sh [-s STACK] [-r REGION] [-e ENV_FILE] <execution-name> <inventory-uri>
+Usage: start_backfill.sh [-s STACK] [-r REGION] [-e ENV_FILE] [execution-name] <inventory-uri>
 
   -s STACK     CloudFormation stack name to read BackfillStateMachineArn from
   -r REGION    AWS region the stack is deployed in
   -e ENV_FILE  read STACK_NAME / ACCOUNT_REGION from this file (e.g. .env_hcho)
 
-  e.g. start_backfill.sh -e .env_hcho \
-         hcho-backfill-20260820 s3://my-bucket/tempo/hcho/inventory/hcho.json
+  With no execution-name, one is generated as <stack>-backfill-<UTC timestamp>,
+  which is always unique — Step Functions rejects a reused name for 90 days.
+
+  e.g. start_backfill.sh -e .env_hcho s3://my-bucket/tempo/hcho/inventory/hcho.json
 EOF
   exit 2
 }
@@ -56,9 +58,11 @@ while getopts ":s:r:e:h" opt; do
 done
 shift $((OPTIND - 1))
 
-[ $# -eq 2 ] || usage
-EXECUTION_NAME="$1"
-INVENTORY_URI="$2"
+case $# in
+  1) EXECUTION_NAME=""; INVENTORY_URI="$1" ;;  # name generated after STACK resolves
+  2) EXECUTION_NAME="$1"; INVENTORY_URI="$2" ;;
+  *) usage ;;
+esac
 
 case "$INVENTORY_URI" in
   s3://*) ;;
@@ -67,15 +71,23 @@ esac
 
 # Step Functions rejects these after the describe-stacks round trip; catching it
 # here keeps the failure adjacent to the typo.
-if [ ${#EXECUTION_NAME} -gt 80 ] || [[ "$EXECUTION_NAME" =~ [[:space:]] ]]; then
+if [ -n "$EXECUTION_NAME" ] && { [ ${#EXECUTION_NAME} -gt 80 ] || [[ "$EXECUTION_NAME" =~ [[:space:]] ]]; }; then
   echo "Error: execution name must be <=80 chars with no whitespace." >&2
   exit 2
 fi
 
 env_get() {
   # Read KEY from the env file, stripping quotes; empty string if absent.
+  # Semi-sensitive keys (AWS_PROFILE, ACCOUNT_ID, ...) live in .env.local
+  # beside the env file, so fall back to it when the key is missing there.
   [ -n "$ENV_FILE" ] && [ -f "$ENV_FILE" ] || return 0
-  grep -E "^$1=" "$ENV_FILE" | tail -n1 | cut -d= -f2- | sed 's/^["'\'']//;s/["'\'']$//'
+  local v
+  v="$(grep -E "^$1=" "$ENV_FILE" | tail -n1 | cut -d= -f2- | sed 's/^["'\'']//;s/["'\'']$//')"
+  local local_file="$(dirname "$ENV_FILE")/.env.local"
+  if [ -z "$v" ] && [ -f "$local_file" ]; then
+    v="$(grep -E "^$1=" "$local_file" | tail -n1 | cut -d= -f2- | sed 's/^["'\'']//;s/["'\'']$//')"
+  fi
+  printf '%s\n' "$v"
 }
 
 if [ -n "$ENV_FILE" ] && [ ! -f "$ENV_FILE" ]; then
@@ -86,12 +98,21 @@ fi
 STACK="${STACK_ARG:-${STACK:-$(env_get STACK_NAME)}}"
 REGION="${REGION_ARG:-${REGION:-$(env_get ACCOUNT_REGION)}}"
 
+# Let the env file pick the AWS profile too; an exported AWS_PROFILE wins.
+if [ -z "${AWS_PROFILE:-}" ] && [ -n "$(env_get AWS_PROFILE)" ]; then
+  export AWS_PROFILE="$(env_get AWS_PROFILE)"
+fi
+
 # No default stack: this repo deploys one stack per collection, so guessing
 # which to target would start a backfill against the wrong store.
 if [ -z "$STACK" ]; then
   echo "Error: no stack given. Pass -s STACK, set STACK, or use -e ENV_FILE." >&2
   usage
 fi
+
+# Timestamped default: unique by construction, so reruns never collide with
+# Step Functions' 90-day execution-name uniqueness window.
+[ -n "$EXECUTION_NAME" ] || EXECUTION_NAME="${STACK}-backfill-$(date -u +%Y%m%dT%H%M%SZ)"
 
 # Region flag is only added when we actually have one; otherwise defer to the
 # AWS CLI's configured default.
