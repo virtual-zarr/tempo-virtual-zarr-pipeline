@@ -1,24 +1,29 @@
 #!/usr/bin/env bash
 #
-# Build a backfill inventory in-region via the stack's CodeBuild project.
+# Run an in-region job via the stack's CodeBuild project: a backfill
+# inventory build (default) or a verify_store.py run (-V).
 #
 # The DAAC's temporary S3 credentials only work from us-west-2, so running
 # build_backfill_inventory.py locally with --access direct fails. This ships
 # the committed repo (git archive HEAD) as the project's source zip, starts a
 # build, and waits for it — every run is pinned by a commit plus the in-repo
-# buildspec (scripts/inventory_buildspec.yml).
+# buildspec (scripts/inventory_buildspec.yml, or scripts/verify_buildspec.yml
+# with -V).
 #
 # Usage:
-#   scripts/build_inventory_remote.sh -e ENV_FILE [-m MAX_COUNT] [-u S3_URI] [-n]
+#   scripts/run_codebuild.sh -e ENV_FILE [-m MAX_COUNT] [-u S3_URI] [-V [-a ARGS]] [-n]
 #
 # Examples:
 #   # 50-granule trial inventory for the hcho stack:
-#   scripts/build_inventory_remote.sh -e .env_hcho -m 50
+#   scripts/run_codebuild.sh -e .env_hcho -m 50
 #   # Full inventory to an explicit key:
-#   scripts/build_inventory_remote.sh -e .env_hcho \
+#   scripts/run_codebuild.sh -e .env_hcho \
 #     -u s3://my-bucket/tempo/hcho/inventory/hcho.json
 #   # See what would happen, without uploading or starting a build:
-#   scripts/build_inventory_remote.sh -e .env_hcho -n
+#   scripts/run_codebuild.sh -e .env_hcho -n
+#   # In-region verification of the deployed store:
+#   scripts/run_codebuild.sh -e .env_hcho -V
+#   scripts/run_codebuild.sh -e .env_hcho -V -a "--completeness"
 #
 # COLLECTION and the default S3_URI are baked into the project by the CDK
 # stack, so only the env file is required.
@@ -27,12 +32,16 @@ set -euo pipefail
 
 usage() {
   cat >&2 <<'EOF'
-Usage: build_inventory_remote.sh -e ENV_FILE [-m MAX_COUNT] [-u S3_URI] [-n]
+Usage: run_codebuild.sh -e ENV_FILE [-m MAX_COUNT] [-u S3_URI] [-V [-a ARGS]] [-n]
 
   -e ENV_FILE   per-collection env file (e.g. .env_hcho); supplies the stack
                 name, region, bucket, prefixes, and AWS profile
   -m MAX_COUNT  keep only the N most recent granules (trial runs)
   -u S3_URI     override the inventory destination baked into the project
+  -V            run scripts/verify_store.py instead of building an inventory
+                (starts the same project with scripts/verify_buildspec.yml)
+  -a ARGS       extra verify_store.py flags, e.g. -a "--completeness"
+                (only meaningful with -V)
   -n            dry run: resolve and print bucket/prefix/project/commit,
                 then exit before uploading source or starting a build
 EOF
@@ -43,11 +52,15 @@ ENV_FILE=""
 MAX_COUNT=""
 S3_URI=""
 DRY_RUN=""
-while getopts ":e:m:u:nh" opt; do
+VERIFY=""
+VERIFY_ARGS=""
+while getopts ":e:m:u:a:Vnh" opt; do
   case "$opt" in
     e) ENV_FILE="$OPTARG" ;;
     m) MAX_COUNT="$OPTARG" ;;
     u) S3_URI="$OPTARG" ;;
+    a) VERIFY_ARGS="$OPTARG" ;;
+    V) VERIFY="1" ;;
     n) DRY_RUN="1" ;;
     h) usage ;;
     :) echo "Error: -$OPTARG requires a value." >&2; usage ;;
@@ -130,6 +143,11 @@ if [ -n "$DRY_RUN" ]; then
   fi
   echo "Caller identity:     $CALLER_ARN" >&2
   echo "CodeBuild project:   $PROJECT" >&2
+  if [ -n "$VERIFY" ]; then
+    echo "Mode:                verify (scripts/verify_buildspec.yml${VERIFY_ARGS:+, args: $VERIFY_ARGS})" >&2
+  else
+    echo "Mode:                inventory build" >&2
+  fi
   echo "Code destination:    s3://$BUCKET/$PREFIX/source.zip" >&2
   if [ -n "$S3_URI" ]; then
     echo "Inventory dest.:     $S3_URI (from -u)" >&2
@@ -164,9 +182,15 @@ aws s3 cp "$ZIP" "s3://$BUCKET/$PREFIX/source.zip" ${REGION_ARGS[@]+"${REGION_AR
 
 OVERRIDES=(name=MAX_COUNT,value="$MAX_COUNT",type=PLAINTEXT)
 [ -n "$S3_URI" ] && OVERRIDES+=(name=S3_URI,value="$S3_URI",type=PLAINTEXT)
+BUILD_ARGS=()
+if [ -n "$VERIFY" ]; then
+  BUILD_ARGS+=(--buildspec-override scripts/verify_buildspec.yml)
+  OVERRIDES+=(name=VERIFY_ARGS,value="$VERIFY_ARGS",type=PLAINTEXT)
+fi
 BUILD_ID="$(aws codebuild start-build ${REGION_ARGS[@]+"${REGION_ARGS[@]}"} \
   --project-name "$PROJECT" \
   --environment-variables-override "${OVERRIDES[@]}" \
+  ${BUILD_ARGS[@]+"${BUILD_ARGS[@]}"} \
   --query 'build.id' --output text)"
 echo "Started build $BUILD_ID (commit $(git rev-parse --short HEAD))" >&2
 

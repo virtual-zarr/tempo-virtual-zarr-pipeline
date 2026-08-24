@@ -354,7 +354,7 @@ is baked into the Lambda environment.
 2. Build and upload the inventory:
 
    ```bash
-   ./scripts/build_inventory_remote.sh -e .env_hcho -m 50
+   ./scripts/run_codebuild.sh -e .env_hcho -m 50
    ```
 
    `-m 50` is the trial cap; drop it for the full run.
@@ -392,13 +392,16 @@ is baked into the Lambda environment.
 
 5. Run
    `uv run --env-file .env_hcho --env-file .env.local scripts/verify_store.py`
-   after the promote, and periodically after that.
+   after the promote, and periodically after that — or run it in-region with
+   `scripts/run_codebuild.sh -e .env_hcho -V` (add `-a "--completeness"` for
+   extra flags), which starts the stack's CodeBuild project with a verify
+   buildspec override.
 
 Then repeat with `.env_no2` for the second stack:
 
 ```bash
 uv run --env-file .env_no2 --env-file .env.local cdk deploy
-./scripts/build_inventory_remote.sh -e .env_no2
+./scripts/run_codebuild.sh -e .env_no2
 ./scripts/start_backfill.sh -e .env_no2 \
   s3://tempo-virtual-store-sandbox/tempo/no2/inventory/no2.json
 ```

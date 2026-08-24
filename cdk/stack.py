@@ -575,7 +575,7 @@ class VirtualizarrSqsStack(Stack):
 
         The DAAC's temporary S3 credentials only work from us-west-2, so
         ``build_backfill_inventory.py --access direct`` fails on a laptop.
-        ``scripts/build_inventory_remote.sh`` uploads ``git archive HEAD`` as
+        ``scripts/run_codebuild.sh`` uploads ``git archive HEAD`` as
         the project's source zip and starts a build, so every run is pinned
         by a commit plus the in-repo buildspec. Costs nothing while idle.
 
@@ -644,7 +644,7 @@ class VirtualizarrSqsStack(Stack):
             "InventoryBuildProject",
             value=self.inventory_build.project_name,
             description="CodeBuild project for in-region inventory builds; "
-            "start one with scripts/build_inventory_remote.sh",
+            "start one with scripts/run_codebuild.sh",
         )
 
     def _alarm(
