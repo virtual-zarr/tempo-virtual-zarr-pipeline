@@ -161,7 +161,7 @@ Per collection, hcho shown:
 
 1. Deploy: `uv run --env-file .env_hcho --env-file .env.local cdk deploy`
 2. Build and upload the inventory: `./scripts/build_inventory_remote.sh -e .env_hcho -m 50` (`-m 50` is the trial cap; drop it for the full run). This runs the committed `build_backfill_inventory.py` inside the stack's CodeBuild project, because the DAAC's temporary S3 credentials only work from us-west-2 — a laptop run with the default `--access direct` fails on every granule read. The Earthdata token comes from the stack's `EARTHDATA_SECRET_ARN`; the inventory lands at `s3://<bucket>/<INVENTORY_PREFIX>/hcho.json` (the only prefix the partition Lambda may read). On a us-west-2 machine, `uv run --env-file .env_hcho --env-file .env.local scripts/build_backfill_inventory.py ...` still works directly, with Earthdata credentials from `~/.netrc` or `$EARTHDATA_TOKEN`.
-3. Start the backfill: `./scripts/start_backfill.sh -e .env_hcho hcho-backfill-<date> s3://tempo-virtual-store-sandbox/tempo/hcho/inventory/hcho.json`. A failed run can be restarted under a new execution name; Init resets the leftover branch.
+3. Start the backfill: `./scripts/start_backfill.sh -e .env_hcho s3://tempo-virtual-store-sandbox/tempo/hcho/inventory/hcho.json`. The execution name defaults to `<stack>-backfill-<UTC timestamp>` (pass one explicitly as an extra argument before the URI if you want a memorable name). A failed run can simply be rerun — the fresh timestamp satisfies Step Functions' 90-day execution-name uniqueness, and Init resets the leftover branch.
 4. When it has promoted, set `FORWARD_QUEUE_ENABLED=true` and `POLL_START_ISO` to the inventory's build time in `.env_hcho`, then redeploy, so the poller's first poll picks up granules published while the backfill ran; the re-sort job folds in anything that arrived out of order.
 5. Run `uv run --env-file .env_hcho --env-file .env.local scripts/verify_store.py` after the promote (and periodically) to spot-check the store against its sources.
 
@@ -170,7 +170,7 @@ Then repeat with `.env_no2` for the second stack:
 ```bash
 uv run --env-file .env_no2 --env-file .env.local cdk deploy
 ./scripts/build_inventory_remote.sh -e .env_no2
-./scripts/start_backfill.sh -e .env_no2 no2-backfill-<date> \
+./scripts/start_backfill.sh -e .env_no2 \
   s3://tempo-virtual-store-sandbox/tempo/no2/inventory/no2.json
 ```
 

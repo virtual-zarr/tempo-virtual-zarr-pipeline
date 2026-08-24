@@ -52,6 +52,8 @@ import numpy as np
 import xarray as xr
 import zarr
 from icechunk import Repository
+from obspec_utils.readers import BlockStoreReader
+from virtualizarr_processor.granule import make_registry
 from virtualizarr_processor.inventory import BackfillInventory
 from virtualizarr_processor.manifest import (
     MANIFEST_ARRAYS,
@@ -72,15 +74,17 @@ CmrLookup = Callable[[datetime], Optional[tuple[str, str]]]
 
 @contextmanager
 def open_source(url: str) -> Iterator[h5py.File]:
-    """Open the source granule with h5py, locally or via earthaccess."""
-    if url.startswith("file://"):
-        with h5py.File(url.removeprefix("file://")) as h5:
-            yield h5
-        return
-    import earthaccess
+    """Open the source granule with h5py over cached ranged reads.
 
-    [f] = earthaccess.open([url])
-    with h5py.File(f) as h5:
+    Uses the processor's own registry (obstore + Earthdata credentials), the
+    read path the deployed workers use: unlike earthaccess it needs no EC2
+    IMDS to prove it is in-region, so s3:// sources work from CloudShell,
+    CodeBuild, and Lambda. The block reader LRU-caches 1 MiB ranges, which
+    suits h5py's many small scattered reads.
+    """
+    registry = make_registry(url)
+    store, path = registry.resolve(url)
+    with BlockStoreReader(store, path) as reader, h5py.File(reader) as h5:
         yield h5
 
 

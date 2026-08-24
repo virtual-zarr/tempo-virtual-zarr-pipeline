@@ -10,7 +10,8 @@ dependencies = [
     "opentelemetry-api>=1.20",
     "pydantic>=2",
     "pydantic-zarr>=0.10",
-    "virtualizarr[hdf]>=2.7",
+    # obstore.auth.earthdata imports requests lazily without declaring it;
+    # without this pin the Lambda images ship without it (constraints.txt
     # only pins versions, it can't add packages the tree doesn't require).
     "requests>=2.31",
     "virtualizarr[hdf]>=2.7",

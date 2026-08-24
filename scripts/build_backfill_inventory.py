@@ -86,6 +86,7 @@ def build_inventory(
     granules: list[Any],
     *,
     access: str,
+    read_access: str | None = None,
     read_time: Callable[[str], float],
     collection_shortname: str,
     concept_id: str,
@@ -102,9 +103,16 @@ def build_inventory(
         raise InventoryError("No granules matched the query")
     deduped = dedupe_republications(granules)
     urls = [data_link(granule, access) for granule in deduped]
+    # Recorded link flavor and read transport are independent: CodeBuild
+    # can't read s3:// (earthaccess#444) but must record it for the workers.
+    read_urls = (
+        urls
+        if read_access in (None, access)
+        else [data_link(granule, read_access) for granule in deduped]
+    )
 
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        times = list(pool.map(read_time, urls))
+        times = list(pool.map(read_time, read_urls))
 
     entries = sorted(
         (
@@ -191,6 +199,15 @@ def main() -> int:
             "EDL-authed HTTPS URLs"
         ),
     )
+    parser.add_argument(
+        "--read-access",
+        choices=["direct", "external"],
+        help=(
+            "Link flavor used only to read /time headers (defaults to "
+            "--access); lets CodeBuild record direct s3:// links while "
+            "reading over HTTPS"
+        ),
+    )
     parser.add_argument("--start", help="Temporal window start (ISO date)")
     parser.add_argument("--end", help="Temporal window end (ISO date)")
     parser.add_argument(
@@ -253,6 +270,7 @@ def main() -> int:
     inventory = build_inventory(
         granules,
         access=args.access,
+        read_access=args.read_access,
         read_time=read_time_via_earthaccess,
         collection_shortname=shortname,
         concept_id=concept_id,
