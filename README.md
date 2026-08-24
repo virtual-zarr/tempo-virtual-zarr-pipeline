@@ -230,9 +230,12 @@ when `POLL_SCHEDULE_MINUTES` is set. Deploying with the consumer on and the
 poller off lets you feed the queue one hand-sent message at a time — the
 routing is idempotent, so a duplicate or re-sent message is harmless.
 
-A trial store built with `run_codebuild.sh -m 5` holds only the five most
-recent granules as of the inventory build, which makes every routing outcome
-easy to trigger. First see what the store holds:
+The test deployment's backfill was run with `run_codebuild.sh -m 5`, so its
+store holds the five most recent granules as of the inventory build — with
+hourly TEMPO scans, an axis of roughly five hours. That makes every routing
+outcome easy to trigger: almost everything in CMR is older than the store
+(the defer case), and a fresh append candidate is published within the hour.
+First confirm what the store holds:
 
 ```bash
 aws s3 cp "s3://$ICECHUNK_BUCKET/tempo/hcho/inventory/hcho.json" - \
@@ -256,9 +259,12 @@ Pick the test case by where the granule falls relative to the store:
 | already in the store (same UR) | `WRITTEN` — slot overwritten in place, store unchanged |
 | older than the store's oldest slot | `DEFERRED` — recorded in the pending ledger; the re-sort job folds it in later |
 
-For example, if the `-m 5` store ends at the `S005` scan of 2026-08-24,
-sending that day's `S006` granule tests a real append. Send it (the queue is
-named `<stack>-queue`; the message shape is the poller's):
+With the five-slot store, the shortest full pass is: the next scan after the
+store's newest (append), the store's newest itself (in-place overwrite), and
+any scan from before the store's ~5 h window (defer). For example, if the
+store ends at the `S005` scan of 2026-08-24, that day's `S006` granule tests
+a real append. Send it (the queue is named `<stack>-queue`; the message shape
+is the poller's):
 
 ```bash
 aws sqs send-message \
