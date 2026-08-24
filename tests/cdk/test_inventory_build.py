@@ -51,6 +51,69 @@ def test_inventory_build_project() -> None:
     )
 
 
+def test_inventory_build_carries_processor_env() -> None:
+    """Verify runs (scripts/verify_buildspec.yml via --buildspec-override)
+    resolve the store from the same env contract as the Lambdas, so the
+    project must carry it; VERIFY_ARGS is the per-build flags override.
+    An imported bucket keeps the env values as literal strings."""
+    _template(ICECHUNK_BUCKET="ice-test").has_resource_properties(
+        "AWS::CodeBuild::Project",
+        Match.object_like(
+            {
+                "Environment": Match.object_like(
+                    {
+                        # array_with matches an in-order subsequence:
+                        # VERIFY_ARGS is declared before the merged
+                        # processor env on the project.
+                        "EnvironmentVariables": Match.array_with(
+                            [
+                                {
+                                    "Name": "VERIFY_ARGS",
+                                    "Type": "PLAINTEXT",
+                                    "Value": "",
+                                },
+                                {
+                                    "Name": "ICECHUNK_BUCKET",
+                                    "Type": "PLAINTEXT",
+                                    "Value": "ice-test",
+                                },
+                                {
+                                    "Name": "ICECHUNK_PREFIX",
+                                    "Type": "PLAINTEXT",
+                                    "Value": "tempo/hcho/v04",
+                                },
+                            ]
+                        )
+                    }
+                )
+            }
+        ),
+    )
+
+
+def test_inventory_build_reads_store_but_never_writes_it() -> None:
+    """verify_store.py reads the icechunk store; the project must be able
+    to read the storage prefix and must not gain writes outside the
+    inventory prefix."""
+    from conftest import actions_of, iam_statements, resources_of
+
+    stmts = list(iam_statements(_template(ICECHUNK_BUCKET="ice-test"), "inventorybuild"))
+    assert any(
+        any(a.startswith("s3:Get") for a in actions_of(s))
+        and any(
+            isinstance(r, str) and r.endswith("ice-test/tempo/hcho/v04/*")
+            for r in resources_of(s)
+        )
+        for s in stmts
+    )
+    for s in stmts:
+        if any(a.startswith(("s3:Put", "s3:Delete")) for a in actions_of(s)):
+            assert all(
+                isinstance(r, str) and r.endswith("/inventory/*")
+                for r in resources_of(s)
+            ), f"unexpected write grant: {s}"
+
+
 def test_inventory_build_reads_earthdata_secret() -> None:
     """With EARTHDATA_SECRET_ARN set, the token is injected from Secrets
     Manager — required in accounts with no bucket-policy grant on the

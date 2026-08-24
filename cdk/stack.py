@@ -578,6 +578,11 @@ class VirtualizarrSqsStack(Stack):
         ``scripts/build_inventory_remote.sh`` uploads ``git archive HEAD`` as
         the project's source zip and starts a build, so every run is pinned
         by a commit plus the in-repo buildspec. Costs nothing while idle.
+
+        The same project also runs ``scripts/verify_store.py`` when started
+        with ``run_codebuild.sh -V`` (a ``--buildspec-override`` to
+        ``scripts/verify_buildspec.yml``), which is why it carries the
+        processor env and read access to the store prefix.
         """
         collection = settings.TEMPO_COLLECTION or "hcho"
         env = {
@@ -588,7 +593,15 @@ class VirtualizarrSqsStack(Stack):
             ),
             # Trial cap; override per build (empty = full inventory).
             "MAX_COUNT": codebuild.BuildEnvironmentVariable(value=""),
+            # Extra flags for verify runs (scripts/verify_buildspec.yml via
+            # --buildspec-override); empty for inventory builds.
+            "VERIFY_ARGS": codebuild.BuildEnvironmentVariable(value=""),
         }
+        # Verify runs open the store with the same env contract as the
+        # Lambdas. setdefault keeps the Secrets-Manager EARTHDATA_TOKEN
+        # entry (added below) authoritative over any plaintext collision.
+        for key, value in self.processor_env.items():
+            env.setdefault(key, codebuild.BuildEnvironmentVariable(value=value))
         if settings.EARTHDATA_SECRET_ARN:
             env["EARTHDATA_TOKEN"] = codebuild.BuildEnvironmentVariable(
                 type=codebuild.BuildEnvironmentVariableType.SECRETS_MANAGER,
@@ -615,6 +628,13 @@ class VirtualizarrSqsStack(Stack):
         )
         self.icechunk_bucket.grant_put(
             self.inventory_build, f"{settings.inventory_prefix}/*"
+        )
+        # Verify runs read the store; nothing in this project ever writes it.
+        self.icechunk_bucket.grant_read(
+            self.inventory_build,
+            f"{settings.icechunk_storage_prefix}/*"
+            if settings.icechunk_storage_prefix
+            else "*",
         )
         if self.earthdata_secret is not None:
             self.earthdata_secret.grant_read(self.inventory_build)
