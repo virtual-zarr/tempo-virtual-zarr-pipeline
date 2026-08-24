@@ -94,20 +94,59 @@ The store manifest (which granule owns which slot, as two arrays on the time axi
 ## Deploying and running
 
 Each collection deploys as its own stack from a committed env file:
-[`.env_hcho`](./.env_hcho) and [`.env_no2`](./.env_no2). Fill in `ACCOUNT_ID`
-and `ICECHUNK_BUCKET`, one shared bucket in us-west-2 created once with
-`aws s3 mb s3://<bucket> --region us-west-2`; the per-collection `S3_PREFIX`
+[`.env_hcho`](./.env_hcho) and [`.env_no2`](./.env_no2). Both are currently
+filled in for a test run in the `ds-sandbox-max` sub-account (`755329541016`,
+profile `ds-sandbox-max`, `us-west-2`); for another account change
+`ACCOUNT_ID`, `AWS_PROFILE`, and `ICECHUNK_BUCKET` — one shared bucket in
+us-west-2 created once with
+`aws s3 mb s3://<bucket> --region us-west-2 --profile <profile>`. The
+per-collection `S3_PREFIX`
 (`tempo/hcho`, `tempo/no2`) keeps the stacks' output separate, and every IAM
 grant in a stack is scoped to its own prefix, so neither stack's roles can
 touch the other's keys. Both files
 ship backfill-first: forward processing (consumer, poller, re-sort job) stays
 undeployed while the backfill runs.
 
+One-time setup for the sandbox test run:
+
+```bash
+./scripts/setup.sh   # uv deps + Node and the cdk CLI, installed into the uv venv
+aws sso login --profile ds-sandbox-max                 # or however the profile authenticates
+uv run --env-file .env_hcho cdk bootstrap aws://755329541016/us-west-2   # fresh account only
+aws s3 mb s3://tempo-virtual-store-sandbox --region us-west-2 --profile ds-sandbox-max
+aws secretsmanager create-secret --name tempo-earthdata \
+  --secret-string '{"token":"<EDL token>"}' \
+  --region us-west-2 --profile ds-sandbox-max
+```
+
+Paste the ARN the last command returns into `EARTHDATA_SECRET_ARN` in both
+env files. This is required in the sandbox: the account has no bucket-policy
+grant on `asdc-prod-protected`, so without the secret every worker granule
+read fails with AccessDenied (the deploy itself would still succeed). Also
+check the account's Lambda concurrent-executions quota — fresh sub-accounts
+can start as low as 10, and the backfill fans out to
+`BACKFILL_MAX_CONCURRENCY=50`; request an increase or lower that setting.
+
+The steps below are written for the first trial: a backfill of only the 50
+most recent granules (`--max-count 50` on the inventory command) into a
+scratch store — the time axis is sized from the inventory, so `.env_hcho`
+points at `ICECHUNK_PREFIX=v04-trial` rather than the real `v04`. To graduate
+to the full backfill: drop `--max-count`, rebuild and re-upload the inventory,
+set `ICECHUNK_PREFIX=v04`, and redeploy first (the prefix is baked into the
+Lambda environment).
+
+`AWS_PROFILE` is set inside the env files, so every `uv run --env-file ...`
+command and `start_backfill.sh -e ...` targets the sandbox without exporting
+anything. To tear the test down, run `uv run --env-file .env_hcho cdk destroy`
+(and `.env_no2`); the shared bucket is not stack-owned, so empty and delete it
+separately. For the later client deployment, also set the `CLIENT` tag and
+`STAGE=prod` in the env files.
+
 Per collection, hcho shown:
 
 1. Deploy: `uv run --env-file .env_hcho cdk deploy`
-2. Build and upload the inventory: `uv run scripts/build_backfill_inventory.py --collection hcho --s3-uri s3://<bucket>/tempo/hcho/inventory/hcho.json`. It must land under `INVENTORY_PREFIX` (default `<S3_PREFIX>/inventory/`) — the partition Lambda can only read that prefix.
-3. Start the backfill: `./scripts/start_backfill.sh -e .env_hcho hcho-backfill-<date> s3://<bucket>/tempo/hcho/inventory/hcho.json`. A failed run can be restarted under a new execution name; Init resets the leftover branch.
+2. Build and upload the inventory: `./scripts/build_inventory_remote.sh -e .env_hcho -m 50` (`-m 50` is the trial cap; drop it for the full run). This runs the committed `build_backfill_inventory.py` inside the stack's CodeBuild project, because the DAAC's temporary S3 credentials only work from us-west-2 — a laptop run with the default `--access direct` fails on every granule read. The Earthdata token comes from the stack's `EARTHDATA_SECRET_ARN`; the inventory lands at `s3://<bucket>/<INVENTORY_PREFIX>/hcho.json` (the only prefix the partition Lambda may read). On a us-west-2 machine, `uv run --env-file .env_hcho scripts/build_backfill_inventory.py ...` still works directly, with Earthdata credentials from `~/.netrc` or `$EARTHDATA_TOKEN`.
+3. Start the backfill: `./scripts/start_backfill.sh -e .env_hcho hcho-backfill-<date> s3://tempo-virtual-store-sandbox/tempo/hcho/inventory/hcho.json`. A failed run can be restarted under a new execution name; Init resets the leftover branch.
 4. When it has promoted, set `FORWARD_QUEUE_ENABLED=true` and `POLL_START_ISO` to the inventory's build time in `.env_hcho`, then redeploy, so the poller's first poll picks up granules published while the backfill ran; the re-sort job folds in anything that arrived out of order.
 5. Run `uv run --env-file .env_hcho scripts/verify_store.py` after the promote (and periodically) to spot-check the store against its sources.
 
@@ -115,11 +154,14 @@ Then repeat with `.env_no2` for the second stack:
 
 ```bash
 uv run --env-file .env_no2 cdk deploy
-uv run scripts/build_backfill_inventory.py --collection no2 \
-  --s3-uri s3://<bucket>/tempo/no2/inventory/no2.json
+./scripts/build_inventory_remote.sh -e .env_no2
 ./scripts/start_backfill.sh -e .env_no2 no2-backfill-<date> \
-  s3://<bucket>/tempo/no2/inventory/no2.json
+  s3://tempo-virtual-store-sandbox/tempo/no2/inventory/no2.json
 ```
+
+To trial the no2 stack the same way, add `-m 50` and set
+`ICECHUNK_PREFIX=v04-trial` in `.env_no2` first (`.env_no2` ships pointed at
+the real `v04`).
 
 Settings live in [`cdk/settings.py`](./cdk/settings.py) and a `.env` file ([sample](./.env.sample)). The ones that matter most:
 

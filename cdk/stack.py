@@ -17,6 +17,9 @@ from aws_cdk import (
     aws_cloudwatch_actions as cloudwatch_actions,
 )
 from aws_cdk import (
+    aws_codebuild as codebuild,
+)
+from aws_cdk import (
     aws_ec2 as ec2,
 )
 from aws_cdk import (
@@ -273,7 +276,10 @@ class VirtualizarrSqsStack(Stack):
                 self.queue,
                 batch_size=settings.SQS_BATCH_SIZE,
                 report_batch_item_failures=True,
-                max_concurrency=settings.MAX_CONCURRENCY,
+                # No max_concurrency: Lambda rejects a mapping whose maximum
+                # exceeds the function's reserved concurrency (1, above), and
+                # the setting's floor is 2. Excess pollers are throttled and
+                # the event source scales itself down.
                 enabled=settings.FORWARD_QUEUE_ENABLED,
             )
         )
@@ -415,6 +421,7 @@ class VirtualizarrSqsStack(Stack):
             )
 
         self._build_backfill(settings)
+        self._build_inventory_project(settings)
 
     def _forward_ops(self, settings: StackSettings) -> None:
         """The scheduled forward-processing jobs: the re-sort job
@@ -562,6 +569,63 @@ class VirtualizarrSqsStack(Stack):
                 description="Start a backfill with: aws stepfunctions start-execution "
                 '--state-machine-arn <this> --input \'{"inventory_uri": "s3://..."}\'',
             )
+
+    def _build_inventory_project(self, settings: StackSettings) -> None:
+        """CodeBuild project for reproducible in-region inventory builds.
+
+        The DAAC's temporary S3 credentials only work from us-west-2, so
+        ``build_backfill_inventory.py --access direct`` fails on a laptop.
+        ``scripts/build_inventory_remote.sh`` uploads ``git archive HEAD`` as
+        the project's source zip and starts a build, so every run is pinned
+        by a commit plus the in-repo buildspec. Costs nothing while idle.
+        """
+        collection = settings.TEMPO_COLLECTION or "hcho"
+        env = {
+            "COLLECTION": codebuild.BuildEnvironmentVariable(value=collection),
+            "S3_URI": codebuild.BuildEnvironmentVariable(
+                value=f"s3://{self.icechunk_bucket.bucket_name}/"
+                f"{settings.inventory_prefix}/{collection}.json"
+            ),
+            # Trial cap; override per build (empty = full inventory).
+            "MAX_COUNT": codebuild.BuildEnvironmentVariable(value=""),
+        }
+        if settings.EARTHDATA_SECRET_ARN:
+            env["EARTHDATA_TOKEN"] = codebuild.BuildEnvironmentVariable(
+                type=codebuild.BuildEnvironmentVariableType.SECRETS_MANAGER,
+                value=f"{settings.EARTHDATA_SECRET_ARN}:token",
+            )
+        self.inventory_build = codebuild.Project(
+            self,
+            "InventoryBuild",
+            source=codebuild.Source.s3(
+                bucket=self.icechunk_bucket,
+                path=f"{settings.inventory_prefix}/source.zip",
+            ),
+            build_spec=codebuild.BuildSpec.from_source_filename(
+                "scripts/inventory_buildspec.yml"
+            ),
+            environment=codebuild.BuildEnvironment(
+                build_image=codebuild.LinuxBuildImage.AMAZON_LINUX_2023_5,
+                compute_type=codebuild.ComputeType.SMALL,
+            ),
+            environment_variables=env,
+            # The full ~13.6k-granule header sweep far exceeds the 1 h
+            # CodeBuild default (and Lambda's 15 min ceiling).
+            timeout=Duration.hours(8),
+        )
+        self.icechunk_bucket.grant_put(
+            self.inventory_build, f"{settings.inventory_prefix}/*"
+        )
+        if self.earthdata_secret is not None:
+            self.earthdata_secret.grant_read(self.inventory_build)
+
+        CfnOutput(
+            self,
+            "InventoryBuildProject",
+            value=self.inventory_build.project_name,
+            description="CodeBuild project for in-region inventory builds; "
+            "start one with scripts/build_inventory_remote.sh",
+        )
 
     def _alarm(
         self, construct_id: str, metric: cloudwatch.IMetric, description: str

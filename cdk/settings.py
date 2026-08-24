@@ -33,7 +33,6 @@ class StackSettings(BaseSettings):
     DATA_BUCKET_NAME: str | None = None
     PROJECT: str = "virtualizarr-data-pipelines"
     SNS_TOPIC: str | None = None
-    MAX_CONCURRENCY: int = 50
     SQS_BATCH_SIZE: int = 10
 
     # Secrets Manager secret holding Earthdata Login material (JSON with

@@ -224,7 +224,9 @@ def main() -> int:
 
     import earthaccess
 
-    earthaccess.login(strategy="netrc")
+    # "all" tries $EARTHDATA_TOKEN / $EARTHDATA_USERNAME+PASSWORD first,
+    # then ~/.netrc — matching the docstring's promise.
+    earthaccess.login()
 
     print(f"Searching CMR for all granules of {concept_id}...", file=sys.stderr)
     granules = search_granules(concept_id, args.start, args.end)

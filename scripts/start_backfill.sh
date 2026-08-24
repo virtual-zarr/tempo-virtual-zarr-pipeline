@@ -86,6 +86,11 @@ fi
 STACK="${STACK_ARG:-${STACK:-$(env_get STACK_NAME)}}"
 REGION="${REGION_ARG:-${REGION:-$(env_get ACCOUNT_REGION)}}"
 
+# Let the env file pick the AWS profile too; an exported AWS_PROFILE wins.
+if [ -z "${AWS_PROFILE:-}" ] && [ -n "$(env_get AWS_PROFILE)" ]; then
+  export AWS_PROFILE="$(env_get AWS_PROFILE)"
+fi
+
 # No default stack: this repo deploys one stack per collection, so guessing
 # which to target would start a backfill against the wrong store.
 if [ -z "$STACK" ]; then
