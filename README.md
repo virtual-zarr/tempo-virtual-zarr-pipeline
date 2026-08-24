@@ -222,6 +222,67 @@ else a fixed lookback.
 > the queue could subscribe directly, with the poller kept as a backstop for
 > missed notifications.
 
+#### Testing forward processing (small)
+
+The consumer and the poller are gated separately: `FORWARD_QUEUE_ENABLED=true`
+enables the SQS→consumer mapping, while the poller and its schedule exist only
+when `POLL_SCHEDULE_MINUTES` is set. Deploying with the consumer on and the
+poller off lets you feed the queue one hand-sent message at a time — the
+routing is idempotent, so a duplicate or re-sent message is harmless.
+
+A trial store built with `run_codebuild.sh -m 5` holds only the five most
+recent granules as of the inventory build, which makes every routing outcome
+easy to trigger. First see what the store holds:
+
+```bash
+aws s3 cp "s3://$ICECHUNK_BUCKET/tempo/hcho/inventory/hcho.json" - \
+  | jq -r '.granules[] | "\(.granule_ur) \(.url)"'
+```
+
+then list CMR's most recent granules for the collection (`concept_id` is in
+`lambda/virtualizarr-processor/virtualizarr_processor/collections/<collection>.toml`;
+metadata needs no Earthdata credentials):
+
+```bash
+curl -s "https://cmr.earthdata.nasa.gov/search/granules.umm_json?collection_concept_id=C3685897141-LARC_CLOUD&sort_key=-start_date&page_size=10" \
+  | jq -r '.items[].umm | .GranuleUR + " " + (.RelatedUrls[] | select(.Type=="GET DATA VIA DIRECT ACCESS" and (.URL|endswith(".nc"))) | .URL)'
+```
+
+Pick the test case by where the granule falls relative to the store:
+
+| Granule sent | Expected consumer outcome |
+|---|---|
+| newer than the store's newest slot | `WRITTEN` — appended to the axis |
+| already in the store (same UR) | `WRITTEN` — slot overwritten in place, store unchanged |
+| older than the store's oldest slot | `DEFERRED` — recorded in the pending ledger; the re-sort job folds it in later |
+
+For example, if the `-m 5` store ends at the `S005` scan of 2026-08-24,
+sending that day's `S006` granule tests a real append. Send it (the queue is
+named `<stack>-queue`; the message shape is the poller's):
+
+```bash
+aws sqs send-message \
+  --queue-url "$(aws sqs get-queue-url --queue-name "$STACK_NAME-queue" --query QueueUrl --output text)" \
+  --message-body '{"url": "s3://asdc-prod-protected/TEMPO/TEMPO_HCHO_L3_V04/2026.08.24/TEMPO_HCHO_L3_V04_20260824T144044Z_S006.nc"}'
+```
+
+Then watch the consumer's log for the outcome (`WRITTEN` / `DEFERRED`; a
+`REJECTED` granule retries and lands in `<stack>-Dlq`, which should stay
+empty):
+
+```bash
+aws logs tail "$(aws lambda list-functions \
+  --query 'Functions[?contains(FunctionName, `processmessages`)].LoggingConfig.LogGroup | [0]' \
+  --output text)" --follow
+```
+
+Close the loop with `scripts/run_codebuild.sh -e .env_hcho -V`: an appended
+granule becomes sampleable, and `-a "--completeness"` shows a deferred
+granule sitting in the pending ledger. Once this works, enabling the poller
+for real is the runbook's step 4 — set `POLL_START_ISO` to a recent time
+first so its first poll enqueues a handful of granules, not the full 8-day
+lookback.
+
 ### Verification
 
 `uv run scripts/verify_store.py` spot-checks the store against its sources,
