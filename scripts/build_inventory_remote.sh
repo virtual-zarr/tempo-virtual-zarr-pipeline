@@ -58,7 +58,15 @@ done
 [ -n "$ENV_FILE" ] && [ -f "$ENV_FILE" ] || { echo "Error: pass -e ENV_FILE." >&2; usage; }
 
 env_get() {
-  grep -E "^$1=" "$ENV_FILE" | tail -n1 | cut -d= -f2- | sed 's/^["'\'']//;s/["'\'']$//' || true
+  # Semi-sensitive keys (AWS_PROFILE, ACCOUNT_ID, ...) live in .env.local
+  # beside the env file, so fall back to it when the key is missing there.
+  local v
+  v="$(grep -E "^$1=" "$ENV_FILE" | tail -n1 | cut -d= -f2- | sed 's/^["'\'']//;s/["'\'']$//' || true)"
+  local local_file="$(dirname "$ENV_FILE")/.env.local"
+  if [ -z "$v" ] && [ -f "$local_file" ]; then
+    v="$(grep -E "^$1=" "$local_file" | tail -n1 | cut -d= -f2- | sed 's/^["'\'']//;s/["'\'']$//' || true)"
+  fi
+  printf '%s\n' "$v"
 }
 
 STACK="$(env_get STACK_NAME)"

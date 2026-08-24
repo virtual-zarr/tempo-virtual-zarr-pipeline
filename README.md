@@ -95,9 +95,21 @@ The store manifest (which granule owns which slot, as two arrays on the time axi
 
 Each collection deploys as its own stack from a committed env file:
 [`.env_hcho`](./.env_hcho) and [`.env_no2`](./.env_no2). Both are currently
-filled in for a test run in the `ds-sandbox-max` sub-account (`755329541016`,
-profile `ds-sandbox-max`, `us-west-2`); for another account change
-`ACCOUNT_ID`, `AWS_PROFILE`, and `ICECHUNK_BUCKET` — one shared bucket in
+filled in for a test run in a sandbox sub-account (`us-west-2`). The
+committed files hold only dataset config; account- and operator-specific
+values (`ACCOUNT_ID`, `AWS_PROFILE`, `OWNER`, `EARTHDATA_SECRET_ARN`, ...)
+go in a gitignored `.env.local` shared by both collections — copy
+[`.env.local.sample`](./.env.local.sample) and fill it in, then pass both
+files to every command (`.env.local` last, so it can also override dataset
+settings for a local run):
+
+```bash
+uv run --env-file .env_hcho --env-file .env.local cdk deploy
+```
+
+A pre-commit hook rejects commits that put a value for one of those keys
+back into a tracked env file. For another account change `.env.local` and
+`ICECHUNK_BUCKET` — one shared bucket in
 us-west-2 created once with
 `aws s3 mb s3://<bucket> --region us-west-2 --profile <profile>`. The
 per-collection `S3_PREFIX`
@@ -111,16 +123,17 @@ One-time setup for the sandbox test run:
 
 ```bash
 ./scripts/setup.sh   # uv deps + Node and the cdk CLI, installed into the uv venv
-aws sso login --profile ds-sandbox-max                 # or however the profile authenticates
-uv run --env-file .env_hcho cdk bootstrap aws://755329541016/us-west-2   # fresh account only
-aws s3 mb s3://tempo-virtual-store-sandbox --region us-west-2 --profile ds-sandbox-max
+cp .env.local.sample .env.local                        # then fill it in
+aws sso login --profile <profile>                      # or however the profile authenticates
+uv run --env-file .env_hcho --env-file .env.local cdk bootstrap aws://<ACCOUNT_ID>/us-west-2   # fresh account only
+aws s3 mb s3://tempo-virtual-store-sandbox --region us-west-2 --profile <profile>
 aws secretsmanager create-secret --name tempo-earthdata \
   --secret-string '{"token":"<EDL token>"}' \
-  --region us-west-2 --profile ds-sandbox-max
+  --region us-west-2 --profile <profile>
 ```
 
-Paste the ARN the last command returns into `EARTHDATA_SECRET_ARN` in both
-env files. This is required in the sandbox: the account has no bucket-policy
+Paste the ARN the last command returns into `EARTHDATA_SECRET_ARN` in
+`.env.local` (shared by both collections). This is required in the sandbox: the account has no bucket-policy
 grant on `asdc-prod-protected`, so without the secret every worker granule
 read fails with AccessDenied (the deploy itself would still succeed). Also
 check the account's Lambda concurrent-executions quota — fresh sub-accounts
@@ -135,25 +148,27 @@ to the full backfill: drop `--max-count`, rebuild and re-upload the inventory,
 set `ICECHUNK_PREFIX=v04`, and redeploy first (the prefix is baked into the
 Lambda environment).
 
-`AWS_PROFILE` is set inside the env files, so every `uv run --env-file ...`
-command and `start_backfill.sh -e ...` targets the sandbox without exporting
-anything. To tear the test down, run `uv run --env-file .env_hcho cdk destroy`
+`AWS_PROFILE` is set inside `.env.local`, so every `uv run --env-file ...`
+command and `start_backfill.sh -e ...` (the scripts read keys missing from
+the `-e` file out of `.env.local` automatically) targets the sandbox without
+exporting anything. To tear the test down, run
+`uv run --env-file .env_hcho --env-file .env.local cdk destroy`
 (and `.env_no2`); the shared bucket is not stack-owned, so empty and delete it
-separately. For the later client deployment, also set the `CLIENT` tag and
-`STAGE=prod` in the env files.
+separately. For the later client deployment, also set the `CLIENT` tag in
+`.env.local` and `STAGE=prod` in the env files.
 
 Per collection, hcho shown:
 
-1. Deploy: `uv run --env-file .env_hcho cdk deploy`
-2. Build and upload the inventory: `./scripts/build_inventory_remote.sh -e .env_hcho -m 50` (`-m 50` is the trial cap; drop it for the full run). This runs the committed `build_backfill_inventory.py` inside the stack's CodeBuild project, because the DAAC's temporary S3 credentials only work from us-west-2 — a laptop run with the default `--access direct` fails on every granule read. The Earthdata token comes from the stack's `EARTHDATA_SECRET_ARN`; the inventory lands at `s3://<bucket>/<INVENTORY_PREFIX>/hcho.json` (the only prefix the partition Lambda may read). On a us-west-2 machine, `uv run --env-file .env_hcho scripts/build_backfill_inventory.py ...` still works directly, with Earthdata credentials from `~/.netrc` or `$EARTHDATA_TOKEN`.
+1. Deploy: `uv run --env-file .env_hcho --env-file .env.local cdk deploy`
+2. Build and upload the inventory: `./scripts/build_inventory_remote.sh -e .env_hcho -m 50` (`-m 50` is the trial cap; drop it for the full run). This runs the committed `build_backfill_inventory.py` inside the stack's CodeBuild project, because the DAAC's temporary S3 credentials only work from us-west-2 — a laptop run with the default `--access direct` fails on every granule read. The Earthdata token comes from the stack's `EARTHDATA_SECRET_ARN`; the inventory lands at `s3://<bucket>/<INVENTORY_PREFIX>/hcho.json` (the only prefix the partition Lambda may read). On a us-west-2 machine, `uv run --env-file .env_hcho --env-file .env.local scripts/build_backfill_inventory.py ...` still works directly, with Earthdata credentials from `~/.netrc` or `$EARTHDATA_TOKEN`.
 3. Start the backfill: `./scripts/start_backfill.sh -e .env_hcho hcho-backfill-<date> s3://tempo-virtual-store-sandbox/tempo/hcho/inventory/hcho.json`. A failed run can be restarted under a new execution name; Init resets the leftover branch.
 4. When it has promoted, set `FORWARD_QUEUE_ENABLED=true` and `POLL_START_ISO` to the inventory's build time in `.env_hcho`, then redeploy, so the poller's first poll picks up granules published while the backfill ran; the re-sort job folds in anything that arrived out of order.
-5. Run `uv run --env-file .env_hcho scripts/verify_store.py` after the promote (and periodically) to spot-check the store against its sources.
+5. Run `uv run --env-file .env_hcho --env-file .env.local scripts/verify_store.py` after the promote (and periodically) to spot-check the store against its sources.
 
 Then repeat with `.env_no2` for the second stack:
 
 ```bash
-uv run --env-file .env_no2 cdk deploy
+uv run --env-file .env_no2 --env-file .env.local cdk deploy
 ./scripts/build_inventory_remote.sh -e .env_no2
 ./scripts/start_backfill.sh -e .env_no2 no2-backfill-<date> \
   s3://tempo-virtual-store-sandbox/tempo/no2/inventory/no2.json
@@ -206,8 +221,8 @@ The Lambda images install against [`lambda/constraints.txt`](./lambda/constraint
 uv run pytest               # tests
 uv run ruff check . && uv run ruff format --check .
 uv run mypy
-uv run --env-file .env cdk synth   # review infrastructure before deploying
-uv run --env-file .env cdk deploy
+uv run --env-file .env --env-file .env.local cdk synth   # review infrastructure before deploying
+uv run --env-file .env --env-file .env.local cdk deploy
 ```
 
 The `Processor` class in [`virtualizarr_processor/processor.py`](./lambda/virtualizarr-processor/virtualizarr_processor/processor.py) is the sole (non-polymorphic) implementation; the template's synthetic reference implementation lives on as `tests/stub_processor.py` and still exercises the generic fork/merge mechanics.

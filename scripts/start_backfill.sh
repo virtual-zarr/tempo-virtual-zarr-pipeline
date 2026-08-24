@@ -74,8 +74,16 @@ fi
 
 env_get() {
   # Read KEY from the env file, stripping quotes; empty string if absent.
+  # Semi-sensitive keys (AWS_PROFILE, ACCOUNT_ID, ...) live in .env.local
+  # beside the env file, so fall back to it when the key is missing there.
   [ -n "$ENV_FILE" ] && [ -f "$ENV_FILE" ] || return 0
-  grep -E "^$1=" "$ENV_FILE" | tail -n1 | cut -d= -f2- | sed 's/^["'\'']//;s/["'\'']$//'
+  local v
+  v="$(grep -E "^$1=" "$ENV_FILE" | tail -n1 | cut -d= -f2- | sed 's/^["'\'']//;s/["'\'']$//')"
+  local local_file="$(dirname "$ENV_FILE")/.env.local"
+  if [ -z "$v" ] && [ -f "$local_file" ]; then
+    v="$(grep -E "^$1=" "$local_file" | tail -n1 | cut -d= -f2- | sed 's/^["'\'']//;s/["'\'']$//')"
+  fi
+  printf '%s\n' "$v"
 }
 
 if [ -n "$ENV_FILE" ] && [ ! -f "$ENV_FILE" ]; then

@@ -21,6 +21,11 @@ repos:
       - id: ruff-format
   - repo: local
     hooks:
+      - id: env-hygiene
+        name: no semi-sensitive values in tracked env files
+        entry: scripts/check_env_hygiene.sh
+        language: script
+        files: '^\.env'
       - id: mypy
         name: mypy (project env)
         # Runs against the real dependency set (icechunk, zarr, boto3-stubs,
@@ -33,6 +38,13 @@ repos:
         language: system
         pass_filenames: false
         types_or: [python, toml]
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: 6eaad039603a4de39fddd1cf5f727391efe9974e  # v8.30.0
+    hooks:
+      # Generic secret net (default rules): catches a real credential pasted
+      # anywhere in the repo. The env-hygiene hook above handles the
+      # semi-sensitive-but-not-secret keys gitleaks won't flag.
+      - id: gitleaks
   - repo: https://github.com/citation-file-format/cff-converter-python
     rev: ebf0b5e44d67f8beaa1cd13a0d0393ea04c6058d
     hooks:
