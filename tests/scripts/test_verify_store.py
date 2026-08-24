@@ -71,6 +71,41 @@ def test_mutated_source_object_is_detected(tiny: TinyCollection) -> None:
     assert any("granule_1" in line for line in problems)
 
 
+def test_each_sampled_slot_is_narrated(
+    tiny: TinyCollection, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A successful run must say what it checked — slot, axis time, and the
+    source it compared against — so a green build log is a report, not just
+    an exit code."""
+    processor = backfill_and_promote(tiny)
+    repo = processor.open_backfill_repo(authorize_virtual_reads=True)
+    assert verify(repo, tiny.inventory) == []
+    slot_lines = [
+        line
+        for line in capsys.readouterr().err.splitlines()
+        if line.startswith("slot ")
+    ]
+    assert len(slot_lines) == 3  # one per sample
+    assert all(line.endswith(": ok") for line in slot_lines)
+    assert all("granule_" in line for line in slot_lines)  # names the source
+
+
+def test_narration_counts_problems_per_slot(
+    tiny: TinyCollection, capsys: pytest.CaptureFixture[str]
+) -> None:
+    processor = backfill_and_promote(tiny)
+    write_tempo_granule(
+        tiny.granule_paths[1], time_value=tiny.times[1], weight_scale=99.0
+    )
+    repo = processor.open_backfill_repo(authorize_virtual_reads=True)
+    assert verify(repo, tiny.inventory) != []
+    err = capsys.readouterr().err
+    assert any(
+        line.startswith("slot ") and line.endswith("problem(s)")
+        for line in err.splitlines()
+    )
+
+
 # --- CMR (independent) mode ---
 
 
@@ -158,6 +193,16 @@ def test_completeness_reports_granule_missing_from_store(
         )
         == []
     )
+
+
+def test_completeness_narrates_counts(
+    tiny: TinyCollection, capsys: pytest.CaptureFixture[str]
+) -> None:
+    urs = [entry.granule_ur for entry in tiny.inventory.granules]
+    vs.verify_completeness("C1", tiny.inventory, set(), search=fake_search(urs))
+    err = capsys.readouterr().err
+    assert f"CMR lists {len(urs)} granules" in err
+    assert f"manifest has {len(urs)}" in err
 
 
 def test_completeness_reports_granule_gone_from_cmr(tiny: TinyCollection) -> None:

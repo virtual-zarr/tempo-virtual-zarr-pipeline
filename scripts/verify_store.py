@@ -199,70 +199,108 @@ def verify_store(
 
     problems: list[str] = []
     for index in indices:
-        entry = manifest.granules[index]
-        url = entry.url
-        if cmr_lookup is not None:
-            found = cmr_lookup(axis_datetime(float(axis[index])))
-            if found is None:
-                problems.append(
-                    f"slot {index}: CMR has no granule near "
-                    f"{axis_datetime(float(axis[index])).isoformat()} "
-                    f"(manifest says {entry.granule_ur})"
-                )
-                continue
-            url, granule_ur = found
-            if url != entry.url:
-                problems.append(
-                    f"slot {index}: manifest url {entry.url} differs from "
-                    f"CMR's current url {url} ({granule_ur}); comparing "
-                    "against CMR's"
-                )
+        before = len(problems)
         try:
-            with open_source_file(url) as h5:
-                if float(h5["time"][0]) != float(axis[index]):
+            entry = manifest.granules[index]
+            url = entry.url
+            if cmr_lookup is not None:
+                found = cmr_lookup(axis_datetime(float(axis[index])))
+                if found is None:
                     problems.append(
-                        f"slot {index}: source /time {float(h5['time'][0])!r} != "
-                        f"store axis {float(axis[index])!r} ({url})"
+                        f"slot {index}: CMR has no granule near "
+                        f"{axis_datetime(float(axis[index])).isoformat()} "
+                        f"(manifest says {entry.granule_ur})"
                     )
                     continue
-                for name in variables:
-                    dataset = _source_dataset(h5, name)
-                    if dataset is None:
-                        problems.append(
-                            f"slot {index}: variable {name!r} missing from source {url}"
-                        )
-                        continue
-                    array = cast(zarr.Array, group[name])
-                    ny, nx = array.shape[1], array.shape[2]
-                    y0 = int(rng.integers(0, max(1, ny - window)))
-                    x0 = int(rng.integers(0, max(1, nx - window)))
-                    win = np.s_[y0 : y0 + window, x0 : x0 + window]
-                    source = np.asarray(
-                        dataset[0][win] if dataset.ndim == 3 else dataset[win]
+                url, granule_ur = found
+                if url != entry.url:
+                    problems.append(
+                        f"slot {index}: manifest url {entry.url} differs from "
+                        f"CMR's current url {url} ({granule_ur}); comparing "
+                        "against CMR's"
                     )
-                    # Index the window directly so only its chunks are read.
-                    stored = np.asarray(array[(index, *win)])
-                    if not np.array_equal(stored, source):
-                        problems.append(
-                            f"slot {index}: {name}[{y0}:{y0 + window},"
-                            f"{x0}:{x0 + window}] raw bytes differ from {url}"
-                        )
-                        continue
-                    # Window before loading: .values on the full slice would
-                    # fetch every chunk of a 2950x7750 decoded field to
-                    # compare a tiny window.
-                    read = np.asarray(decoded[name].isel(time=index)[win].values)
-                    if not _values_match(read, _mask_fill(source, dataset)):
-                        problems.append(
-                            f"slot {index}: {name}[{y0}:{y0 + window},"
-                            f"{x0}:{x0 + window}] decoded values differ from "
-                            f"the source's fill convention ({url})"
-                        )
-        except Exception as error:  # a read failure is a finding, not a crash
-            problems.append(
-                f"slot {index}: reading {url} failed: {type(error).__name__}: {error}"
+            _check_slot(
+                problems,
+                index,
+                url,
+                group,
+                decoded,
+                variables,
+                rng,
+                window,
+                open_source_file,
+                axis,
+            )
+        finally:
+            # Narrate every slot, findings or not: a green log should say
+            # what was checked, not just that nothing failed.
+            new = len(problems) - before
+            print(
+                f"slot {index} @ {axis_datetime(float(axis[index])).isoformat()}"
+                f" ({url}): {'ok' if new == 0 else f'{new} problem(s)'}",
+                file=sys.stderr,
             )
     return problems
+
+
+def _check_slot(
+    problems: list[str],
+    index: int,
+    url: str,
+    group: zarr.Group,
+    decoded: xr.Dataset,
+    variables: list[str],
+    rng: np.random.Generator,
+    window: int,
+    open_source_file: Callable[[str], Any],
+    axis: np.ndarray,
+) -> None:
+    """Compare one sampled slot against its source, appending findings."""
+    try:
+        with open_source_file(url) as h5:
+            if float(h5["time"][0]) != float(axis[index]):
+                problems.append(
+                    f"slot {index}: source /time {float(h5['time'][0])!r} != "
+                    f"store axis {float(axis[index])!r} ({url})"
+                )
+                return
+            for name in variables:
+                dataset = _source_dataset(h5, name)
+                if dataset is None:
+                    problems.append(
+                        f"slot {index}: variable {name!r} missing from source {url}"
+                    )
+                    continue
+                array = cast(zarr.Array, group[name])
+                ny, nx = array.shape[1], array.shape[2]
+                y0 = int(rng.integers(0, max(1, ny - window)))
+                x0 = int(rng.integers(0, max(1, nx - window)))
+                win = np.s_[y0 : y0 + window, x0 : x0 + window]
+                source = np.asarray(
+                    dataset[0][win] if dataset.ndim == 3 else dataset[win]
+                )
+                # Index the window directly so only its chunks are read.
+                stored = np.asarray(array[(index, *win)])
+                if not np.array_equal(stored, source):
+                    problems.append(
+                        f"slot {index}: {name}[{y0}:{y0 + window},"
+                        f"{x0}:{x0 + window}] raw bytes differ from {url}"
+                    )
+                    continue
+                # Window before loading: .values on the full slice would
+                # fetch every chunk of a 2950x7750 decoded field to
+                # compare a tiny window.
+                read = np.asarray(decoded[name].isel(time=index)[win].values)
+                if not _values_match(read, _mask_fill(source, dataset)):
+                    problems.append(
+                        f"slot {index}: {name}[{y0}:{y0 + window},"
+                        f"{x0}:{x0 + window}] decoded values differ from "
+                        f"the source's fill convention ({url})"
+                    )
+    except Exception as error:  # a read failure is a finding, not a crash
+        problems.append(
+            f"slot {index}: reading {url} failed: {type(error).__name__}: {error}"
+        )
 
 
 def _source_dataset(h5: h5py.File, name: str) -> h5py.Dataset | None:
@@ -293,6 +331,11 @@ def verify_completeness(
         if not items or not search_after:
             break
 
+    print(
+        f"completeness: CMR lists {len(cmr_urs)} granules; manifest has "
+        f"{len(manifest.granules)}, pending ledger {len(ledger_urs)}",
+        file=sys.stderr,
+    )
     known = {entry.granule_ur for entry in manifest.granules} | ledger_urs
     problems = [
         f"completeness: {ur} exists in CMR but is neither in the store "
