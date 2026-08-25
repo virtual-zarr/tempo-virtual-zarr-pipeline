@@ -29,13 +29,15 @@ Each collection is deployed as its own CDK stack, configured through typed
 settings (pydantic `BaseSettings`). A scheduled Lambda polls CMR for new
 revisions, an SQS queue feeds a consumer Lambda with reserved concurrency
 1, scheduled jobs handle re-sort, garbage collection, and the backfill
-state machine, and an on-demand CodeBuild project builds backfill
-inventories in-region. The manifest and pending ledger are stored inside the
+state machine, and an on-demand CodeBuild project runs the in-region jobs —
+backfill inventory builds and store verification. The manifest and pending ledger are stored inside the
 Icechunk repo and commit atomically with the data they describe.
 
 ![One CDK stack per collection](./fig2-forward-architecture.svg)
 
-`verify_store.py` runs outside the pipeline. It asks CMR which granule
+`verify_store.py` runs outside the pipeline's write path (started
+in-region through the same CodeBuild project, `run_codebuild.sh -V`, since
+source reads are region-locked to us-west-2). It asks CMR which granule
 should own each sampled time and compares stored bytes against the source
 file, so errors in the pipeline's own bookkeeping are still caught.
 
