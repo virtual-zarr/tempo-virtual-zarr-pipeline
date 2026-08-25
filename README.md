@@ -272,8 +272,10 @@ There's less to recover than you might expect:
 
 Workers can authenticate with Earthdata Login material from any of:
 `EARTHDATA_TOKEN`, `EARTHDATA_USERNAME`/`EARTHDATA_PASSWORD`, or a Secrets
-Manager secret at `EARTHDATA_SECRET_ARN` holding JSON with `token` or
-`username`+`password`. They exchange it for temporary S3 credentials at the
+Manager secret at `EARTHDATA_SECRET_ARN` holding JSON with `EARTHDATA_TOKEN`
+or `EARTHDATA_USERNAME`+`EARTHDATA_PASSWORD` (the same shape
+titiler-multidim reads, so services can share one secret), or a plain token
+string. They exchange it for temporary S3 credentials at the
 bucket's `s3credentials` endpoint (`EARTHDATA_S3_CREDENTIALS_ENDPOINT`
 overrides).
 
@@ -333,7 +335,7 @@ aws sso login --profile <profile>                      # or however the profile 
 uv run --env-file .env_hcho --env-file .env.local cdk bootstrap aws://<ACCOUNT_ID>/us-west-2   # fresh account only
 aws s3 mb s3://tempo-virtual-store-sandbox --region us-west-2 --profile <profile>
 aws secretsmanager create-secret --name tempo-earthdata \
-  --secret-string '{"token":"<EDL token>"}' \
+  --secret-string '{"EARTHDATA_TOKEN":"<EDL token>"}' \
   --region us-west-2 --profile <profile>
 ```
 

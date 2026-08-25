@@ -36,7 +36,8 @@ class StackSettings(BaseSettings):
     SQS_BATCH_SIZE: int = 10
 
     # Secrets Manager secret holding Earthdata Login material (JSON with
-    # "token" or "username"+"password"), exchanged for temporary S3
+    # "EARTHDATA_TOKEN" or "EARTHDATA_USERNAME"+"EARTHDATA_PASSWORD",
+    # matching titiler-multidim's secret shape), exchanged for temporary S3
     # credentials when reading protected source granules. When unset, reads
     # rely on the Lambda role's ambient IAM access to the source bucket.
     EARTHDATA_SECRET_ARN: str | None = None
