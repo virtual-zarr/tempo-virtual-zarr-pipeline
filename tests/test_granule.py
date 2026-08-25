@@ -206,19 +206,29 @@ def test_earthdata_auth_from_secrets_manager(no_edl_env: pytest.MonkeyPatch) -> 
     with mock_aws():
         no_edl_env.setenv(
             "EARTHDATA_SECRET_ARN",
-            _secret_arn('{"username": "user", "password": "pass"}'),
+            _secret_arn('{"EARTHDATA_USERNAME": "user", "EARTHDATA_PASSWORD": "pass"}'),
         )
         assert _earthdata_auth() == ("user", "pass")
 
     _earthdata_auth.cache_clear()
     with mock_aws():
-        no_edl_env.setenv("EARTHDATA_SECRET_ARN", _secret_arn('{"token": "tok"}'))
+        no_edl_env.setenv(
+            "EARTHDATA_SECRET_ARN", _secret_arn('{"EARTHDATA_TOKEN": "tok"}')
+        )
         assert _earthdata_auth() == "tok"
 
     _earthdata_auth.cache_clear()
     with mock_aws():
         no_edl_env.setenv("EARTHDATA_SECRET_ARN", _secret_arn("bare-token"))
         assert _earthdata_auth() == "bare-token"
+
+    _earthdata_auth.cache_clear()
+    with mock_aws():
+        no_edl_env.setenv(
+            "EARTHDATA_SECRET_ARN", _secret_arn('{"token": "legacy-keys"}')
+        )
+        with pytest.raises(ValueError, match="EARTHDATA_TOKEN"):
+            _earthdata_auth()
 
 
 def test_s3_credential_provider_selection(no_edl_env: pytest.MonkeyPatch) -> None:

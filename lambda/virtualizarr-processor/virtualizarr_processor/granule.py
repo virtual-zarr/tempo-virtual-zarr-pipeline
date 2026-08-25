@@ -54,8 +54,10 @@ def _earthdata_auth() -> str | tuple[str, str] | None:
 
     Sources, in order: ``$EARTHDATA_TOKEN``, ``$EARTHDATA_USERNAME`` and
     ``$EARTHDATA_PASSWORD``, then the Secrets Manager secret at
-    ``$EARTHDATA_SECRET_ARN`` (JSON with ``token`` or
-    ``username``+``password``, or a plain token string).
+    ``$EARTHDATA_SECRET_ARN`` (JSON with ``EARTHDATA_TOKEN`` or
+    ``EARTHDATA_USERNAME``+``EARTHDATA_PASSWORD``, or a plain token
+    string — the same shape titiler-multidim reads, so services can
+    share one secret).
     """
     token = os.environ.get("EARTHDATA_TOKEN")
     if token:
@@ -78,9 +80,16 @@ def _earthdata_auth() -> str | tuple[str, str] | None:
         return str(secret)  # a plain token string
     if not isinstance(data, dict):
         return str(secret)
-    if data.get("token"):
-        return str(data["token"])
-    return (str(data["username"]), str(data["password"]))
+    if data.get("EARTHDATA_TOKEN"):
+        return str(data["EARTHDATA_TOKEN"])
+    if data.get("EARTHDATA_USERNAME") and data.get("EARTHDATA_PASSWORD"):
+        return (str(data["EARTHDATA_USERNAME"]), str(data["EARTHDATA_PASSWORD"]))
+    msg = (
+        "earthdata secret is a JSON object without EARTHDATA_TOKEN or "
+        "EARTHDATA_USERNAME+EARTHDATA_PASSWORD; store the EDL token as a "
+        "plain string or under those keys"
+    )
+    raise ValueError(msg)
 
 
 @lru_cache(maxsize=None)
