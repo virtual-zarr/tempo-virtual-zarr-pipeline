@@ -9,6 +9,61 @@ marks the correctness mechanism under discussion, and dashed lines are
 asynchronous paths. The [README](../README.md) covers operations
 (deployment, env settings, runbook); this document is the conceptual map.
 
+**Reading path.** 30 seconds: the table below. 5 minutes: the table, then
+[README → Forward processing](../README.md#forward-processing). The whole
+picture: this document, figures in order.
+
+## Why this design
+
+Three properties of the TEMPO source drive everything unusual here. If
+your dataset lacks a property, you do not need the machinery in that row —
+and if a property ever changes, that row can be deleted:
+
+| Source property | Forces | Delete it when |
+|---|---|---|
+| ASDC publishes no SNS topic for the source bucket | CMR poller + watermark | ASDC provides a notification topic (the queue subscribes directly; §2) |
+| The in-file `/time` differs from the CMR and filename timestamps (`...T174200Z` holds 17:42:18.02), so a granule's slot on the axis is unknowable without reading the file | The ownership manifest; the pending ledger + re-sort job (a slot cannot be pre-created for a granule nobody has read; §4–5) | the metadata times become exact |
+| The DAAC revises and republishes granules **to the same S3 URI** | UR-checked routing (overwrite the same UR in place, reject a different UR to an operator); modification-time-stamped references so stale reads fail loudly (§1, §4) | never, for this DAAC |
+
+Everything else — the fork/merge backfill, CAS promotes, pinned-tip
+validation — is the standard machinery of the
+[template](https://github.com/developmentseed/virtualizarr-data-pipelines)
+family, not TEMPO-specific.
+
+### If you know the template
+
+TEMPO is the template plus the three rows above. The backfill (§3) and the
+CDK shape (§2) are stock. The stock forward path assumes announced files
+that append in publication order; TEMPO's forward path cannot (about 43%
+of publications arrive out of scan-time order, and slot positions are only
+knowable from file contents), so the consumer becomes a router (§4) and a
+scheduled re-sort (§5) folds deferred granules in. For the contrasting
+simple profile — trusted, regularly-spaced coordinates, notifications, no
+identity checks — see a forecast pipeline like NAQFC: create/region/append
+modes and no manifest, ledger, re-sort, or poller.
+
+### If you come from virtualizing stores in notebooks
+
+The store is the thing your notebook builds —
+`concat(sorted_by_in_file_time(granules), dim="time")` written to Icechunk
+— maintained continuously instead of rebuilt. Each piece of the pipeline
+is one notebook step made incremental, concurrent, or loud:
+
+| In a notebook you... | Here |
+|---|---|
+| `open_virtual_dataset(...)` per file | what a worker or the consumer does per granule, plus validation against a generated template (§3–4) |
+| `concat` everything, sorted, and write to Icechunk | the backfill: the same concat, partitioned across parallel workers with fork/merge, validated before `main` moves (§3) |
+| re-run the notebook when new files appear | forward processing: append the new granule instead of rebuilding 13,000+ (§2, §4) |
+| a file arrived late → re-sort the list, re-run | the pending ledger + re-sort job: the incremental version — inserted slots are parsed, everything after them is relocated as pure metadata, nothing is re-read (§5) |
+| keep `granules` as a Python list | the store manifest: the same list, stored *inside* the store so it commits atomically with the data (§2) |
+| eyeball the result | `verify_store.py`: samples slots, asks CMR who should own them, compares bytes against the source files (§2) |
+| never notice an upstream file was silently replaced | modification-time-stamped references: reads of stale references fail instead of returning changed bytes (§1) |
+
+The parts with no notebook counterpart — branches, compare-and-swap,
+pinned tips — exist because several writers (consumer, re-sort, backfill)
+share one store and readers must never see it half-written. The
+[glossary](#glossary) defines each in a few lines.
+
 ## 1. Virtual stores
 
 The store does not copy NASA's data. It is a Zarr-shaped index over the
