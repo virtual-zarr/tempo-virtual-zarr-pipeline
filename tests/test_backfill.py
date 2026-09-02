@@ -88,6 +88,23 @@ def test_promote_refuses_when_main_moved(backfill_repo: icechunk.Repository) -> 
     assert backfill_repo.lookup_branch("main") == concurrent_tip
 
 
+def test_promote_retry_after_success_is_a_noop(
+    backfill_repo: icechunk.Repository,
+) -> None:
+    """A retried promote (crash after a successful CAS, a Step Functions
+    retry, a manual re-invoke) converges instead of failing the CAS
+    because main already moved to the promoted snapshot."""
+    processor = Processor()
+    init = processor.initialize_backfill_store(backfill_repo)
+    child = _worker(backfill.create_fork(backfill_repo), ["0"])
+    backfill.merge_and_commit(backfill_repo, [child], message="partial")
+
+    backfill.promote(backfill_repo, expected_target_tip=init.branched_from)
+    promoted_tip = backfill_repo.lookup_branch("main")
+    backfill.promote(backfill_repo, expected_target_tip=init.branched_from)
+    assert backfill_repo.lookup_branch("main") == promoted_tip
+
+
 def test_open_backfill_repo_local_filesystem(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
