@@ -101,7 +101,9 @@ def test_promote_pins_the_snapshot_it_validated(
         if not reset_done:  # only once: run B's Init, mid-promote of run A
             reset_done = True
             b_repo = self.open_backfill_repo()
-            self.initialize_backfill_store(b_repo, tempo_pipeline.tiny.inventory)
+            self.initialize_backfill_store(
+                b_repo, tempo_pipeline.tiny.inventory, force=True
+            )
         return original(self, *args, **kw)  # type: ignore[arg-type]
 
     monkeypatch.setattr(

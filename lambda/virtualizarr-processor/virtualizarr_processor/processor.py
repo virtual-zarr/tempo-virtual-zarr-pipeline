@@ -100,6 +100,11 @@ class PartialWriteError(Exception):
     rather than committed."""
 
 
+class BackfillBranchExistsError(RuntimeError):
+    """The ``backfill`` branch already exists: a run is live or a failed
+    run left it behind. Never reset it blind - see finding #8."""
+
+
 class Processor:
     """The TEMPO L3 processor: parsing, validation, routing, and store lifecycle."""
 
@@ -181,7 +186,11 @@ class Processor:
     # -- backfill -----------------------------------------------------------
 
     def initialize_backfill_store(
-        self, repo: Repository, inventory: BackfillInventory
+        self,
+        repo: Repository,
+        inventory: BackfillInventory,
+        *,
+        force: bool = False,
     ) -> BranchInit:
         """Create the full-shape store on a clean ``backfill`` branch."""
         if inventory.collection != self.config.collection_shortname:
@@ -195,9 +204,19 @@ class Processor:
             self.template, {self.config.append_dim: len(inventory.granules)}
         )
         main_tip = repo.lookup_branch("main")
-        # Reset a leftover branch from a failed run so it can be restarted.
-        # Concurrent backfill runs are not supported.
+        # A pre-existing branch is either a LIVE run (resetting it would let
+        # two executions interleave slot writes on different axes - finding
+        # #8) or a failed run's leftover (promote deletes the branch on
+        # success). Only an explicit force - the operator confirming no
+        # execution is RUNNING - may reset it.
         if "backfill" in repo.list_branches():
+            if not force:
+                raise BackfillBranchExistsError(
+                    "the 'backfill' branch already exists - a backfill is "
+                    "either running or a previous run failed. Confirm no "
+                    "execution is RUNNING, then restart with force "
+                    "(start_backfill.sh -f)."
+                )
             repo.reset_branch("backfill", main_tip)
         else:
             repo.create_branch("backfill", main_tip)
@@ -265,6 +284,9 @@ class Processor:
                     f"deployment processes {self.config.collection_shortname!r}"
                 ]
             )
+        # Reset is safe here, unlike backfill init: the resort Lambda's
+        # reserved_concurrent_executions=1 rules out overlapping runs, and
+        # every scheduled fold must be able to reclaim the branch.
         if "resort" in repo.list_branches():
             repo.reset_branch("resort", from_tip)
         else:
