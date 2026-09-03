@@ -157,7 +157,10 @@ mid-promote can't swap in an unfilled store.
 
 Second, the move is a compare-and-swap against the tip `main` had when the
 branch was created. A commit that landed on `main` mid-run fails the promote
-instead of being discarded, and nothing is written after the CAS.
+instead of being discarded. The only thing that happens after the CAS is
+deleting the now-served `backfill` branch, which cannot fail the execution
+(a retried promote that finds the branch already gone converges instead of
+erroring — see finding #4).
 
 ### Validation
 
@@ -384,9 +387,11 @@ is baked into the Lambda environment.
 
    The execution name defaults to `<stack>-backfill-<UTC timestamp>`; pass
    one explicitly as an extra argument before the URI if you want a memorable
-   name. A failed run can simply be rerun — the fresh timestamp satisfies
-   Step Functions' 90-day execution-name uniqueness, and Init resets the
-   leftover branch.
+   name. A FAILED run can be rerun with `start_backfill.sh -f` — the fresh
+   timestamp satisfies Step Functions' 90-day execution-name uniqueness, and
+   `-f` resets the leftover `backfill` branch. Only pass `-f` once you've
+   confirmed no execution is still RUNNING; Init refuses to reset a live
+   run's branch out from under it.
 
 4. When the backfill has promoted, set `FORWARD_QUEUE_ENABLED=true` and
    `POLL_START_ISO` to the inventory's build time in `.env_hcho`, then
