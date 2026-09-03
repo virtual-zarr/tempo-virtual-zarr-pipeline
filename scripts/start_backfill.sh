@@ -34,6 +34,7 @@ Usage: start_backfill.sh [-s STACK] [-r REGION] [-e ENV_FILE] [execution-name] <
   -s STACK     CloudFormation stack name to read BackfillStateMachineArn from
   -r REGION    AWS region the stack is deployed in
   -e ENV_FILE  read STACK_NAME / ACCOUNT_REGION from this file (e.g. .env_hcho)
+  -f    restart after a FAILED run: reset the leftover backfill branch
 
   With no execution-name, one is generated as <stack>-backfill-<UTC timestamp>,
   which is always unique — Step Functions rejects a reused name for 90 days.
@@ -46,11 +47,13 @@ EOF
 STACK_ARG=""
 REGION_ARG=""
 ENV_FILE=""
-while getopts ":s:r:e:h" opt; do
+FORCE=false
+while getopts ":s:r:e:fh" opt; do
   case "$opt" in
     s) STACK_ARG="$OPTARG" ;;
     r) REGION_ARG="$OPTARG" ;;
     e) ENV_FILE="$OPTARG" ;;
+    f) FORCE=true ;;
     h) usage ;;
     :) echo "Error: -$OPTARG requires a value." >&2; usage ;;
     \?) echo "Error: unknown option -$OPTARG." >&2; usage ;;
@@ -139,4 +142,4 @@ aws stepfunctions start-execution \
   "${REGION_ARGS[@]}" \
   --state-machine-arn "$STATE_MACHINE_ARN" \
   --name "$EXECUTION_NAME" \
-  --input "{\"inventory_uri\": \"$INVENTORY_URI\"}"
+  --input "{\"inventory_uri\": \"$INVENTORY_URI\", \"force\": $FORCE}"

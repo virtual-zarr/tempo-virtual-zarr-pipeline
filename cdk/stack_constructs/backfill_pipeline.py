@@ -173,9 +173,10 @@ class BackfillPipeline(Construct):
             self,
             "InitTask",
             lambda_function=self.functions["init"],
-            payload=sfn.TaskInput.from_object(
-                {"inventory_uri": sfn.JsonPath.string_at("$.inventory_uri")}
-            ),
+            # No payload: the handler gets the whole state input, so the
+            # optional `force` restart flag flows through without making it
+            # a required input key (a bare {"inventory_uri": ...} input
+            # must keep working - it's the CfnOutput's documented form).
             payload_response_only=True,
             result_path="$.initResult",
         )
