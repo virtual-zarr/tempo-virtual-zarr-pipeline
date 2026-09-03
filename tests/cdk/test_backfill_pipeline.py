@@ -115,13 +115,20 @@ def test_state_machine_shape() -> None:
     # derives from the execution name
     assert "tempo/backfill" in asl
     assert "Execution.Name" in asl
+    # InitTask forwards the whole execution state (no Parameters payload),
+    # so the optional `force` flag reaches the handler and the documented
+    # bare {"inventory_uri": ...} input stays valid. Only Partition and
+    # Promote name inventory_uri explicitly.
+    assert asl.count('"inventory_uri.$":"$.inventory_uri"') == 2
 
 
 def test_init_and_promote_receive_the_inventory_uri() -> None:
-    """Init builds the axis from the typed inventory and promote gates the
-    store against it, so both states need the execution's inventory_uri."""
+    """Init builds the axis from the typed inventory (received via its
+    whole-state passthrough, not an explicit Parameters key - see
+    test_state_machine_shape) and promote gates the store against it via an
+    explicit Parameters key, alongside partition's."""
     asl = _state_machine_asl()
-    assert asl.count('"inventory_uri.$":"$.inventory_uri"') >= 3  # partition too
+    assert asl.count('"inventory_uri.$":"$.inventory_uri"') == 2  # partition, promote
 
 
 def test_promote_receives_the_cas_expectation() -> None:
