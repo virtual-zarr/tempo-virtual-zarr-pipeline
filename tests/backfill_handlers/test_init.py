@@ -2,9 +2,10 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import numpy as np
+import pytest
 import zarr
 from backfill_handlers import init
-from virtualizarr_processor.processor import Processor
+from virtualizarr_processor.processor import BackfillBranchExistsError, Processor
 
 
 def test_init_creates_backfill_branch_with_inventory_axis(
@@ -22,24 +23,34 @@ def test_init_creates_backfill_branch_with_inventory_axis(
     assert "backfill" in repo.list_branches()
 
 
-def test_init_resets_leftover_branch_from_failed_run(
+def test_init_refuses_existing_branch_without_force(
     tempo_pipeline: SimpleNamespace,
     lambda_context: MagicMock,
 ) -> None:
-    """A failed run leaves the backfill branch behind; restarting the state
-    machine must not require manual branch deletion."""
+    """A pre-existing backfill branch means a live or failed run; a bare
+    re-run must fail fast instead of resetting it (review finding #8)."""
+    init.handler({"inventory_uri": tempo_pipeline.inventory_uri}, lambda_context)
+
+    with pytest.raises(BackfillBranchExistsError, match="force"):
+        init.handler({"inventory_uri": tempo_pipeline.inventory_uri}, lambda_context)
+
+
+def test_init_force_resets_leftover_branch_from_failed_run(
+    tempo_pipeline: SimpleNamespace,
+    lambda_context: MagicMock,
+) -> None:
+    """Restarting after a failed run: force resets the leftover branch."""
     first = init.handler(
         {"inventory_uri": tempo_pipeline.inventory_uri}, lambda_context
     )
 
     second = init.handler(
-        {"inventory_uri": tempo_pipeline.inventory_uri}, lambda_context
+        {"inventory_uri": tempo_pipeline.inventory_uri, "force": True},
+        lambda_context,
     )
 
     assert second["branched_from"] == first["branched_from"]  # main untouched
     repo = Processor().open_backfill_repo()
     assert repo.lookup_branch("backfill") == second["base_snapshot"]
-    group = zarr.open_group(repo.readonly_session("backfill").store, mode="r")
-    np.testing.assert_array_equal(np.asarray(group["time"][:]), tempo_pipeline.times)
     group = zarr.open_group(repo.readonly_session("backfill").store, mode="r")
     np.testing.assert_array_equal(np.asarray(group["time"][:]), tempo_pipeline.times)
