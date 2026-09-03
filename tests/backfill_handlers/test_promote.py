@@ -35,6 +35,8 @@ def test_promote_gates_then_moves_main_to_backfill_tip(
         {"inventory_uri": tempo_pipeline.inventory_uri}, lambda_context
     )
     run_workers(tempo_pipeline)
+    repo = Processor().open_backfill_repo()
+    expected_tip = repo.lookup_branch("backfill")
 
     result = promote.handler(
         {
@@ -46,7 +48,7 @@ def test_promote_gates_then_moves_main_to_backfill_tip(
 
     assert result["promoted"] is True
     repo = Processor().open_backfill_repo()
-    assert repo.lookup_branch("main") == repo.lookup_branch("backfill")
+    assert repo.lookup_branch("main") == expected_tip
 
 
 def test_promote_rejects_unfilled_store(
@@ -153,3 +155,34 @@ def test_promote_gate_failure_leaves_main_untouched(
 
     repo = Processor().open_backfill_repo()
     assert repo.lookup_branch("main") == main_before
+
+
+def test_promote_deletes_backfill_branch(
+    tempo_pipeline: SimpleNamespace,
+    lambda_context: MagicMock,
+) -> None:
+    """After promote, the branch is gone, so the next run's init never
+    needs force (branch-exists then always means live or failed)."""
+    init_result = init.handler(
+        {"inventory_uri": tempo_pipeline.inventory_uri}, lambda_context
+    )
+    run_workers(tempo_pipeline)
+    promote.handler(
+        {
+            "inventory_uri": tempo_pipeline.inventory_uri,
+            "branched_from": init_result["branched_from"],
+        },
+        lambda_context,
+    )
+
+    repo = Processor().open_backfill_repo()
+    assert "backfill" not in repo.list_branches()
+    # A fresh run's init no longer needs force: the guard only ever
+    # blocked on branch existence, and the branch is gone, so init takes
+    # the create_branch path. (A second full backfill of the very same
+    # granules against an already-populated `main` is a separate, out-of-
+    # scope limit: create_empty_store correctly refuses to re-template
+    # over data that is already there, so this fails inside the store
+    # write rather than on BackfillBranchExistsError.)
+    with pytest.raises(ValueError, match="already exists"):
+        init.handler({"inventory_uri": tempo_pipeline.inventory_uri}, lambda_context)
