@@ -52,3 +52,27 @@ def test_worker_raises_on_invalid_granule(
     }
     with pytest.raises(RuntimeError, match="missing_granule"):
         worker.handler(event, lambda_context)
+
+
+def test_retried_worker_overwrites_its_own_fork(
+    tempo_pipeline: SimpleNamespace,
+    lambda_context: MagicMock,
+) -> None:
+    """A Step Functions retry of the same batch must reuse the same fork
+    name (overwriting), never add a second fork for reduce to merge."""
+    fork_result = _forked(tempo_pipeline, lambda_context)
+    event = {
+        "fork_in_uri": fork_result["fork_in_uri"],
+        "forks_out_prefix": fork_result["forks_out_prefix"],
+        "file_keys": tempo_pipeline.urls[:3],
+    }
+    first = worker.handler(event, lambda_context)
+    second = worker.handler(event, lambda_context)
+
+    assert first["child_fork_uri"] == second["child_fork_uri"]
+    assert len(fork_store.list_forks(fork_result["forks_out_prefix"])) == 1
+
+    other = dict(event, file_keys=tempo_pipeline.urls[3:5])
+    third = worker.handler(other, lambda_context)
+    assert third["child_fork_uri"] != first["child_fork_uri"]
+    assert len(fork_store.list_forks(fork_result["forks_out_prefix"])) == 2
