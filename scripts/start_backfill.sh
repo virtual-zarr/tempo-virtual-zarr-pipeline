@@ -7,7 +7,7 @@
 # inventory URI.
 #
 # Usage:
-#   scripts/start_backfill.sh [-s STACK] [-r REGION] [-e ENV_FILE] \
+#   scripts/start_backfill.sh [-s STACK] [-r REGION] [-e ENV_FILE] [-f] \
 #       <execution-name> <inventory-uri>
 #
 # Examples:
@@ -29,12 +29,12 @@ set -euo pipefail
 
 usage() {
   cat >&2 <<'EOF'
-Usage: start_backfill.sh [-s STACK] [-r REGION] [-e ENV_FILE] [execution-name] <inventory-uri>
+Usage: start_backfill.sh [-s STACK] [-r REGION] [-e ENV_FILE] [-f] [execution-name] <inventory-uri>
 
   -s STACK     CloudFormation stack name to read BackfillStateMachineArn from
   -r REGION    AWS region the stack is deployed in
   -e ENV_FILE  read STACK_NAME / ACCOUNT_REGION from this file (e.g. .env_hcho)
-  -f    restart after a FAILED run: reset the leftover backfill branch
+  -f           restart after a FAILED run: reset the leftover backfill branch
 
   With no execution-name, one is generated as <stack>-backfill-<UTC timestamp>,
   which is always unique — Step Functions rejects a reused name for 90 days.

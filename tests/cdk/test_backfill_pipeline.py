@@ -122,13 +122,31 @@ def test_state_machine_shape() -> None:
     assert asl.count('"inventory_uri.$":"$.inventory_uri"') == 2
 
 
+def _state_body(asl: str, name: str) -> str:
+    """Return the JSON object defining state `name`, matching braces from
+    its `"<name>":{` key (a `"Next":"<name>"` reference never matches: it
+    has no trailing `:{`)."""
+    marker = f'"{name}":{{'
+    start = asl.index(marker) + len(f'"{name}":')
+    depth = 0
+    for i in range(start, len(asl)):
+        if asl[i] == "{":
+            depth += 1
+        elif asl[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return asl[start : i + 1]
+    raise AssertionError(f"unbalanced braces for state {name!r}")
+
+
 def test_init_and_promote_receive_the_inventory_uri() -> None:
-    """Init builds the axis from the typed inventory (received via its
-    whole-state passthrough, not an explicit Parameters key - see
-    test_state_machine_shape) and promote gates the store against it via an
-    explicit Parameters key, alongside partition's."""
+    """Partition and promote gate the store against the inventory via an
+    explicit Parameters key. Init instead builds the axis from the typed
+    inventory via its whole-state passthrough (see test_state_machine_shape)
+    - its own state definition carries no Parameters key at all."""
     asl = _state_machine_asl()
     assert asl.count('"inventory_uri.$":"$.inventory_uri"') == 2  # partition, promote
+    assert "Parameters" not in _state_body(asl, "InitTask")
 
 
 def test_promote_receives_the_cas_expectation() -> None:

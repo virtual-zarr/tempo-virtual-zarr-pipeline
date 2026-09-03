@@ -1,6 +1,7 @@
 """Handler: write one file-batch's virtual refs into a child fork on S3."""
 
 import hashlib
+import json
 import pickle
 from typing import Any
 
@@ -28,7 +29,7 @@ def handler(event: dict[str, Any], context: LambdaContext) -> dict[str, Any]:
     # Deterministic, batch-keyed name: an SFN retry that re-runs this batch
     # overwrites its own fork instead of leaving a stale sibling for reduce
     # to merge last-writer-wins (review finding #9).
-    batch_key = hashlib.sha256("\n".join(event["file_keys"]).encode()).hexdigest()
+    batch_key = hashlib.sha256(json.dumps(event["file_keys"]).encode()).hexdigest()
     child_fork_uri = f"{event['forks_out_prefix']}{batch_key}.pkl"
     fork_store.save_fork(child_fork_uri, pickle.dumps(child))
     logger.info("Wrote child fork", extra={"child_fork_uri": child_fork_uri})
