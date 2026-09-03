@@ -103,6 +103,9 @@ def test_promote_pins_the_snapshot_it_validated(
         if not reset_done:  # only once: run B's Init, mid-promote of run A
             reset_done = True
             b_repo = self.open_backfill_repo()
+            # post-#8 a bare concurrent Init would fail fast here (the
+            # branch still exists); force simulates an operator override
+            # arriving mid-promote.
             self.initialize_backfill_store(
                 b_repo, tempo_pipeline.tiny.inventory, force=True
             )
@@ -186,3 +189,31 @@ def test_promote_deletes_backfill_branch(
     # write rather than on BackfillBranchExistsError.)
     with pytest.raises(ValueError, match="already exists"):
         init.handler({"inventory_uri": tempo_pipeline.inventory_uri}, lambda_context)
+
+
+def test_promote_retry_after_success_converges(
+    tempo_pipeline: SimpleNamespace,
+    lambda_context: MagicMock,
+) -> None:
+    """A Step Functions retry of an execution whose promote already landed
+    (the response was lost, or the retry is simply redundant) must not raise
+    on the now-missing `backfill` branch - it should converge on the same
+    promoted result (finding #4)."""
+    init_result = init.handler(
+        {"inventory_uri": tempo_pipeline.inventory_uri}, lambda_context
+    )
+    run_workers(tempo_pipeline)
+    event = {
+        "inventory_uri": tempo_pipeline.inventory_uri,
+        "branched_from": init_result["branched_from"],
+    }
+
+    first = promote.handler(event, lambda_context)
+    assert first["promoted"] is True
+    expected_tip = Processor().open_backfill_repo().lookup_branch("main")
+
+    second = promote.handler(event, lambda_context)
+
+    assert second == {"promoted": True}
+    repo = Processor().open_backfill_repo()
+    assert repo.lookup_branch("main") == expected_tip

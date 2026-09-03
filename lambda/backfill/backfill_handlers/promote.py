@@ -19,6 +19,12 @@ Init step, so the move is the entire promote: compare-and-swap against
 commit that landed on `main` mid-run fails the promote instead of being
 discarded. Only branch cleanup runs after the CAS, and it cannot fail
 the execution.
+
+A successful promote deletes the `backfill` branch (see below), so a
+retried execution whose first attempt already landed finds no branch to
+look up. That absence is not an error: it means this promote's work is
+already done, so the handler re-validates `main` and converges on the
+same result instead of raising (finding #4).
 """
 
 from typing import Any
@@ -40,6 +46,12 @@ def handler(event: dict[str, Any], context: LambdaContext) -> dict[str, Any]:
     processor = Processor()
     repo = processor.open_backfill_repo()
     backfill_inventory = inventory.read_inventory(event["inventory_uri"])
+    if "backfill" not in repo.list_branches():
+        # Only a successful promote deletes the branch, so its absence means
+        # this promote already landed: converge (finding #4) rather than
+        # fail an execution whose work is done.
+        processor.validate_backfill_store(repo, backfill_inventory, branch="main")
+        return {"promoted": True}
     # Pin the tip once: validate this snapshot, promote this snapshot.
     tip = repo.lookup_branch("backfill")
     processor.validate_backfill_store(
