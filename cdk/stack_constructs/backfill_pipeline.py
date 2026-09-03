@@ -205,8 +205,8 @@ class BackfillPipeline(Construct):
         )
         # Retry transient failures that outlive the in-code parse retries;
         # deterministic (validation) failures fail again quickly and still
-        # gate the promote. A retried worker that already saved its fork
-        # writes a second, identical one; merge is last-writer-wins.
+        # gate the promote. A retried worker overwrites its own deterministically-named
+        # fork, so the retry can never leave a stale duplicate for reduce.
         worker.add_retry(
             errors=[sfn.Errors.ALL],
             interval=Duration.seconds(30),
