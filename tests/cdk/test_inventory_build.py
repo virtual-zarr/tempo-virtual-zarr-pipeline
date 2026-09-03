@@ -130,7 +130,7 @@ def test_inventory_build_reads_earthdata_secret() -> None:
                                 {
                                     "Name": "EARTHDATA_TOKEN",
                                     "Type": "SECRETS_MANAGER",
-                                    "Value": f"{arn}:token",
+                                    "Value": f"{arn}:EARTHDATA_TOKEN",
                                 }
                             ]
                         )

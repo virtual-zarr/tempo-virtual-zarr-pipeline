@@ -162,6 +162,18 @@ if [ -n "$DRY_RUN" ]; then
       echo "Inventory dest.:     <no S3_URI default found on the project — a run without -u may fail>" >&2
     fi
   fi
+  # Earthdata wiring is baked into the project at deploy time (from
+  # EARTHDATA_SECRET_ARN, usually in .env.local); a deploy that missed
+  # .env.local leaves it unset and source reads 403 on ambient AWS creds.
+  TOKEN_TYPE="$(aws codebuild batch-get-projects ${REGION_ARGS[@]+"${REGION_ARGS[@]}"} \
+    --names "$PROJECT" \
+    --query "projects[0].environment.environmentVariables[?name=='EARTHDATA_TOKEN'].type | [0]" \
+    --output text)"
+  if [ "$TOKEN_TYPE" = "SECRETS_MANAGER" ]; then
+    echo "Earthdata token:     wired from Secrets Manager (set at deploy)" >&2
+  else
+    echo "Earthdata token:     *** NOT SET on the project — was cdk deploy run with .env.local? Source reads will 403 ***" >&2
+  fi
   echo "MAX_COUNT override:  ${MAX_COUNT:-<none>}" >&2
   echo "Commit to be built:  $(git rev-parse --short HEAD) ($(git log -1 --format=%s))" >&2
   if [ -n "$DIRTY" ]; then

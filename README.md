@@ -110,9 +110,12 @@ disagree on anything not declared volatile.
 
 ### Backfill inventory
 
-`uv run scripts/build_backfill_inventory.py` produces the input for a
-backfill: a validated JSON document with one entry per granule — its `.nc`
-link, its granule UR, and its exact in-file `/time[0]`.
+`scripts/build_backfill_inventory.py` produces the input for a backfill: a
+validated JSON document with one entry per granule — its `.nc` link, its
+granule UR, and its exact in-file `/time[0]`. Because it reads every
+granule's header, the standard way to run it is in-region through the
+stack's CodeBuild project — `scripts/run_codebuild.sh -e <env file>` — see
+[Deploying and running](#deploying-and-running).
 
 The in-file time is the important part. It differs from both the CMR and
 filename timestamps (`...T174200Z` has `/time` = 17:42:18.02), and the
@@ -213,7 +216,7 @@ conflict.
 The manifest and pending ledger live inside the Icechunk store itself, as
 root-group attributes and arrays committed atomically with the data they
 describe. The only state outside the store is the CMR poll watermark, at
-`s3://<icechunk bucket>/<prefix>state/`. The poller's first poll starts from
+`s3://<icechunk bucket>/<prefix>/state/`. The poller's first poll starts from
 `POLL_START_ISO` when set (typically the backfill inventory's build time),
 else a fixed lookback.
 
@@ -231,10 +234,12 @@ under Deploying and running.
 
 ### Verification
 
-`uv run scripts/verify_store.py` spot-checks the store against its sources,
-independently of the pipeline's own bookkeeping. It samples random time steps
-and, for each, asks CMR for the granule nearest that time. The file CMR
-points at must match the store's axis time exactly.
+`scripts/verify_store.py` spot-checks the store against its sources,
+independently of the pipeline's own bookkeeping (run it in-region via
+`scripts/run_codebuild.sh -V` — s3:// source reads use region-locked DAAC
+credentials, so laptop runs 403). It samples random time steps and, for
+each, asks CMR for the granule nearest that time. The file CMR points at
+must match the store's axis time exactly.
 
 Random windows of every variable are then compared two ways: raw (store bytes
 against h5py reads) and CF-decoded (the read path users take). Because the
@@ -270,8 +275,10 @@ There's less to recover than you might expect:
 
 Workers can authenticate with Earthdata Login material from any of:
 `EARTHDATA_TOKEN`, `EARTHDATA_USERNAME`/`EARTHDATA_PASSWORD`, or a Secrets
-Manager secret at `EARTHDATA_SECRET_ARN` holding JSON with `token` or
-`username`+`password`. They exchange it for temporary S3 credentials at the
+Manager secret at `EARTHDATA_SECRET_ARN` holding JSON with `EARTHDATA_TOKEN`
+or `EARTHDATA_USERNAME`+`EARTHDATA_PASSWORD` (the same shape
+titiler-multidim reads, so services can share one secret), or a plain token
+string. They exchange it for temporary S3 credentials at the
 bucket's `s3credentials` endpoint (`EARTHDATA_S3_CREDENTIALS_ENDPOINT`
 overrides).
 
@@ -279,6 +286,18 @@ Without any of those, reads use the Lambda role's ambient IAM access, which
 requires a bucket-policy grant on the source bucket.
 
 ## Deploying and running
+
+> **What runs where.** Anything that reads source granules must run in
+> us-west-2 — the DAAC's temporary S3 credentials reject requests from
+> anywhere else, so laptop runs fail every read with 403 regardless of
+> Earthdata credentials. `scripts/run_codebuild.sh` is the standard way to
+> do that: it ships the committed repo to the stack's CodeBuild project and
+> runs the inventory build (default; `-m N` for trials) or store
+> verification (`-V`) in-region, printing the build log tail when done.
+> `-n` dry-runs the whole launch (account, project, mode, Earthdata
+> wiring). Laptop-safe: `cdk deploy`, `start_backfill.sh`, queue
+> operations, CMR queries, and store *metadata* reads (axis, manifest,
+> ledger) — only virtual-chunk and source reads are region-locked.
 
 ### Env files
 
@@ -319,7 +338,7 @@ aws sso login --profile <profile>                      # or however the profile 
 uv run --env-file .env_hcho --env-file .env.local cdk bootstrap aws://<ACCOUNT_ID>/us-west-2   # fresh account only
 aws s3 mb s3://tempo-virtual-store-sandbox --region us-west-2 --profile <profile>
 aws secretsmanager create-secret --name tempo-earthdata \
-  --secret-string '{"token":"<EDL token>"}' \
+  --secret-string '{"EARTHDATA_TOKEN":"<EDL token>"}' \
   --region us-west-2 --profile <profile>
 ```
 
@@ -342,13 +361,15 @@ anything (the scripts read keys missing from the `-e` file out of
 ### Trial run vs. full backfill
 
 The steps below are written for the first trial: a backfill of only the 50
-most recent granules (`--max-count 50` on the inventory command) into a
-scratch store. The time axis is sized from the inventory, so `.env_hcho`
-points at `ICECHUNK_PREFIX=v04-trial` rather than the real `v04`.
+most recent granules (`-m 50` on the inventory build) into a scratch store.
+The time axis is sized from the inventory, so `.env_hcho` points at
+`ICECHUNK_PREFIX=v04-trial` rather than the real `v04`.
 
-To graduate to the full backfill: drop `--max-count`, rebuild and re-upload
-the inventory, set `ICECHUNK_PREFIX=v04`, and redeploy **first** — the prefix
-is baked into the Lambda environment.
+To graduate to the full backfill: set `ICECHUNK_PREFIX=v04` and redeploy
+**first** — the prefix is baked into the Lambda environment — then rebuild
+the inventory without `-m` (the full ~13.6k-granule header sweep takes
+hours; the project's 8 h timeout is sized for it) and start the backfill
+from the new inventory.
 
 ### Running a backfill (hcho shown)
 
@@ -402,12 +423,13 @@ is baked into the Lambda environment.
    [Testing forward processing (small)](#testing-forward-processing-small)
    below.
 
-5. Run
-   `uv run --env-file .env_hcho --env-file .env.local scripts/verify_store.py`
-   after the promote, and periodically after that — or run it in-region with
-   `scripts/run_codebuild.sh -e .env_hcho -V` (add `-a "--completeness"` for
-   extra flags), which starts the stack's CodeBuild project with a verify
-   buildspec override.
+5. Run `scripts/run_codebuild.sh -e .env_hcho -V` after the promote, and
+   periodically after that (add `-a "--completeness"` for the CMR diff); it
+   starts the stack's CodeBuild project with a verify buildspec override.
+   Verification must run in-region (CodeBuild or CloudShell in us-west-2):
+   the s3:// source reads use the DAAC's region-locked temporary
+   credentials, so a laptop run fails every slot with 403 PermissionDenied
+   regardless of Earthdata credentials.
 
 Then repeat with `.env_no2` for the second stack:
 
@@ -556,8 +578,10 @@ later client deployment, also set the `CLIENT` tag in `.env.local` and
 
 ### Settings
 
-Settings live in [`cdk/settings.py`](./cdk/settings.py) and a `.env` file
-([sample](./.env.sample)). The ones that matter most:
+Settings live in [`cdk/settings.py`](./cdk/settings.py) and the
+per-collection env files (`.env_hcho` / `.env_no2`, plus the gitignored
+`.env.local`; samples: [`.env.sample`](./.env.sample),
+[`.env.local.sample`](./.env.local.sample)). The ones that matter most:
 
 | Setting | Default | Meaning |
 |---|---|---|
@@ -605,8 +629,8 @@ Concurrent backfill runs are not supported.
 uv run pytest               # tests
 uv run ruff check . && uv run ruff format --check .
 uv run mypy
-uv run --env-file .env --env-file .env.local cdk synth   # review infrastructure before deploying
-uv run --env-file .env --env-file .env.local cdk deploy
+uv run --env-file .env_hcho --env-file .env.local cdk synth   # review infrastructure before deploying
+uv run --env-file .env_hcho --env-file .env.local cdk deploy
 ```
 
 The `Processor` class in

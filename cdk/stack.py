@@ -605,7 +605,7 @@ class VirtualizarrSqsStack(Stack):
         if settings.EARTHDATA_SECRET_ARN:
             env["EARTHDATA_TOKEN"] = codebuild.BuildEnvironmentVariable(
                 type=codebuild.BuildEnvironmentVariableType.SECRETS_MANAGER,
-                value=f"{settings.EARTHDATA_SECRET_ARN}:token",
+                value=f"{settings.EARTHDATA_SECRET_ARN}:EARTHDATA_TOKEN",
             )
         self.inventory_build = codebuild.Project(
             self,
