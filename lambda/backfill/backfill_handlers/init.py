@@ -19,7 +19,7 @@ def handler(event: dict[str, Any], context: LambdaContext) -> dict[str, Any]:
     repo = processor.open_backfill_repo()
     backfill_inventory = inventory.read_inventory(event["inventory_uri"])
     init_result = processor.initialize_backfill_store(
-        repo, backfill_inventory, force=bool(event.get("force", False))
+        repo, backfill_inventory, force=event.get("force") is True
     )
     logger.info(
         "Initialized backfill store",

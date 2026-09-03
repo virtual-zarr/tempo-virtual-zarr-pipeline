@@ -192,7 +192,17 @@ class Processor:
         *,
         force: bool = False,
     ) -> BranchInit:
-        """Create the full-shape store on a clean ``backfill`` branch."""
+        """Create the full-shape store on a clean ``backfill`` branch.
+
+        Under Step Functions' default service-exception retry, a
+        lost-result retry of a successful init (the branch was created and
+        committed, but the response never made it back) is indistinguishable
+        here from a genuinely concurrent run: both see the branch already
+        exists. The operator answer is the same either way - confirm no
+        execution is RUNNING, then restart the execution with force
+        (``start_backfill.sh -f``); this call never resets a branch on its
+        own.
+        """
         if inventory.collection != self.config.collection_shortname:
             raise StoreValidationError(
                 [
@@ -215,7 +225,9 @@ class Processor:
                     "the 'backfill' branch already exists - a backfill is "
                     "either running or a previous run failed. Confirm no "
                     "execution is RUNNING, then restart with force "
-                    "(start_backfill.sh -f)."
+                    "(start_backfill.sh -f). If main already holds the "
+                    "promoted store, this backfill already finished - do "
+                    "not force; a full rebuild needs a fresh store prefix."
                 )
             repo.reset_branch("backfill", main_tip)
         else:
