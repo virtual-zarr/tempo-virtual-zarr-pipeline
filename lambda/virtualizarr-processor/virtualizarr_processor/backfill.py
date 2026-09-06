@@ -64,8 +64,12 @@ def promote(
     exact `source_snapshot` this run committed instead: the CAS then either
     promotes this run's own commit or fails, never a stranger's.
     """
-    repo.reset_branch(
-        target,
-        source_snapshot if source_snapshot is not None else repo.lookup_branch(source),
-        from_snapshot_id=expected_target_tip,
+    promoted = (
+        source_snapshot if source_snapshot is not None else repo.lookup_branch(source)
     )
+    if repo.lookup_branch(target) == promoted:
+        # Already promoted: a retried run (crash after a successful CAS,
+        # Step Functions retry, manual re-invoke) converges instead of
+        # failing the CAS because `target` has moved.
+        return
+    repo.reset_branch(target, promoted, from_snapshot_id=expected_target_tip)

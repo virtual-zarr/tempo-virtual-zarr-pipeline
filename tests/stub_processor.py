@@ -172,10 +172,15 @@ class Processor:
         snapshot = session.commit(message=f"Append to {session.snapshot_id}")
         return str(snapshot)
 
-    def initialize_backfill_store(self, repo: Repository) -> BranchInit:
+    def initialize_backfill_store(
+        self, repo: Repository, *, force: bool = False
+    ) -> BranchInit:
         main_tip = repo.lookup_branch("main")
-        # Reset a leftover branch from a failed run.
+        # Mirrors the reference Processor: a pre-existing branch means a
+        # live or failed run, and only an explicit force may reset it.
         if "backfill" in repo.list_branches():
+            if not force:
+                raise RuntimeError("backfill branch exists; pass force=True")
             repo.reset_branch("backfill", main_tip)
         else:
             repo.create_branch("backfill", main_tip)

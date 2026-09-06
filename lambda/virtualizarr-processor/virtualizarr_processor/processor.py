@@ -94,6 +94,17 @@ def _granule_ur(file_key: str) -> str:
     return file_key.rsplit("/", 1)[-1].removesuffix(".nc")
 
 
+class PartialWriteError(Exception):
+    """A granule failed mid-write, so the shared batch session may hold a
+    partial slot (some variables written, others not) and must be discarded
+    rather than committed."""
+
+
+class BackfillBranchExistsError(RuntimeError):
+    """The ``backfill`` branch already exists: a run is live or a failed
+    run left it behind. Never reset it blind - see finding #8."""
+
+
 class Processor:
     """The TEMPO L3 processor: parsing, validation, routing, and store lifecycle."""
 
@@ -104,6 +115,7 @@ class Processor:
         # Forward-processing batch state, reset per session.
         self._appended: list[GranuleEntry] = []
         self._replaced: dict[int, GranuleEntry] = {}
+        self._write_failed = False
 
     # -- repository ---------------------------------------------------------
 
@@ -174,9 +186,23 @@ class Processor:
     # -- backfill -----------------------------------------------------------
 
     def initialize_backfill_store(
-        self, repo: Repository, inventory: BackfillInventory
+        self,
+        repo: Repository,
+        inventory: BackfillInventory,
+        *,
+        force: bool = False,
     ) -> BranchInit:
-        """Create the full-shape store on a clean ``backfill`` branch."""
+        """Create the full-shape store on a clean ``backfill`` branch.
+
+        Under Step Functions' default service-exception retry, a
+        lost-result retry of a successful init (the branch was created and
+        committed, but the response never made it back) is indistinguishable
+        here from a genuinely concurrent run: both see the branch already
+        exists. The operator answer is the same either way - confirm no
+        execution is RUNNING, then restart the execution with force
+        (``start_backfill.sh -f``); this call never resets a branch on its
+        own.
+        """
         if inventory.collection != self.config.collection_shortname:
             raise StoreValidationError(
                 [
@@ -188,9 +214,21 @@ class Processor:
             self.template, {self.config.append_dim: len(inventory.granules)}
         )
         main_tip = repo.lookup_branch("main")
-        # Reset a leftover branch from a failed run so it can be restarted.
-        # Concurrent backfill runs are not supported.
+        # A pre-existing branch is either a LIVE run (resetting it would let
+        # two executions interleave slot writes on different axes - finding
+        # #8) or a failed run's leftover (promote deletes the branch on
+        # success). Only an explicit force - the operator confirming no
+        # execution is RUNNING - may reset it.
         if "backfill" in repo.list_branches():
+            if not force:
+                raise BackfillBranchExistsError(
+                    "the 'backfill' branch already exists - a backfill is "
+                    "either running or a previous run failed. Confirm no "
+                    "execution is RUNNING, then restart with force "
+                    "(start_backfill.sh -f). If main already holds the "
+                    "promoted store, this backfill already finished - do "
+                    "not force; a full rebuild needs a fresh store prefix."
+                )
             repo.reset_branch("backfill", main_tip)
         else:
             repo.create_branch("backfill", main_tip)
@@ -258,6 +296,9 @@ class Processor:
                     f"deployment processes {self.config.collection_shortname!r}"
                 ]
             )
+        # Reset is safe here, unlike backfill init: the resort Lambda's
+        # reserved_concurrent_executions=1 rules out overlapping runs, and
+        # every scheduled fold must be able to reclaim the branch.
         if "resort" in repo.list_branches():
             repo.reset_branch("resort", from_tip)
         else:
@@ -596,6 +637,7 @@ class Processor:
     def initialize_session(self, repo: Repository) -> Session:
         self._appended = []
         self._replaced = {}
+        self._write_failed = False
         return repo.writable_session("main")
 
     def _batch_ur_at(self, index: int, axis_size: int) -> str | None:
@@ -647,7 +689,11 @@ class Processor:
                     return ProcessOutcome.REJECTED
                 # Republication of a known scan, or an at-least-once
                 # redelivery: refresh the slot's refs and stamps in place.
-                self._write_region(vds, session.store, index, stamp)
+                try:
+                    self._write_region(vds, session.store, index, stamp)
+                except Exception:
+                    self._write_failed = True
+                    raise
                 self._replaced[index] = entry
                 return ProcessOutcome.WRITTEN
 
@@ -680,12 +726,16 @@ class Processor:
 
             if not axis.size or time_value > float(axis[-1]):
                 vds.attrs = {}  # store attributes come from the template only
-                vds.vz.to_icechunk(
-                    session.store,
-                    append_dim=self.config.append_dim,
-                    validate_containers=False,
-                    last_updated_at=stamp,
-                )
+                try:
+                    vds.vz.to_icechunk(
+                        session.store,
+                        append_dim=self.config.append_dim,
+                        validate_containers=False,
+                        last_updated_at=stamp,
+                    )
+                except Exception:
+                    self._write_failed = True
+                    raise
                 self._appended.append(entry)
                 return ProcessOutcome.WRITTEN
 
@@ -713,6 +763,16 @@ class Processor:
         An all-DEFERRED batch commits too: the ledger attribute update is
         itself a session change.
         """
+        if self._write_failed:
+            # A mid-write failure (e.g. an incompatible republished granule
+            # raising after some of its variables were already written) leaves
+            # this shared session holding a partial slot. Committing would mix
+            # revisions inside one slot; failing the whole batch persists
+            # nothing, and every record retries cleanly on redelivery.
+            raise PartialWriteError(
+                "a granule failed mid-write; discarding the batch session "
+                "instead of committing partial writes"
+            )
         if self._appended or self._replaced:
             axis_size = zarr.open_array(session.store, path="time").shape[0]
             ur_array = zarr.open_array(session.store, path="granule_ur")
