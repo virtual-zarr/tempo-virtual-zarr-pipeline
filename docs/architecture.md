@@ -16,9 +16,9 @@ your dataset lacks a property, you do not need the machinery in that row.
 
 | Source property | Forces | Delete it when |
 |---|---|---|
-| ASDC publishes no SNS topic for the source bucket | CMR poller + watermark | ASDC provides a notification topic (the queue subscribes directly; §2) |
-| The in-file `/time` differs from the CMR and filename timestamps (`...T174200Z` holds 17:42:18.02), so a granule's slot on the axis is unknowable without reading the file | The ownership manifest; the pending ledger + re-sort job (a slot cannot be pre-created for a granule nobody has read; §4–5) | the metadata times become exact |
-| The DAAC revises and republishes granules **to the same S3 URI** | UR-checked routing (overwrite the same UR in place, reject a different UR to an operator); modification-time-stamped references so stale reads fail loudly (§1, §4) | never, for this DAAC |
+| ASDC publishes no SNS topic for the source bucket | CMR poller + watermark | ASDC provides a notification topic (the queue subscribes directly) |
+| The in-file `/time` differs from the CMR and filename timestamps (`...T174200Z` holds 17:42:18.02), so a granule's slot on the axis is unknowable without reading the file | The ownership manifest; the pending ledger + re-sort job (a slot cannot be pre-created for a granule nobody has read) | the metadata times become exact |
+| The DAAC revises and republishes granules **to the same S3 URI** | UR-checked routing (overwrite the same UR in place, reject a different UR to an operator); modification-time-stamped references so stale reads fail loudly | never, for this DAAC |
 
 Everything else, including the fork/merge backfill, CAS promotes, and pinned-tip
 validation, is the standard machinery of the
