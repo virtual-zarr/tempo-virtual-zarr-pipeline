@@ -9,6 +9,23 @@ marks the correctness mechanism under discussion, and dashed lines are
 asynchronous paths. The [README](../README.md) covers operations
 (deployment, env settings, runbook); this document is the conceptual map.
 
+## Why this design
+
+Three properties of the TEMPO source drive everything unusual here. If
+your dataset lacks a property, you do not need the machinery in that row.
+
+| Source property | Forces | Delete it when |
+|---|---|---|
+| ASDC publishes no SNS topic for the source bucket | CMR poller + watermark | ASDC provides a notification topic (the queue subscribes directly) |
+| The in-file `/time` differs from the CMR and filename timestamps (`...T174200Z` holds 17:42:18.02), so a granule's slot on the axis is unknowable without reading the file | The ownership manifest; the pending ledger + re-sort job (a slot cannot be pre-created for a granule nobody has read) | the metadata times become exact |
+| The DAAC revises and republishes granules **to the same S3 URI** | UR-checked routing (overwrite the same UR in place, reject a different UR to an operator); modification-time-stamped references so stale reads fail loudly | never, for this DAAC |
+
+Everything else, including the fork/merge backfill, CAS promotes, and pinned-tip
+validation, is the standard machinery of the
+[template](https://github.com/developmentseed/virtualizarr-data-pipelines)
+family, not TEMPO-specific.
+
+
 ## 1. Virtual stores
 
 The store does not copy NASA's data. It is a Zarr-shaped index over the
