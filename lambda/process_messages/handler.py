@@ -9,9 +9,11 @@ WRITTEN are both successful consumption.
 """
 
 import json
+import os
 from typing import Any, Dict, Optional
 
 from aws_lambda_powertools import Logger, Tracer
+from aws_lambda_powertools.metrics import MetricUnit, single_metric
 from aws_lambda_powertools.utilities.batch import (
     BatchProcessor,
     EventType,
@@ -20,12 +22,34 @@ from aws_lambda_powertools.utilities.batch.types import PartialItemFailureRespon
 from aws_lambda_powertools.utilities.data_classes import SQSEvent, SQSRecord
 from aws_lambda_powertools.utilities.typing import LambdaContext
 from icechunk import Session
+from virtualizarr_processor.manifest import axis_end_lag, read_axis_end
 from virtualizarr_processor.processor import Processor
 from virtualizarr_processor.typing import ProcessOutcome
 
 logger = Logger()
 tracer = Tracer()
 batch_processor = BatchProcessor(event_type=EventType.SQS)
+
+
+def emit_axis_end_lag(lag: float) -> None:
+    """One EMF blob for the freshness SLI. The dimension set must stay
+    exactly {Collection, Stage}: anything extra is a different CloudWatch
+    series, invisible to the dashboard and the AxisEndLag alarm."""
+    with single_metric(
+        name="AxisEndLag",
+        unit=MetricUnit.Seconds,
+        value=lag,
+        namespace="TempoPipeline",
+        default_dimensions={
+            key: value
+            for key, value in (
+                ("Collection", os.environ.get("TEMPO_COLLECTION")),
+                ("Stage", os.environ.get("STAGE")),
+            )
+            if value
+        },
+    ):
+        pass
 
 
 def granule_url(message: Dict[str, Any]) -> Optional[str]:
@@ -116,6 +140,13 @@ def handler(event: Any, context: LambdaContext) -> PartialItemFailureResponse:
             ]
         }
 
-    # Commit succeeded — return normal partial failure response
-    # (only individually-failed records retry)
+    # Commit succeeded: emit the freshness SLI, best-effort — it must never
+    # fail a batch that was consumed and committed.
+    try:
+        emit_axis_end_lag(axis_end_lag(read_axis_end(session.store)))
+    except Exception:
+        logger.warning("Skipping AxisEndLag; time axis unreadable", exc_info=True)
+
+    # Return normal partial failure response (only individually-failed
+    # records retry)
     return batch_processor.response()

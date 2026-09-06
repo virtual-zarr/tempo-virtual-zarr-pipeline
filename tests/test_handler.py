@@ -1,6 +1,8 @@
 import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -153,3 +155,76 @@ def test_handler_fails_all_on_commit_error(MockProcessor: MagicMock) -> None:
     failed_ids = [item["itemIdentifier"] for item in response["batchItemFailures"]]
     assert "msg-000" in failed_ids
     assert "msg-001" in failed_ids
+
+
+def _emf_blobs(captured: str) -> list[dict]:
+    """EMF metric blobs among the captured stdout lines (logs included)."""
+    blobs = []
+    for line in captured.splitlines():
+        try:
+            blob = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(blob, dict) and "_aws" in blob:
+            blobs.append(blob)
+    return blobs
+
+
+@patch("process_messages.handler.Processor")
+def test_handler_emits_axis_end_lag_after_commit(
+    MockProcessor: MagicMock, monkeypatch: pytest.MonkeyPatch, capsys: Any
+) -> None:
+    import zarr
+    from virtualizarr_processor.manifest import TEMPO_EPOCH
+
+    monkeypatch.setenv("TEMPO_COLLECTION", "hcho")
+    monkeypatch.setenv("STAGE", "dev")
+    mock_processor = MockProcessor.return_value
+    mock_processor.open_initialized_repo.return_value = MagicMock()
+    mock_session = MagicMock()
+    mock_processor.initialize_session.return_value = mock_session
+    mock_processor.process_file.return_value = ProcessOutcome.WRITTEN
+    mock_processor.commit_processed_files.return_value = "snapshot-123"
+    # A real store whose time axis ends one hour ago.
+    store = zarr.storage.MemoryStore()
+    axis = zarr.open_group(store, mode="w").create_array(
+        "time", shape=(1,), dtype="float64"
+    )
+    hour_ago = (datetime.now(timezone.utc) - TEMPO_EPOCH).total_seconds() - 3600.0
+    axis[:] = [hour_ago]
+    mock_session.store = store
+
+    handler(make_sqs_event(urls=["s3://data/a.nc"]), MagicMock())
+
+    (blob,) = _emf_blobs(capsys.readouterr().out)
+    (spec,) = blob["_aws"]["CloudWatchMetrics"]
+    assert spec["Namespace"] == "TempoPipeline"
+    # Exactly these dimensions: anything extra is a different CloudWatch
+    # series, and the dashboard and AxisEndLag alarm would see nothing.
+    assert spec["Dimensions"] == [["Collection", "Stage"]]
+    assert spec["Metrics"][0]["Name"] == "AxisEndLag"
+    assert spec["Metrics"][0]["Unit"] == "Seconds"
+    assert blob["Collection"] == "hcho"
+    assert blob["Stage"] == "dev"
+    (lag,) = blob["AxisEndLag"]
+    assert 3590 < lag < 3900
+
+
+@patch("process_messages.handler.Processor")
+def test_axis_end_lag_read_failure_does_not_fail_batch(
+    MockProcessor: MagicMock, capsys: Any
+) -> None:
+    """The freshness metric is best-effort: a committed batch must still
+    succeed when the time axis cannot be read."""
+    mock_processor = MockProcessor.return_value
+    mock_processor.open_initialized_repo.return_value = MagicMock()
+    mock_session = MagicMock()
+    mock_session.store = object()  # not a zarr store; the axis read raises
+    mock_processor.initialize_session.return_value = mock_session
+    mock_processor.process_file.return_value = ProcessOutcome.WRITTEN
+    mock_processor.commit_processed_files.return_value = "snapshot-123"
+
+    response = handler(make_sqs_event(urls=["s3://data/a.nc"]), MagicMock())
+
+    assert response["batchItemFailures"] == []
+    assert _emf_blobs(capsys.readouterr().out) == []

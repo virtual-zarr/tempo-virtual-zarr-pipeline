@@ -2,6 +2,7 @@
 
 import pickle
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -59,8 +60,13 @@ def test_resort_with_empty_ledger_is_a_noop(
 
 
 def test_resort_folds_pending_granules_in(
-    tempo_pipeline: SimpleNamespace, lambda_context: MagicMock
+    tempo_pipeline: SimpleNamespace,
+    lambda_context: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
+    # The fixture already sets TEMPO_COLLECTION (to the tiny config path).
+    monkeypatch.setenv("STAGE", "dev")
     tiny = tempo_pipeline.tiny
     processor = backfilled_processor(tempo_pipeline)
     repo = processor.open_backfill_repo()
@@ -120,6 +126,28 @@ def test_resort_folds_pending_granules_in(
         + ["tail"]
     )
     assert [entry.granule_ur for entry in manifest.granules] == expected_urs
+
+    # The promote emits the freshness SLI against the folded axis end.
+    import json
+
+    from virtualizarr_processor.manifest import TEMPO_EPOCH
+
+    emf = []
+    for line in capsys.readouterr().out.splitlines():
+        try:
+            blob = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(blob, dict) and "_aws" in blob:
+            emf.append(blob)
+    (blob,) = emf
+    (spec,) = blob["_aws"]["CloudWatchMetrics"]
+    assert spec["Namespace"] == "TempoPipeline"
+    assert spec["Dimensions"] == [["Collection", "Stage"]]
+    assert spec["Metrics"][0]["Name"] == "AxisEndLag"
+    now_since_epoch = (datetime.now(timezone.utc) - TEMPO_EPOCH).total_seconds()
+    (lag,) = blob["AxisEndLag"]
+    assert lag == pytest.approx(now_since_epoch - tail_time, abs=120)
 
 
 def test_resort_relocates_without_rereading_ingested_sources(

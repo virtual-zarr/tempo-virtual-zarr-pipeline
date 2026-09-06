@@ -225,6 +225,8 @@ class VirtualizarrSqsStack(Stack):
         self.processor_env = {
             "ICECHUNK_BUCKET": self.icechunk_bucket.bucket_name,
             "ICECHUNK_REGION": settings.ACCOUNT_REGION,
+            # Metric dimension for the TempoPipeline custom metrics.
+            "STAGE": settings.STAGE,
         }
         if settings.TEMPO_COLLECTION:
             self.processor_env["TEMPO_COLLECTION"] = settings.TEMPO_COLLECTION

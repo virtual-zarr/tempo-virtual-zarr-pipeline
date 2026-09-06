@@ -58,6 +58,9 @@ def test_forward_state_env_reaches_lambdas() -> None:
                     "Variables": Match.object_like(
                         {
                             "TEMPO_COLLECTION": "hcho",
+                            # AxisEndLag emission dimensions the dashboard
+                            # queries by.
+                            "STAGE": "dev",
                         }
                     )
                 },

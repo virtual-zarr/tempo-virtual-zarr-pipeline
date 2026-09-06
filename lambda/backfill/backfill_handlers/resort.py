@@ -21,9 +21,14 @@ import os
 from typing import Any
 
 from aws_lambda_powertools import Logger, Tracer
+from aws_lambda_powertools.metrics import MetricUnit, single_metric
 from aws_lambda_powertools.utilities.typing import LambdaContext
 from virtualizarr_processor import backfill
-from virtualizarr_processor.manifest import PendingLedger, StoreManifest
+from virtualizarr_processor.manifest import (
+    PendingLedger,
+    StoreManifest,
+    axis_end_lag,
+)
 from virtualizarr_processor.processor import Processor
 from virtualizarr_processor.resort import first_shifted_index, merge_pending
 
@@ -100,6 +105,27 @@ def handler(event: dict[str, Any], context: LambdaContext) -> dict[str, Any]:
     backfill.promote(
         repo, source="resort", source_snapshot=fold_snapshot, expected_target_tip=tip
     )
+    # Freshness SLI against the folded axis end (merged is time-sorted),
+    # best-effort — it must never fail a promoted run. The dimension set
+    # must stay exactly {Collection, Stage} to match the dashboard queries.
+    try:
+        with single_metric(
+            name="AxisEndLag",
+            unit=MetricUnit.Seconds,
+            value=axis_end_lag(merged.granules[-1].time),
+            namespace="TempoPipeline",
+            default_dimensions={
+                key: value
+                for key, value in (
+                    ("Collection", os.environ.get("TEMPO_COLLECTION")),
+                    ("Stage", os.environ.get("STAGE")),
+                )
+                if value
+            },
+        ):
+            pass
+    except Exception:
+        logger.warning("Skipping AxisEndLag emission", exc_info=True)
     remaining = len(pending) - len(fold)
     logger.info("Resort promoted to main", extra={"remaining": remaining})
     return {

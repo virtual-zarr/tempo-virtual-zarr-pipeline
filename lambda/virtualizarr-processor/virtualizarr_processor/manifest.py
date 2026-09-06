@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Iterable, Mapping, Sequence
+from datetime import datetime, timezone
 from typing import cast
 
 import numpy as np
@@ -32,6 +33,22 @@ PENDING_LEDGER_ATTRIBUTE = "pending_ledger"
 PIPELINE_STATE_ATTRIBUTES: frozenset[str] = frozenset(
     {STORE_META_ATTRIBUTE, PENDING_LEDGER_ATTRIBUTE}
 )
+
+
+# The time axis stores seconds since this epoch (see the collections' TOML
+# and scripts/verify_store.py).
+TEMPO_EPOCH = datetime(1980, 1, 6, tzinfo=timezone.utc)
+
+
+def read_axis_end(store: Store) -> float:
+    """The last value of the time axis, read from one small native chunk."""
+    return float(np.asarray(zarr.open_array(store, path="time")[-1]))
+
+
+def axis_end_lag(axis_end: float) -> float:
+    """Seconds between now and the store's last time slot — the freshness SLI
+    behind the AxisEndLag metric and its staleness alarm."""
+    return (datetime.now(timezone.utc) - TEMPO_EPOCH).total_seconds() - axis_end
 
 
 def storage_prefix() -> str | None:
