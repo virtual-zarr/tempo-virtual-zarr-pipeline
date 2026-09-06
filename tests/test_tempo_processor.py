@@ -18,7 +18,7 @@ from tempo_fixtures import (
 )
 from virtualizarr_processor import backfill
 from virtualizarr_processor.inventory import BackfillInventory, GranuleEntry
-from virtualizarr_processor.processor import Processor
+from virtualizarr_processor.processor import PartialWriteError, Processor
 from virtualizarr_processor.store_template import StoreValidationError
 from virtualizarr_processor.typing import ProcessOutcome
 
@@ -355,6 +355,38 @@ def test_forward_all_deferred_batch_commits(tiny: TinyCollection) -> None:
     assert [
         e.granule_ur for e in PendingLedger.read(repo.readonly_session("main").store)
     ] == ["between"]
+
+
+def test_forward_mid_write_failure_refuses_commit(
+    tiny: TinyCollection, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A granule failing mid-write taints the shared batch session: the
+    commit must be refused so a sibling's success cannot persist the
+    failed granule's partial writes."""
+    processor = backfilled(tiny)
+    new = write_tempo_granule(
+        tiny.granule_paths[0].parent / "granule_new.nc",
+        time_value=tiny.times[-1] + 3600.0,
+    )
+
+    def explode(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("chunk write failed mid-granule")
+
+    monkeypatch.setattr(Processor, "_write_region", explode)
+    repo = processor.open_backfill_repo()
+    session = processor.initialize_session(repo)
+    outcomes = [
+        # Redelivery of granule 1 routes to the in-place overwrite, which
+        # now fails mid-write; the sibling append succeeds.
+        processor.process_file(tiny.urls[1], session),
+        processor.process_file(f"file://{new}", session),
+    ]
+    assert outcomes == [ProcessOutcome.REJECTED, ProcessOutcome.WRITTEN]
+    with pytest.raises(PartialWriteError):
+        processor.commit_processed_files(session)
+    # Nothing from the batch reached main.
+    group = zarr.open_group(repo.readonly_session("main").store, mode="r")
+    np.testing.assert_array_equal(np.asarray(group["time"][:]), tiny.times)
 
 
 def test_forward_rejects_republication_with_moved_timestamp(

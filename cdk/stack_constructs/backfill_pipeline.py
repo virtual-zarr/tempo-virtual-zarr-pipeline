@@ -173,9 +173,10 @@ class BackfillPipeline(Construct):
             self,
             "InitTask",
             lambda_function=self.functions["init"],
-            payload=sfn.TaskInput.from_object(
-                {"inventory_uri": sfn.JsonPath.string_at("$.inventory_uri")}
-            ),
+            # No payload: the handler gets the whole state input, so the
+            # optional `force` restart flag flows through without making it
+            # a required input key (a bare {"inventory_uri": ...} input
+            # must keep working - it's the CfnOutput's documented form).
             payload_response_only=True,
             result_path="$.initResult",
         )
@@ -205,8 +206,8 @@ class BackfillPipeline(Construct):
         )
         # Retry transient failures that outlive the in-code parse retries;
         # deterministic (validation) failures fail again quickly and still
-        # gate the promote. A retried worker that already saved its fork
-        # writes a second, identical one; merge is last-writer-wins.
+        # gate the promote. A retried worker overwrites its own deterministically-named
+        # fork, so the retry can never leave a stale duplicate for reduce.
         worker.add_retry(
             errors=[sfn.Errors.ALL],
             interval=Duration.seconds(30),

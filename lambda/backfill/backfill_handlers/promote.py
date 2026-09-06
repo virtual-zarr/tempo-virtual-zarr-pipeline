@@ -17,7 +17,14 @@ pending ledger were already committed on the `backfill` branch by the
 Init step, so the move is the entire promote: compare-and-swap against
 ``branched_from`` (the `main` tip the Init step branched from), so a
 commit that landed on `main` mid-run fails the promote instead of being
-discarded. Nothing runs after the CAS.
+discarded. Only branch cleanup runs after the CAS, and it cannot fail
+the execution.
+
+A successful promote deletes the `backfill` branch (see below), so a
+retried execution whose first attempt already landed finds no branch to
+look up. That absence is not an error: it means this promote's work is
+already done, so the handler re-validates `main` and converges on the
+same result instead of raising (finding #4).
 """
 
 from typing import Any
@@ -39,6 +46,12 @@ def handler(event: dict[str, Any], context: LambdaContext) -> dict[str, Any]:
     processor = Processor()
     repo = processor.open_backfill_repo()
     backfill_inventory = inventory.read_inventory(event["inventory_uri"])
+    if "backfill" not in repo.list_branches():
+        # Only a successful promote deletes the branch, so its absence means
+        # this promote already landed: converge (finding #4) rather than
+        # fail an execution whose work is done.
+        processor.validate_backfill_store(repo, backfill_inventory, branch="main")
+        return {"promoted": True}
     # Pin the tip once: validate this snapshot, promote this snapshot.
     tip = repo.lookup_branch("backfill")
     processor.validate_backfill_store(
@@ -47,5 +60,19 @@ def handler(event: dict[str, Any], context: LambdaContext) -> dict[str, Any]:
     backfill.promote(
         repo, source_snapshot=tip, expected_target_tip=event["branched_from"]
     )
+    # main now points at the promoted snapshot; the work branch has served
+    # its purpose. Deleting it keeps init's branch-exists check meaningful
+    # (finding #8): existing == live or failed, never "finished". A failed
+    # delete must not fail an execution whose promote already landed - the
+    # next init will just ask for force. Only delete it if it still points
+    # at the snapshot this run pinned and promoted: a concurrent run's
+    # forced Init may have already reset "backfill" out from under us (the
+    # same TOCTOU the pinned snapshot above guards for validate/promote),
+    # and that run's fresh branch must not vanish underneath it.
+    try:
+        if repo.lookup_branch("backfill") == tip:
+            repo.delete_branch("backfill")
+    except Exception:
+        logger.warning("promote succeeded but deleting 'backfill' failed")
     logger.info("Promoted main to backfill tip", extra={"snapshot": tip})
     return {"promoted": True}
