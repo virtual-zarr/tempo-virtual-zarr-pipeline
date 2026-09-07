@@ -971,9 +971,12 @@ class VirtualizarrSqsStack(Stack):
                     # logs only record_handler's error line with message_id.
                     # Both redeliver to the DLQ, so the runbook table shows
                     # both — coalesce gives whichever identifier the line has.
+                    # Exclude the deliberate re-raise for standard rejections
+                    # because its granule already appears via the outcome branch.
                     "fields @timestamp, coalesce(url, message_id) as granule, outcome",
                     "filter outcome = 'rejected'"
-                    " or message like 'Error processing record'",
+                    " or (message like 'Error processing record'"
+                    " and message not like 'granule rejected')",
                     "sort @timestamp desc",
                     "limit 50",
                 ],

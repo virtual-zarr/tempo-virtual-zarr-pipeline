@@ -128,6 +128,7 @@ def test_rejected_granules_query_includes_exception_path() -> None:
     query = widget["properties"]["query"]
     assert "outcome = 'rejected'" in query
     assert "Error processing record" in query
+    assert "not like 'granule rejected'" in query
 
 
 def test_codebuild_may_put_tempo_pipeline_metrics_only() -> None:
