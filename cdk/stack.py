@@ -836,17 +836,27 @@ class VirtualizarrSqsStack(Stack):
         )
 
     def _alarm(
-        self, construct_id: str, metric: cloudwatch.IMetric, description: str
+        self,
+        construct_id: str,
+        metric: cloudwatch.IMetric,
+        description: str,
+        *,
+        threshold: float = 0,
+        evaluation_periods: int = 1,
+        treat_missing_data: cloudwatch.TreatMissingData = (
+            cloudwatch.TreatMissingData.NOT_BREACHING
+        ),
     ) -> cloudwatch.Alarm:
-        """An "anything above zero" alarm, wired to the alarm topic if any."""
+        """An alarm wired to the alarm topic (if any) and registered on the
+        dashboard's alarm strip. Defaults give "anything above zero"."""
         alarm = cloudwatch.Alarm(
             self,
             construct_id,
             metric=metric,
-            threshold=0,
+            threshold=threshold,
             comparison_operator=(cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD),
-            evaluation_periods=1,
-            treat_missing_data=cloudwatch.TreatMissingData.NOT_BREACHING,
+            evaluation_periods=evaluation_periods,
+            treat_missing_data=treat_missing_data,
             alarm_description=description,
         )
         if self.alarm_topic is not None:
@@ -883,29 +893,23 @@ class VirtualizarrSqsStack(Stack):
         assembled from every widget and alarm the components accumulated."""
         # Store freshness: AxisEndLag is seconds between now and the last
         # time-axis slot, emitted by the consumer after each commit and by
-        # the re-sort after each promote. It is the only alarm that catches
-        # a silently-dead poller (nothing errors; granules just stop) or a
-        # re-sort killed by its timeout (no error metric fires) — in both
-        # cases the metric goes stale rather than growing, so missing data
-        # *is* the failure and needs BREACHING rather than the _alarm
-        # helper's NOT_BREACHING default. Consequence: a fresh deployment
-        # starts in ALARM until its first committed batch or promoted
-        # re-sort; that is expected.
-        axis_end_lag_alarm = cloudwatch.Alarm(
-            self,
-            "AxisEndLagAlarm",
-            metric=self._custom_metric("AxisEndLag", period=Duration.hours(1)),
-            threshold=86400,
-            comparison_operator=cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-            evaluation_periods=1,
-            treat_missing_data=cloudwatch.TreatMissingData.BREACHING,
-            alarm_description="The store's time axis is more than 24 h stale",
-        )
-        if self.alarm_topic is not None:
-            axis_end_lag_alarm.add_alarm_action(
-                cloudwatch_actions.SnsAction(self.alarm_topic)
+        # the re-sort after each promote. Missing data breaches because a
+        # silently-dead poller or a re-sort killed by its timeout emits no
+        # error metric — the series going quiet is the only signal. But the
+        # emitters are event-driven and TEMPO is daylight-only, so the
+        # series legitimately goes quiet overnight: only a full day of
+        # consecutive missing-or-stale hours alarms. A backfill-only stack
+        # has no freshness contract, so no alarm at all.
+        if settings.FORWARD_QUEUE_ENABLED:
+            self._alarm(
+                "AxisEndLagAlarm",
+                self._custom_metric("AxisEndLag", period=Duration.hours(1)),
+                "The store's time axis is more than 24 h stale, "
+                "or its freshness metric stopped arriving for 24 h",
+                threshold=86400,
+                evaluation_periods=24,
+                treat_missing_data=cloudwatch.TreatMissingData.BREACHING,
             )
-        self._alarms.append(axis_end_lag_alarm)
 
         # Dashboard data-quality section.
         self._widgets.append(

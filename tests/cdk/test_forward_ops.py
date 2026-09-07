@@ -153,8 +153,9 @@ def test_alarms_cover_dlq_consumer_and_scheduled_jobs() -> None:
     # Forward deployment: DLQ depth, consumer, re-sort, and poller errors,
     # plus the AxisEndLag staleness alarm.
     _template().resource_count_is("AWS::CloudWatch::Alarm", 5)
-    # Backfill-only deployment: no scheduled forward jobs to watch.
-    _template(BACKFILL_ENABLED=True).resource_count_is("AWS::CloudWatch::Alarm", 3)
+    # Backfill-only deployment: no scheduled forward jobs and no freshness alarm
+    # (a backfill-only stack has no freshness contract).
+    _template(BACKFILL_ENABLED=True).resource_count_is("AWS::CloudWatch::Alarm", 2)
 
 
 def test_alarm_email_wires_an_sns_topic() -> None:

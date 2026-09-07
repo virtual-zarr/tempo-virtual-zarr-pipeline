@@ -68,12 +68,29 @@ def test_backfill_widgets_present_when_enabled() -> None:
     assert any("Backfill" in t for t in _widget_titles(_template(backfill=True)))
 
 
-def test_axis_end_lag_alarm_breaches_on_missing_data() -> None:
-    """No data *is* the failure: a dead poller or silently-failing re-sort
-    stops the metric, and NOT_BREACHING (the _alarm default) would hide it."""
+def test_axis_end_lag_alarm_requires_a_full_day_of_missing_or_stale() -> None:
+    """TEMPO is daylight-only: the event-driven emitters legitimately go
+    quiet overnight, so one missing hour must not page. Missing data still
+    breaches (a dead poller or silently-killed re-sort stops the series),
+    but only 24 consecutive breaching-or-missing hours alarm."""
     _template().has_resource_properties(
         "AWS::CloudWatch::Alarm",
         Match.object_like(
-            {"MetricName": "AxisEndLag", "TreatMissingData": "breaching"}
+            {
+                "MetricName": "AxisEndLag",
+                "TreatMissingData": "breaching",
+                "EvaluationPeriods": 24,
+                "Threshold": 86400,
+            }
         ),
     )
+
+
+def test_axis_end_lag_alarm_omitted_without_forward_processing() -> None:
+    """A backfill-only stack has no freshness contract; without this gate
+    the alarm would be in ALARM permanently."""
+    template = _template(backfill=True, forward=False)
+    alarms = template.find_resources(
+        "AWS::CloudWatch::Alarm", {"Properties": {"MetricName": "AxisEndLag"}}
+    )
+    assert not alarms
