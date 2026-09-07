@@ -652,7 +652,7 @@ resource names):
 | `PendingLedgerDepth` | consumer and re-sort | nonzero is healthy; trending up across days means the re-sort is not keeping pace |
 | `FoldedGranules` | re-sort (0 when it ran with an empty ledger) | pinned at `RESORT_MAX_FOLD` every run means falling behind |
 | `PromoteCasRejections` | re-sort promote failures and consumer commit failures | occasional ones are the single-writer design working; sustained ones mean writers are fighting |
-| `PartitionsDone` / `PartitionsTotal` | backfill reduce / partition steps | backfill progress; the dashboard's gauge is their ratio |
+| `PartitionsDone` / `PartitionsTotal` | backfill reduce / partition steps | backfill progress; the dashboard plots their running sum against the carried-forward total |
 | `CompletenessDelta` | `verify_store.py --completeness` (CodeBuild) | granules CMR lists that the store lacks, plus store entries CMR dropped; one point per verify run, so the series is sparse |
 
 Emission is best-effort: a metric failure never fails a batch or a
@@ -663,7 +663,7 @@ verify run).
 ### During a backfill
 
 The dashboard's backfill section (rendered when `BACKFILL_ENABLED`) shows
-Step Functions executions, the partitions-done gauge, and worker errors —
+Step Functions executions, the cumulative partitions-done/total graph, and worker errors —
 watch it during the initial fill. Afterward, the two numbers worth a
 daily glance are the *Store freshness* and *Pending ledger depth* tiles.
 

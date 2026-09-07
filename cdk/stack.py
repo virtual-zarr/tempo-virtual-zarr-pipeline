@@ -724,25 +724,35 @@ class VirtualizarrSqsStack(Stack):
                 )
             )
             self._widgets.append(
-                # No ETA panel: extrapolating from partition rate misleads
-                # when worker durations vary by an order of magnitude.
-                cloudwatch.GaugeWidget(
-                    title="Backfill partitions done",
+                # Cumulative progress: RUNNING_SUM accumulates the per-bin
+                # completion counts and FILL(REPEAT) carries the one-shot
+                # PartitionsTotal point forward, so the two lines converge
+                # as the backfill lands. (Per-bin division cannot work:
+                # PartitionsTotal exists in exactly one 5-minute bin.) A
+                # window spanning two backfill runs mixes their sums — fine
+                # for its purpose of watching one run.
+                cloudwatch.GraphWidget(
+                    title="Backfill progress",
                     width=6,
                     height=6,
-                    metrics=[
+                    left=[
                         cloudwatch.MathExpression(
-                            expression="100 * done / total",
-                            label="% done",
+                            expression="RUNNING_SUM([done])",
+                            label="partitions done",
                             using_metrics={
                                 "done": self._custom_metric(
                                     "PartitionsDone", statistic="Sum"
-                                ),
-                                "total": self._custom_metric("PartitionsTotal"),
+                                )
                             },
-                        )
+                        ),
+                        cloudwatch.MathExpression(
+                            expression="FILL(total, REPEAT)",
+                            label="partitions total",
+                            using_metrics={
+                                "total": self._custom_metric("PartitionsTotal")
+                            },
+                        ),
                     ],
-                    left_y_axis=cloudwatch.YAxisProps(min=0, max=100),
                 )
             )
             self._widgets.append(

@@ -49,6 +49,17 @@ def _widget_titles(template: Template) -> list[str]:
     ]
 
 
+def _widget(template: Template, title: str) -> dict[str, Any]:
+    (dashboard,) = [
+        r
+        for r in template.to_json()["Resources"].values()
+        if r["Type"] == "AWS::CloudWatch::Dashboard"
+    ]
+    body = json.loads(resolve_joins(dashboard["Properties"]["DashboardBody"]))
+    (widget,) = [w for w in body["widgets"] if w["properties"].get("title") == title]
+    return widget
+
+
 def test_dashboard_created() -> None:
     _template().resource_count_is("AWS::CloudWatch::Dashboard", 1)
 
@@ -94,3 +105,17 @@ def test_axis_end_lag_alarm_omitted_without_forward_processing() -> None:
         "AWS::CloudWatch::Alarm", {"Properties": {"MetricName": "AxisEndLag"}}
     )
     assert not alarms
+
+
+def test_backfill_progress_is_cumulative() -> None:
+    """Per-bin Sum/Max math cannot show cumulative progress (PartitionsTotal
+    exists in exactly one 5-minute bin); the widget must accumulate
+    completions and carry the total forward."""
+    widget = _widget(_template(backfill=True), "Backfill progress")
+    expressions = [
+        m[0]["expression"]
+        for m in widget["properties"]["metrics"]
+        if isinstance(m[0], dict) and "expression" in m[0]
+    ]
+    assert any("RUNNING_SUM" in e for e in expressions)
+    assert any("FILL" in e and "REPEAT" in e for e in expressions)
