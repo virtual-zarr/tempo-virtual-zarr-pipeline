@@ -11,7 +11,7 @@ from aws_cdk.assertions import Match, Template
 from conftest import resolve_joins
 from settings import StackSettings
 from stack import METRIC_NAMESPACE, VirtualizarrSqsStack
-from virtualizarr_processor.metrics import NAMESPACE, metric_dimensions
+from virtualizarr_processor.metrics import metric_dimensions
 
 REPO = Path(__file__).resolve().parents[2]
 
@@ -137,14 +137,19 @@ def test_backfill_progress_is_cumulative() -> None:
     assert any("FILL" in e and "REPEAT" in e for e in expressions)
 
 
-def test_rejected_granules_query_includes_exception_path() -> None:
-    """Granules that raise inside processing never log an outcome field but
-    still reach the DLQ; the runbook table must show them too."""
+def test_rejected_granules_query_filters_structured_fields_and_dedups() -> None:
+    """The query must key on structured log fields only (message prose gets
+    reworded; tests/test_handler.py pins the emitting side) and aggregate
+    per granule — every redelivery logs again, up to the DLQ's 20, so raw
+    rows would fill the 50-row cap with duplicates of a few bad granules."""
     widget = _widget(_template(), "Rejected granules")
     query = widget["properties"]["query"]
-    assert "outcome = 'rejected'" in query
-    assert "Error processing record" in query
-    assert "not like 'granule rejected'" in query
+    assert "outcome in ['rejected', 'errored']" in query
+    assert "stats latest(@timestamp)" in query
+    assert "by coalesce(url, message_id) as granule" in query
+    # No free-text message matching: rewording a log line must not be able
+    # to silently break the runbook table.
+    assert "message" not in query.replace("message_id", "")
 
 
 def test_codebuild_may_put_tempo_pipeline_metrics_only() -> None:
@@ -203,12 +208,6 @@ def _dashboard_metrics(template: Template) -> list[list]:
         for metric in widget["properties"].get("metrics", [])
         if isinstance(metric, list) and metric and metric[0] == METRIC_NAMESPACE
     ]
-
-
-def test_namespaces_are_pinned_equal() -> None:
-    """stack.py cannot import the Lambda package at deploy time, so the
-    namespace exists twice; this is the pin that keeps them one value."""
-    assert METRIC_NAMESPACE == NAMESPACE
 
 
 def test_dashboard_dimensions_match_emitters(

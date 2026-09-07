@@ -56,12 +56,9 @@ def handler(event: dict[str, Any], context: LambdaContext) -> dict[str, Any]:
     if not pending:
         logger.info("Pending ledger is empty; nothing to resort")
         # FoldedGranules=0 distinguishes "ran, nothing to fold" from
-        # "didn't run" on the dashboard; best-effort.
-        try:
-            emit_metric("FoldedGranules", 0)
-            emit_metric("PendingLedgerDepth", 0)
-        except Exception:
-            logger.warning("Skipping metric emission", exc_info=True)
+        # "didn't run" on the dashboard.
+        emit_metric("FoldedGranules", 0)
+        emit_metric("PendingLedgerDepth", 0)
         return {"resorted": False, "reason": "ledger empty"}
     fold = sorted(pending, key=lambda entry: entry.time)[:max_fold]
 
@@ -120,25 +117,17 @@ def handler(event: dict[str, Any], context: LambdaContext) -> dict[str, Any]:
     except Exception:
         # Any promote failure lands here — a compare-and-swap rejection from
         # a concurrent commit, or an infrastructure error; the name makes no
-        # CAS claim. Best-effort so a metrics failure never re-headlines the
-        # real error; then propagate as before.
-        try:
-            emit_metric("PromoteFailures", 1)
-        except Exception:
-            logger.warning("Skipping metric emission", exc_info=True)
+        # CAS claim.
+        emit_metric("PromoteFailures", 1)
         raise
     remaining = len(pending) - len(fold)
-    # The promoted run's metrics, best-effort — they must never fail a run
-    # whose fold already landed. Freshness comes from the folded axis end
+    # The promoted run's metrics. Freshness comes from the folded axis end
     # (merged is time-sorted, no store read needed).
-    try:
-        emit_metric(
-            "AxisEndLag", axis_end_lag(merged.granules[-1].time), MetricUnit.Seconds
-        )
-        emit_metric("FoldedGranules", len(fold))
-        emit_metric("PendingLedgerDepth", remaining)
-    except Exception:
-        logger.warning("Skipping metric emission", exc_info=True)
+    emit_metric(
+        "AxisEndLag", axis_end_lag(merged.granules[-1].time), MetricUnit.Seconds
+    )
+    emit_metric("FoldedGranules", len(fold))
+    emit_metric("PendingLedgerDepth", remaining)
     logger.info("Resort promoted to main", extra={"remaining": remaining})
     return {
         "resorted": True,

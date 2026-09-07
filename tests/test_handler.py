@@ -161,16 +161,19 @@ def test_handler_fails_all_on_commit_error(MockProcessor: MagicMock) -> None:
     assert "msg-001" in failed_ids
 
 
-def _hour_ago_store() -> Any:
-    """A real store whose time axis ends one hour ago."""
-    import zarr
+def _hour_ago_seconds() -> float:
+    """An axis-end value (seconds since the TEMPO epoch) one hour ago."""
     from virtualizarr_processor.manifest import TEMPO_EPOCH
 
+    return (datetime.now(timezone.utc) - TEMPO_EPOCH).total_seconds() - 3600.0
+
+
+def _empty_store() -> Any:
+    """A real (ledger-less) store, so PendingLedger.depth reads 0."""
+    import zarr
+
     store = zarr.storage.MemoryStore()
-    axis = zarr.open_group(store, mode="w").create_array(
-        "time", shape=(1,), dtype="float64"
-    )
-    axis[:] = [(datetime.now(timezone.utc) - TEMPO_EPOCH).total_seconds() - 3600.0]
+    zarr.open_group(store, mode="w")
     return store
 
 
@@ -186,7 +189,10 @@ def test_handler_emits_axis_end_lag_after_commit(
     mock_processor.initialize_session.return_value = mock_session
     mock_processor.process_file.return_value = ProcessOutcome.APPENDED
     mock_processor.commit_processed_files.return_value = "snapshot-123"
-    mock_session.store = _hour_ago_store()
+    # Freshness comes from the axis end the processor tracked while
+    # writing, not from a post-commit store read.
+    mock_processor.axis_end = _hour_ago_seconds()
+    mock_session.store = _empty_store()
 
     handler(make_sqs_event(urls=["s3://data/a.nc"]), MagicMock())
 
@@ -223,7 +229,8 @@ def test_handler_emits_routing_and_ledger_metrics(
         ProcessOutcome.REJECTED,
     ]
     mock_processor.commit_processed_files.return_value = "snapshot-123"
-    mock_session.store = _hour_ago_store()
+    mock_processor.axis_end = None
+    mock_session.store = _empty_store()
 
     handler(make_sqs_event(urls=[f"s3://data/{i}.nc" for i in range(5)]), MagicMock())
 
@@ -250,7 +257,7 @@ def test_handler_emits_commit_failure_metric(
     mock_processor = MockProcessor.return_value
     mock_processor.open_initialized_repo.return_value = MagicMock()
     mock_session = MagicMock()
-    mock_session.store = _hour_ago_store()
+    mock_session.store = _empty_store()
     mock_processor.initialize_session.return_value = mock_session
     mock_processor.process_file.return_value = ProcessOutcome.APPENDED
     mock_processor.commit_processed_files.side_effect = Exception("CAS conflict")
@@ -284,13 +291,14 @@ def test_rejected_counted_only_on_first_receipt(
     mock_processor = MockProcessor.return_value
     mock_processor.open_initialized_repo.return_value = MagicMock()
     mock_session = MagicMock()
-    mock_session.store = _hour_ago_store()
+    mock_session.store = _empty_store()
     mock_processor.initialize_session.return_value = mock_session
     mock_processor.process_file.side_effect = [
         ProcessOutcome.REJECTED,
         ProcessOutcome.APPENDED,
     ]
     mock_processor.commit_processed_files.return_value = "snapshot-123"
+    mock_processor.axis_end = None
 
     response = handler(
         make_sqs_event(urls=["s3://data/a.nc", "s3://data/b.nc"], receive_count="2"),
@@ -304,11 +312,12 @@ def test_rejected_counted_only_on_first_receipt(
 
 
 @patch("process_messages.handler.Processor")
-def test_axis_end_lag_read_failure_does_not_fail_batch(
+def test_ledger_depth_read_failure_does_not_fail_batch(
     MockProcessor: MagicMock, capsys: Any
 ) -> None:
-    """The store-reading metrics are best-effort: a committed batch must
-    still succeed when the session store cannot be read."""
+    """The ledger depth is the one metric still reading the store; a
+    committed batch must succeed — and the other metrics still emit —
+    when that read fails."""
     mock_processor = MockProcessor.return_value
     mock_processor.open_initialized_repo.return_value = MagicMock()
     mock_session = MagicMock()
@@ -316,12 +325,99 @@ def test_axis_end_lag_read_failure_does_not_fail_batch(
     mock_processor.initialize_session.return_value = mock_session
     mock_processor.process_file.return_value = ProcessOutcome.APPENDED
     mock_processor.commit_processed_files.return_value = "snapshot-123"
+    mock_processor.axis_end = _hour_ago_seconds()
 
     response = handler(make_sqs_event(urls=["s3://data/a.nc"]), MagicMock())
 
     assert response["batchItemFailures"] == []
     blobs = emf_blobs(capsys.readouterr().out)
-    # Routing needs no store access and still emits.
+    # Routing and freshness need no store access and still emit.
     assert emf_value(blobs, "GranulesRouted", Route="APPENDED") == 1
+    assert emf_value(blobs, "AxisEndLag") is not None
     assert emf_value(blobs, "PendingLedgerDepth") is None
+
+
+@patch("process_messages.handler.Processor")
+def test_rejected_counted_when_every_record_fails(
+    MockProcessor: MagicMock, monkeypatch: pytest.MonkeyPatch, capsys: Any
+) -> None:
+    """A bad granule arriving alone (typical trickle traffic) fails the
+    whole batch, so BatchProcessor raises before the post-commit metrics
+    block ever runs — the very path a DLQ-bound granule takes. Its
+    REJECTED routing count must be emitted at receipt, or the dashboard
+    shows zero REJECTED while the DLQ alarm fires."""
+    monkeypatch.setenv("TEMPO_COLLECTION", "hcho")
+    monkeypatch.setenv("STAGE", "dev")
+    mock_processor = MockProcessor.return_value
+    mock_processor.open_initialized_repo.return_value = MagicMock()
+    mock_processor.initialize_session.return_value = MagicMock()
+    mock_processor.process_file.return_value = ProcessOutcome.REJECTED
+
+    with pytest.raises(BatchProcessingError):
+        handler(make_sqs_event(urls=["s3://data/bad.nc"]), MagicMock())
+
+    blobs = emf_blobs(capsys.readouterr().out)
+    assert emf_value(blobs, "GranulesRouted", Route="REJECTED") == 1
+
+
+@patch("process_messages.handler.Processor")
+def test_rejected_counted_when_commit_fails(
+    MockProcessor: MagicMock, monkeypatch: pytest.MonkeyPatch, capsys: Any
+) -> None:
+    """A mixed batch whose commit fails returns before the post-commit
+    block; the rejected granule's first-receipt count must survive that
+    (its redeliveries are gated out forever)."""
+    monkeypatch.setenv("TEMPO_COLLECTION", "hcho")
+    monkeypatch.setenv("STAGE", "dev")
+    mock_processor = MockProcessor.return_value
+    mock_processor.open_initialized_repo.return_value = MagicMock()
+    mock_processor.initialize_session.return_value = MagicMock()
+    mock_processor.process_file.side_effect = [
+        ProcessOutcome.REJECTED,
+        ProcessOutcome.APPENDED,
+    ]
+    mock_processor.commit_processed_files.side_effect = Exception("CAS conflict")
+
+    response = handler(
+        make_sqs_event(urls=["s3://data/a.nc", "s3://data/b.nc"]), MagicMock()
+    )
+
+    assert len(response["batchItemFailures"]) == 2
+    blobs = emf_blobs(capsys.readouterr().out)
+    assert emf_value(blobs, "GranulesRouted", Route="REJECTED") == 1
+    assert emf_value(blobs, "CommitFailures") == 1
+    # Nothing committed: the APPENDED count is discarded (it re-counts on
+    # redelivery), and no freshness point is emitted.
+    assert emf_value(blobs, "GranulesRouted", Route="APPENDED") is None
     assert emf_value(blobs, "AxisEndLag") is None
+
+
+@patch("process_messages.handler.Processor")
+def test_log_lines_carry_the_dashboard_query_outcome_fields(
+    MockProcessor: MagicMock, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The dashboard's rejected-granules query filters on structured
+    fields — outcome in ['rejected', 'errored'] keyed by url/message_id —
+    never on message prose (see tests/cdk/test_dashboard.py). These two
+    log shapes are the emitting side of that contract."""
+    mock_processor = MockProcessor.return_value
+    mock_processor.open_initialized_repo.return_value = MagicMock()
+    mock_processor.initialize_session.return_value = MagicMock()
+    mock_processor.process_file.side_effect = [
+        ProcessOutcome.REJECTED,
+        ValueError("boom"),
+    ]
+
+    with pytest.raises(BatchProcessingError):
+        handler(make_sqs_event(urls=["s3://data/a.nc", "s3://data/b.nc"]), MagicMock())
+
+    # extra= fields become LogRecord attributes; the powertools formatter
+    # renders them as the top-level JSON fields the query filters on.
+    records = caplog.records
+    (rejected,) = [r for r in records if getattr(r, "outcome", None) == "rejected"]
+    assert getattr(rejected, "url", None)  # keyed by url in the dashboard table
+    (errored,) = [r for r in records if getattr(r, "outcome", None) == "errored"]
+    assert getattr(errored, "message_id", None)  # keyed by message_id in the table
+    # The deliberate rejection re-raise must not also log an error line,
+    # or every standard rejection would appear twice in the table.
+    assert not any("granule rejected" in r.getMessage() for r in records)

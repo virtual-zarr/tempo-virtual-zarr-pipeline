@@ -480,8 +480,8 @@ file, all under
 
 | Message url | Why | Expected consumer outcome |
 |---|---|---|
-| `TEMPO_HCHO_L3_V04_20260824T154044Z_S007.nc` | first scan after the newest slot (`S006`) | `WRITTEN` — appended to the axis |
-| `TEMPO_HCHO_L3_V04_20260824T144044Z_S006.nc` | newest slot itself, same UR | `WRITTEN` — slot overwritten in place, store unchanged |
+| `TEMPO_HCHO_L3_V04_20260824T154044Z_S007.nc` | first scan after the newest slot (`S006`) | `APPENDED` — appended to the axis |
+| `TEMPO_HCHO_L3_V04_20260824T144044Z_S006.nc` | newest slot itself, same UR | `OVERWRITTEN` — slot refreshed in place, store shape unchanged |
 | `TEMPO_HCHO_L3_V04_20260824T110012Z_S001.nc` | before the oldest slot (`S002`) | `DEFERRED` — pending ledger; the re-sort job folds it in later |
 
 Send appends oldest-first (`S007` before `S008`): an append lands only past
@@ -505,9 +505,9 @@ aws lambda list-event-source-mappings \
   --query 'EventSourceMappings[?contains(FunctionArn, `processmessages`)].State' --output text
 ```
 
-Then watch the consumer's log for the outcome (`WRITTEN` / `DEFERRED`; a
-`REJECTED` granule retries and lands in `<stack>-Dlq`, which should stay
-empty). In the console: the function's Monitor tab → View CloudWatch logs →
+Then watch the consumer's log for the outcome (logged lowercase:
+`appended` / `overwritten` / `deferred`; a `rejected` granule retries and
+lands in `<stack>-Dlq`, which should stay empty). In the console: the function's Monitor tab → View CloudWatch logs →
 Live Tail; the queue's own Monitoring tab graphs messages waiting/in flight.
 
 ```bash

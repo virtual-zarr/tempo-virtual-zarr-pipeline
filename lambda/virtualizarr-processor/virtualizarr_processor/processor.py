@@ -104,6 +104,7 @@ class Processor:
         # Forward-processing batch state, reset per session.
         self._appended: list[GranuleEntry] = []
         self._replaced: dict[int, GranuleEntry] = {}
+        self._axis_end: float | None = None
 
     # -- repository ---------------------------------------------------------
 
@@ -596,7 +597,15 @@ class Processor:
     def initialize_session(self, repo: Repository) -> Session:
         self._appended = []
         self._replaced = {}
+        self._axis_end = None
         return repo.writable_session("main")
+
+    @property
+    def axis_end(self) -> float | None:
+        """The time axis's last value as of this session's processing, or
+        None before any record read the axis. Tracked so the consumer's
+        AxisEndLag metric needs no post-commit store read."""
+        return self._axis_end
 
     def _batch_ur_at(self, index: int, axis_size: int) -> str | None:
         """The UR this batch has already written to slot ``index``, if any.
@@ -626,6 +635,8 @@ class Processor:
                 url=file_key, granule_ur=_granule_ur(file_key), time=time_value
             )
             axis = np.asarray(zarr.open_array(session.store, path="time")[:])
+            if axis.size:
+                self._axis_end = float(axis[-1])
             occupied = np.nonzero(axis == time_value)[0]
 
             if occupied.size == 1:
@@ -687,6 +698,7 @@ class Processor:
                     last_updated_at=stamp,
                 )
                 self._appended.append(entry)
+                self._axis_end = time_value
                 return ProcessOutcome.APPENDED
 
             # Out of order: appending would break axis monotonicity. Record

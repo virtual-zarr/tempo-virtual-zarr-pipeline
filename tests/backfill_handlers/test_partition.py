@@ -33,5 +33,6 @@ def test_partition_splits_inventory_into_manifests(
     # Distributed Map ItemReader).
     assert parts[0]["manifest_key"] == "run/partitions/0.json"
     assert parts[0]["run_prefix"] == event["run_prefix"]
-    # The dashboard's partitions-done gauge divides by this total.
+    # The dashboard's backfill-progress widget carries this total forward
+    # (FILL/REPEAT) against a running sum of PartitionsDone.
     assert emf_value(emf_blobs(capsys.readouterr().out), "PartitionsTotal") == 3

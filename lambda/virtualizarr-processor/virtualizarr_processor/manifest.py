@@ -35,14 +35,10 @@ PIPELINE_STATE_ATTRIBUTES: frozenset[str] = frozenset(
 )
 
 
-# The time axis stores seconds since this epoch (see the collections' TOML
-# and scripts/verify_store.py).
+# The time axis stores seconds since this epoch. The collections' TOML
+# declares the same epoch in their time_units; tests/test_manifest.py pins
+# the two equal so they cannot silently drift.
 TEMPO_EPOCH = datetime(1980, 1, 6, tzinfo=timezone.utc)
-
-
-def read_axis_end(store: Store) -> float:
-    """The last value of the time axis, read from one small native chunk."""
-    return float(np.asarray(zarr.open_array(store, path="time")[-1]))
 
 
 def axis_end_lag(axis_end: float) -> float:
@@ -135,6 +131,14 @@ class PendingLedger:
         return tuple(
             GranuleEntry.model_validate(item) for item in cast(Sequence[object], raw)
         )
+
+    @staticmethod
+    def depth(store: Store) -> int:
+        """Entry count from the raw attribute — no per-entry validation, so
+        the consumer's PendingLedgerDepth metric stays O(1)-ish as the
+        ledger grows (the exact condition the metric exists to detect)."""
+        raw = zarr.open_group(store, mode="r").attrs.get(PENDING_LEDGER_ATTRIBUTE, [])
+        return len(cast(Sequence[object], raw))
 
     @staticmethod
     def write(store: Store, entries: Iterable[GranuleEntry]) -> None:

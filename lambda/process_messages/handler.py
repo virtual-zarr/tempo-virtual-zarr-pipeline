@@ -22,7 +22,7 @@ from aws_lambda_powertools.utilities.batch.types import PartialItemFailureRespon
 from aws_lambda_powertools.utilities.data_classes import SQSEvent, SQSRecord
 from aws_lambda_powertools.utilities.typing import LambdaContext
 from icechunk import Session
-from virtualizarr_processor.manifest import PendingLedger, axis_end_lag, read_axis_end
+from virtualizarr_processor.manifest import PendingLedger, axis_end_lag
 from virtualizarr_processor.metrics import emit_metric
 from virtualizarr_processor.processor import Processor
 from virtualizarr_processor.typing import ProcessOutcome
@@ -31,13 +31,14 @@ logger = Logger()
 tracer = Tracer()
 batch_processor = BatchProcessor(event_type=EventType.SQS)
 
-# Outcome -> the routing metric's Route dimension value (DEFERRED granules
-# sit in the *pending* ledger, hence the dashboard's PENDING route).
+# Committed outcome -> the routing metric's Route dimension value (DEFERRED
+# granules sit in the *pending* ledger, hence the dashboard's PENDING
+# route). REJECTED is not here: it never commits, so it is emitted at first
+# receipt in record_handler rather than in the post-commit block.
 ROUTES = {
     ProcessOutcome.APPENDED: "APPENDED",
     ProcessOutcome.OVERWRITTEN: "OVERWRITTEN",
     ProcessOutcome.DEFERRED: "PENDING",
-    ProcessOutcome.REJECTED: "REJECTED",
 }
 
 
@@ -105,22 +106,29 @@ def handler(event: Any, context: LambdaContext) -> PartialItemFailureResponse:
                 session=session,
                 processor=virtualizarr_processor,
             )
-            if outcome is not None and (
-                outcome is not ProcessOutcome.REJECTED
-                or record.attributes.approximate_receive_count == "1"
-            ):
-                # REJECTED redelivers up to the DLQ's maxReceiveCount;
-                # counting only the first receipt keeps GranulesRouted at
-                # one per granule. The other routes never redeliver.
-                counts[outcome] += 1
-            if outcome is ProcessOutcome.REJECTED:
-                raise RuntimeError(f"granule rejected: {granule_url(message)}")
         except Exception as e:
+            # outcome=errored is the structured field the dashboard's
+            # rejected-granules query filters on; the message text is prose.
             logger.error(
                 f"Error processing record: {str(e)}",
-                extra={"message_id": record.message_id},
+                extra={"message_id": record.message_id, "outcome": "errored"},
             )
             raise
+        if outcome is ProcessOutcome.REJECTED:
+            # Emitted here, not in the post-commit block: a rejection never
+            # commits, and that block is unreachable both when every record
+            # fails (BatchProcessor raises out of the handler) and when the
+            # commit fails — the paths a rejected granule routinely takes.
+            # First receipt only, so redeliveries up to the DLQ's
+            # maxReceiveCount count one per granule.
+            if record.attributes.approximate_receive_count == "1":
+                emit_metric("GranulesRouted", 1, Route="REJECTED")
+            # Raised outside the try above: this is routing, not an error,
+            # and its granule already appears in the "Processed granule"
+            # log line the dashboard's rejected-granules table queries.
+            raise RuntimeError(f"granule rejected: {granule_url(message)}")
+        if outcome is not None:
+            counts[outcome] += 1
 
     with batch_processor(records=records, handler=record_handler) as batch:
         batch.process()
@@ -135,29 +143,28 @@ def handler(event: Any, context: LambdaContext) -> PartialItemFailureResponse:
         logger.exception("Commit failed, marking all records as failed")
         # The invocation still succeeds, so no error metric fires; this
         # counter is the failed commit's only signal besides redelivery.
-        try:
-            emit_metric("CommitFailures", 1)
-        except Exception:
-            logger.warning("Skipping metric emission", exc_info=True)
+        emit_metric("CommitFailures", 1)
         return {
             "batchItemFailures": [
                 {"itemIdentifier": record["messageId"]} for record in records
             ]
         }
 
-    # Commit succeeded: emit the batch's metrics, best-effort — they must
-    # never fail a batch that was consumed and committed. Routing counts
-    # first; the store-reading metrics may bail independently.
+    # Commit succeeded: emit the batch's metrics (emit_metric itself is
+    # best-effort, so none of these can fail a consumed-and-committed
+    # batch). Freshness comes from the axis end the processor tracked
+    # while writing; only the ledger depth still reads the store, so only
+    # it can bail — independently of the other two.
+    for outcome, route in ROUTES.items():
+        if counts[outcome]:
+            emit_metric("GranulesRouted", counts[outcome], Route=route)
+    axis_end = virtualizarr_processor.axis_end
+    if axis_end is not None:
+        emit_metric("AxisEndLag", axis_end_lag(axis_end), MetricUnit.Seconds)
     try:
-        for outcome, route in ROUTES.items():
-            if counts[outcome]:
-                emit_metric("GranulesRouted", counts[outcome], Route=route)
-        emit_metric("PendingLedgerDepth", len(PendingLedger.read(session.store)))
-        emit_metric(
-            "AxisEndLag", axis_end_lag(read_axis_end(session.store)), MetricUnit.Seconds
-        )
+        emit_metric("PendingLedgerDepth", PendingLedger.depth(session.store))
     except Exception:
-        logger.warning("Skipping metric emission; store unreadable", exc_info=True)
+        logger.warning("Skipping ledger depth; store unreadable", exc_info=True)
 
     # Return normal partial failure response (only individually-failed
     # records retry)

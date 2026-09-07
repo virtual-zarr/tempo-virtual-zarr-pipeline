@@ -44,7 +44,7 @@ import sys
 import urllib.parse
 import urllib.request
 from contextlib import contextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from typing import Any, Callable, Iterator, Optional, cast
 
 import h5py
@@ -57,13 +57,13 @@ from virtualizarr_processor.granule import make_registry
 from virtualizarr_processor.inventory import BackfillInventory
 from virtualizarr_processor.manifest import (
     MANIFEST_ARRAYS,
+    TEMPO_EPOCH,
     PendingLedger,
     StoreManifest,
 )
 from virtualizarr_processor.metrics import NAMESPACE, metric_dimensions
 
 COORDINATES = ("time", "latitude", "longitude")
-TEMPO_EPOCH = datetime(1980, 1, 6, tzinfo=timezone.utc)
 CMR_GRANULES_URL = "https://cmr.earthdata.nasa.gov/search/granules.umm_json"
 # Wide enough to absorb the nominal-vs-in-file time offset (tens of
 # seconds), narrow enough to exclude the closest neighboring scan (8 min).

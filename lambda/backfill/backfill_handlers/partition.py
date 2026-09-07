@@ -40,10 +40,9 @@ def handler(event: dict[str, Any], context: LambdaContext) -> dict[str, Any]:
         )
 
     logger.info("Partitioned inventory", extra={"count": len(partitions)})
-    # The dashboard's partitions-done gauge divides SUM(PartitionsDone) by
-    # this run's total; best-effort.
-    try:
-        emit_metric("PartitionsTotal", len(partitions))
-    except Exception:
-        logger.warning("Skipping PartitionsTotal emission", exc_info=True)
+    # The dashboard's backfill-progress widget plots RUNNING_SUM of
+    # PartitionsDone against this total carried forward with FILL(REPEAT):
+    # the total lands in a single 5-minute bin, so per-bin math against it
+    # (a division, say) would render empty everywhere else.
+    emit_metric("PartitionsTotal", len(partitions))
     return {"partitions": partitions}

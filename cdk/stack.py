@@ -66,14 +66,12 @@ from stack_constructs import (
     grant_prefixed_read_write,
 )
 
-# CDK-side twin of virtualizarr_processor.metrics.NAMESPACE (this package
-# cannot import the Lambda code); tests/cdk/test_dashboard.py pins them equal.
-METRIC_NAMESPACE = "TempoPipeline"
-
-# Dimension name -> the settings field / env var that carries its value.
-# Drives the dashboard's dimension set, the Lambdas' env plumbing, and the
-# backfill env allowlist, so the three cannot drift apart.
-METRIC_DIMENSION_ENV = {"Collection": "TEMPO_COLLECTION", "Stage": "STAGE"}
+# The metric identity comes from the emission side itself (the
+# virtualizarr-processor package is installed in every synth path), so the
+# dashboard, the Lambdas' env plumbing, and the backfill env allowlist
+# cannot drift from what the handlers emit.
+from virtualizarr_processor.metrics import DIMENSION_ENV as METRIC_DIMENSION_ENV
+from virtualizarr_processor.metrics import NAMESPACE as METRIC_NAMESPACE
 
 
 def _concept_id(collection_name: str) -> str:
@@ -963,18 +961,23 @@ class VirtualizarrSqsStack(Stack):
                 log_group_names=[self.process_messages_log_group.log_group_name],
                 view=cloudwatch.LogQueryVisualizationType.TABLE,
                 query_lines=[
-                    # Two shapes: a clean rejection logs "Processed granule"
-                    # with outcome/url; a granule that *raises* mid-process
-                    # logs only record_handler's error line with message_id.
-                    # Both redeliver to the DLQ, so the runbook table shows
-                    # both — coalesce gives whichever identifier the line has.
-                    # Exclude the deliberate re-raise for standard rejections
-                    # because its granule already appears via the outcome branch.
-                    "fields @timestamp, coalesce(url, message_id) as granule, outcome",
-                    "filter outcome = 'rejected'"
-                    " or (message like 'Error processing record'"
-                    " and message not like 'granule rejected')",
-                    "sort @timestamp desc",
+                    # Two shapes, both filtered on structured fields (never
+                    # on message prose, which rewording would silently
+                    # break): a clean rejection logs "Processed granule"
+                    # with outcome=rejected and url; a granule that *raises*
+                    # mid-process logs record_handler's error line with
+                    # outcome=errored and message_id — coalesce gives
+                    # whichever identifier the line has. Each attempt logs
+                    # again and a granule redelivers up to the DLQ's
+                    # maxReceiveCount, so aggregate per granule or a few
+                    # concurrently-failing granules would fill the 50-row
+                    # cap with duplicates and hide the rest.
+                    "filter outcome in ['rejected', 'errored']",
+                    "stats latest(@timestamp) as last_attempt,"
+                    " latest(outcome) as last_outcome,"
+                    " count(*) as attempts"
+                    " by coalesce(url, message_id) as granule",
+                    "sort last_attempt desc",
                     "limit 50",
                 ],
             )
