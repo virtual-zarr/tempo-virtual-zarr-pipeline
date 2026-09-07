@@ -148,8 +148,8 @@ class VirtualizarrSqsStack(Stack):
             "Granules were rejected to the dead-letter queue",
         )
 
-        # Band 1 — top-line state. AxisEndLag and PendingLedgerDepth render
-        # "no data" until their emission lands; the layout is final either way.
+        # Dashboard top-line tiles: is the store fresh, is the queue moving,
+        # is anything dead-lettered, how far behind is the pending ledger.
         for title, metric in (
             ("Store freshness", self._custom_metric("AxisEndLag")),
             (
@@ -288,8 +288,9 @@ class VirtualizarrSqsStack(Stack):
             "The forward-processing consumer failed",
         )
 
-        # Band 2 — forward processing (queue and consumer are unconditional;
-        # the poller and re-sort widgets are appended in their gated blocks).
+        # Dashboard forward-processing section (queue and consumer are
+        # unconditional; the poller and re-sort widgets are appended inside
+        # their setting-gated blocks and disappear with them).
         self._widgets.append(
             cloudwatch.TextWidget(markdown="## Forward processing", width=24, height=1)
         )
@@ -586,9 +587,10 @@ class VirtualizarrSqsStack(Stack):
                         self._custom_metric("FoldedGranules", statistic="Sum"),
                         self._custom_metric("PromoteCasRejections", statistic="Sum"),
                     ],
-                    # A run pinned near the timeout is falling over even when
-                    # the error metric stays flat — the signal the week-long
-                    # silent outage lacked.
+                    # A run killed by the Lambda timeout mid-fold emits no
+                    # error metric (the pending ledger just grows silently);
+                    # duration trending toward the 15-min line is the only
+                    # early warning for that failure mode.
                     right=[self.resort_lambda.metric_duration(statistic="Maximum")],
                     left_annotations=[
                         cloudwatch.HorizontalAnnotation(
@@ -702,7 +704,8 @@ class VirtualizarrSqsStack(Stack):
                 '--state-machine-arn <this> --input \'{"inventory_uri": "s3://..."}\'',
             )
 
-            # Band 3 — backfill.
+            # Dashboard backfill section, rendered only when the backfill
+            # pipeline is deployed.
             state_machine = self.backfill_pipeline.state_machine
             self._widgets.append(
                 cloudwatch.TextWidget(markdown="## Backfill", width=24, height=1)
@@ -859,7 +862,15 @@ class VirtualizarrSqsStack(Stack):
         period: Duration | None = None,
         extra_dimensions: dict[str, str] | None = None,
     ) -> cloudwatch.Metric:
-        """A pipeline-emitted metric; renders "no data" until emission lands."""
+        """A custom metric the pipeline's handlers emit as CloudWatch EMF.
+
+        Names and the {Collection, Stage} dimension set must match the
+        emission side exactly (the emit_metric helpers in
+        lambda/process_messages/handler.py and
+        lambda/backfill/backfill_handlers/emit.py) — a mismatched name or an
+        extra dimension is a different CloudWatch series, and the widget or
+        alarm querying it shows nothing.
+        """
         return cloudwatch.Metric(
             namespace="TempoPipeline",
             metric_name=metric_name,
@@ -869,13 +880,18 @@ class VirtualizarrSqsStack(Stack):
         )
 
     def _dashboard(self, settings: StackSettings) -> None:
-        """Band 4 (data quality), the AxisEndLag alarm, and the dashboard
+        """The data-quality widgets, the staleness alarm, and the dashboard
         assembled from every widget and alarm the components accumulated."""
-        # The top-line SLI, and the only alarm that catches a silently-dead
-        # poller or a re-sort that fails without throwing. Missing data *is*
-        # the failure here, so this needs BREACHING rather than the _alarm
-        # helper's NOT_BREACHING default. It sits in ALARM until AxisEndLag
-        # emission lands (docs/grafana-monitoring-plan.md Phase 1).
+        # Store freshness: AxisEndLag is seconds between now and the last
+        # time-axis slot, emitted by the consumer after each commit and by
+        # the re-sort after each promote. It is the only alarm that catches
+        # a silently-dead poller (nothing errors; granules just stop) or a
+        # re-sort killed by its timeout (no error metric fires) — in both
+        # cases the metric goes stale rather than growing, so missing data
+        # *is* the failure and needs BREACHING rather than the _alarm
+        # helper's NOT_BREACHING default. Consequence: a fresh deployment
+        # starts in ALARM until its first committed batch or promoted
+        # re-sort; that is expected.
         axis_end_lag_alarm = cloudwatch.Alarm(
             self,
             "AxisEndLagAlarm",
@@ -892,7 +908,7 @@ class VirtualizarrSqsStack(Stack):
             )
         self._alarms.append(axis_end_lag_alarm)
 
-        # Band 4 — data quality.
+        # Dashboard data-quality section.
         self._widgets.append(
             cloudwatch.TextWidget(markdown="## Data quality", width=24, height=1)
         )
@@ -907,8 +923,10 @@ class VirtualizarrSqsStack(Stack):
             )
         )
         self._widgets.append(
-            # Assumes the consumer logs structured JSON with outcome and
-            # granule_ur; that lands with the routing-metric work.
+            # The consumer's powertools Logger writes one structured JSON
+            # line per granule ("Processed granule", with url and outcome
+            # fields); this surfaces the rejected ones — the reason is in
+            # the adjacent log lines.
             cloudwatch.LogQueryWidget(
                 title="Rejected granules",
                 width=16,
@@ -916,8 +934,8 @@ class VirtualizarrSqsStack(Stack):
                 log_group_names=[self.process_messages_log_group.log_group_name],
                 view=cloudwatch.LogQueryVisualizationType.TABLE,
                 query_lines=[
-                    "fields @timestamp, granule_ur, reason",
-                    "filter outcome = 'REJECTED'",
+                    "fields @timestamp, url",
+                    "filter outcome = 'rejected'",
                     "sort @timestamp desc",
                     "limit 50",
                 ],

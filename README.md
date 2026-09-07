@@ -600,7 +600,7 @@ per-collection env files (`.env_hcho` / `.env_no2`, plus the gitignored
 | `EARTHDATA_SECRET_ARN` | — | Secrets Manager secret with EDL credentials for source reads |
 | `GARBAGE_COLLECTION_FREQUENCY` | — | days between Icechunk GC runs (needs `VPC_ID`) |
 | `GC_EXPIRY_DAYS` | 30 | snapshot expiry for GC runs — also the store's rollback window |
-| `ALARM_EMAIL` | — | notification email for the DLQ-depth and scheduled-job-failure alarms |
+| `ALARM_EMAIL` | — | notification email for all alarms (see [Monitoring](#monitoring)) |
 | `OWNER` | — | `Owner` cost-allocation tag on every resource; unset applies no tag |
 | `CLIENT` | — | `Client` cost-allocation tag on every resource; unset applies no tag |
 
@@ -616,6 +616,61 @@ Concurrent backfill runs are not supported.
 
 ![Architecture](./docs/architecture-dark.png#gh-dark-mode-only)
 ![Architecture](./docs/architecture.png#gh-light-mode-only)
+
+## Monitoring
+
+Each deployment renders its own CloudWatch dashboard, named after the
+stack; the `DashboardUrl` stack output links to it. It is built in
+`cdk/stack.py` from the same metric objects the alarms use, so there is
+nothing to import or configure — deploy and it exists.
+
+### Alarms
+
+Five alarms page (via `ALARM_EMAIL`, when set):
+
+| Alarm | Fires when | It usually means |
+|---|---|---|
+| `DlqMessagesAlarm` | anything lands in the DLQ | granules rejected 20 times — a UR/time collision or a persistent parse failure; the dashboard's *Rejected granules* table shows which |
+| `ConsumerErrorsAlarm` | the SQS consumer throws | check the consumer's log group |
+| `PollerErrorsAlarm` | the CMR poller throws | CMR unreachable, or watermark state unreadable |
+| `ResortErrorsAlarm` | the re-sort job throws | the fold failed before promoting; the ledger keeps growing until fixed |
+| `AxisEndLagAlarm` | the store's newest time slot is > 24 h old, **or the `AxisEndLag` metric stops arriving** | the top-line staleness check. Treating missing data as breaching is deliberate: a dead poller or a re-sort killed by its timeout emits no error metric at all — the freshness metric going quiet is the only signal. Consequence: a **fresh deployment starts in ALARM** until its first committed batch or promoted re-sort; that is expected. |
+
+Throttles on the consumer are *expected* (its reserved concurrency is 1;
+SQS redelivers) and are displayed on the dashboard but never alarmed.
+
+### Custom metrics
+
+The handlers emit CloudWatch metrics in the `TempoPipeline` namespace,
+dimensioned by `Collection` and `Stage` (so queries never need physical
+resource names):
+
+| Metric | Emitted by | How to read it |
+|---|---|---|
+| `AxisEndLag` (seconds) | consumer after each commit; re-sort after each promote | store freshness; production lag is normally a few hours |
+| `GranulesRouted` (dimension `Route`) | consumer, per committed batch | `APPENDED` = growth, `OVERWRITTEN` = republications, `PENDING` = out-of-order arrivals headed for the re-sort (routinely a large share), `REJECTED` = collisions headed for the DLQ |
+| `PendingLedgerDepth` | consumer and re-sort | nonzero is healthy; trending up across days means the re-sort is not keeping pace |
+| `FoldedGranules` | re-sort (0 when it ran with an empty ledger) | pinned at `RESORT_MAX_FOLD` every run means falling behind |
+| `PromoteCasRejections` | re-sort promote failures and consumer commit failures | occasional ones are the single-writer design working; sustained ones mean writers are fighting |
+| `PartitionsDone` / `PartitionsTotal` | backfill reduce / partition steps | backfill progress; the dashboard's gauge is their ratio |
+| `CompletenessDelta` | `verify_store.py --completeness` (CodeBuild) | granules CMR lists that the store lacks, plus store entries CMR dropped; one point per verify run, so the series is sparse |
+
+Emission is best-effort: a metric failure never fails a batch or a
+re-sort run. If a widget shows *no data*, first check the corresponding
+job has actually run (e.g. `CompletenessDelta` appears only after a
+verify run).
+
+### During a backfill
+
+The dashboard's backfill section (rendered when `BACKFILL_ENABLED`) shows
+Step Functions executions, the partitions-done gauge, and worker errors —
+watch it during the initial fill. Afterward, the two numbers worth a
+daily glance are the *Store freshness* and *Pending ledger depth* tiles.
+
+A cross-account Grafana dashboard covering both collections is planned
+but not built; see
+[`docs/grafana-monitoring-plan.md`](./docs/grafana-monitoring-plan.md)
+(on its own branch until merged).
 
 ## Development
 
