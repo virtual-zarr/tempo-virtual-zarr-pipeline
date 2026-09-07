@@ -70,6 +70,11 @@ from stack_constructs import (
 # cannot import the Lambda code); tests/cdk/test_dashboard.py pins them equal.
 METRIC_NAMESPACE = "TempoPipeline"
 
+# Dimension name -> the settings field / env var that carries its value.
+# Drives the dashboard's dimension set, the Lambdas' env plumbing, and the
+# backfill env allowlist, so the three cannot drift apart.
+METRIC_DIMENSION_ENV = {"Collection": "TEMPO_COLLECTION", "Stage": "STAGE"}
+
 
 def _concept_id(collection_name: str) -> str:
     """The CMR concept id from the collection's declarative TOML."""
@@ -106,12 +111,9 @@ class VirtualizarrSqsStack(Stack):
         # Custom-metric identity shared with the (deferred) emission side:
         # namespace TempoPipeline, dimensions Collection and Stage.
         self._metric_dimensions = {
-            key: value
-            for key, value in {
-                "Collection": settings.TEMPO_COLLECTION,
-                "Stage": settings.STAGE,
-            }.items()
-            if value
+            dimension: value
+            for dimension, key in METRIC_DIMENSION_ENV.items()
+            if (value := getattr(settings, key))
         }
 
         self.dlq = sqs.Queue(
@@ -229,11 +231,12 @@ class VirtualizarrSqsStack(Stack):
         self.processor_env = {
             "ICECHUNK_BUCKET": self.icechunk_bucket.bucket_name,
             "ICECHUNK_REGION": settings.ACCOUNT_REGION,
-            # Metric dimension for the TempoPipeline custom metrics.
-            "STAGE": settings.STAGE,
         }
-        if settings.TEMPO_COLLECTION:
-            self.processor_env["TEMPO_COLLECTION"] = settings.TEMPO_COLLECTION
+        # Metric-dimension env vars for the TempoPipeline custom metrics.
+        for key in METRIC_DIMENSION_ENV.values():
+            value = getattr(settings, key)
+            if value:
+                self.processor_env[key] = value
         if settings.VIRTUAL_CHUNK_PREFIX:
             self.processor_env["VIRTUAL_CHUNK_PREFIX"] = settings.VIRTUAL_CHUNK_PREFIX
         if storage_prefix:
@@ -692,13 +695,7 @@ class VirtualizarrSqsStack(Stack):
                 earthdata_secret_arn=settings.EARTHDATA_SECRET_ARN,
                 extra_env={
                     key: self.processor_env[key]
-                    for key in (
-                        "TEMPO_COLLECTION",
-                        "VIRTUAL_CHUNK_PREFIX",
-                        # Metric dimension for the TempoPipeline metrics the
-                        # partition/reduce/promote handlers emit.
-                        "STAGE",
-                    )
+                    for key in ("VIRTUAL_CHUNK_PREFIX", *METRIC_DIMENSION_ENV.values())
                     if key in self.processor_env
                 },
             )
