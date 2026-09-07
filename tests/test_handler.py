@@ -244,7 +244,9 @@ def test_handler_emits_routing_and_ledger_metrics(
 def test_handler_emits_commit_failure_metric(
     MockProcessor: MagicMock, capsys: Any
 ) -> None:
-    """A failed commit is otherwise invisible (the invocation still succeeds); CommitFailures is its only signal besides queue redelivery."""
+    """A failed commit is otherwise invisible (the invocation still succeeds);
+    CommitFailures is its only signal besides queue redelivery.
+    """
     mock_processor = MockProcessor.return_value
     mock_processor.open_initialized_repo.return_value = MagicMock()
     mock_session = MagicMock()

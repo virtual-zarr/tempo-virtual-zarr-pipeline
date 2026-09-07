@@ -845,9 +845,7 @@ class VirtualizarrSqsStack(Stack):
             iam.PolicyStatement(
                 actions=["cloudwatch:PutMetricData"],
                 resources=["*"],
-                conditions={
-                    "StringEquals": {"cloudwatch:namespace": METRIC_NAMESPACE}
-                },
+                conditions={"StringEquals": {"cloudwatch:namespace": METRIC_NAMESPACE}},
             )
         )
         if self.earthdata_secret is not None:
