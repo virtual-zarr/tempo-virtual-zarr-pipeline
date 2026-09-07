@@ -865,11 +865,10 @@ class VirtualizarrSqsStack(Stack):
         """A custom metric the pipeline's handlers emit as CloudWatch EMF.
 
         Names and the {Collection, Stage} dimension set must match the
-        emission side exactly (the emit_metric helpers in
-        lambda/process_messages/handler.py and
-        lambda/backfill/backfill_handlers/emit.py) — a mismatched name or an
-        extra dimension is a different CloudWatch series, and the widget or
-        alarm querying it shows nothing.
+        emission side exactly (virtualizarr_processor.metrics.emit_metric,
+        the shared helper every Lambda handler and verify_store.py use) —
+        a mismatched name or an extra dimension is a different CloudWatch
+        series, and the widget or alarm querying it shows nothing.
         """
         return cloudwatch.Metric(
             namespace="TempoPipeline",

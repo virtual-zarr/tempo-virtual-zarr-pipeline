@@ -5,10 +5,10 @@ from typing import Any
 from aws_lambda_powertools import Logger, Tracer
 from aws_lambda_powertools.utilities.typing import LambdaContext
 from virtualizarr_processor import backfill
+from virtualizarr_processor.metrics import emit_metric
 from virtualizarr_processor.processor import Processor
 
 from backfill_handlers import fork_store
-from backfill_handlers.emit import emit_metric
 
 logger = Logger()
 tracer = Tracer()

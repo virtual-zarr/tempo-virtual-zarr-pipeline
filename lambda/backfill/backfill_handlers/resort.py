@@ -29,10 +29,9 @@ from virtualizarr_processor.manifest import (
     StoreManifest,
     axis_end_lag,
 )
+from virtualizarr_processor.metrics import emit_metric
 from virtualizarr_processor.processor import Processor
 from virtualizarr_processor.resort import first_shifted_index, merge_pending
-
-from backfill_handlers.emit import emit_metric
 
 logger = Logger()
 tracer = Tracer()

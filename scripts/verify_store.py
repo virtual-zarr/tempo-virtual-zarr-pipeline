@@ -40,7 +40,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 import urllib.parse
 import urllib.request
@@ -61,6 +60,7 @@ from virtualizarr_processor.manifest import (
     PendingLedger,
     StoreManifest,
 )
+from virtualizarr_processor.metrics import NAMESPACE, metric_dimensions
 
 COORDINATES = ("time", "latitude", "longitude")
 TEMPO_EPOCH = datetime(1980, 1, 6, tzinfo=timezone.utc)
@@ -366,13 +366,13 @@ def emit_completeness_delta(count: int) -> None:
     """Publish one CompletenessDelta point for this verify run.
 
     CodeBuild logs are not EMF-parsed, so unlike the Lambda metrics this is
-    a direct put_metric_data call — same namespace and the same exact
-    {Collection, Stage} dimension set the dashboard queries.
+    a direct put_metric_data call; the metric identity is imported from
+    virtualizarr_processor.metrics so it cannot drift from the emitters.
     """
     import boto3  # deferred so the pure helpers are testable offline
 
     boto3.client("cloudwatch").put_metric_data(
-        Namespace="TempoPipeline",
+        Namespace=NAMESPACE,
         MetricData=[
             {
                 "MetricName": "CompletenessDelta",
@@ -380,11 +380,7 @@ def emit_completeness_delta(count: int) -> None:
                 "Unit": "Count",
                 "Dimensions": [
                     {"Name": name, "Value": value}
-                    for name, value in (
-                        ("Collection", os.environ.get("TEMPO_COLLECTION")),
-                        ("Stage", os.environ.get("STAGE")),
-                    )
-                    if value
+                    for name, value in metric_dimensions().items()
                 ],
             }
         ],

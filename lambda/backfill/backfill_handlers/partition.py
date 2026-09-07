@@ -4,10 +4,10 @@ from typing import Any
 
 from aws_lambda_powertools import Logger, Tracer
 from aws_lambda_powertools.utilities.typing import LambdaContext
+from virtualizarr_processor.metrics import emit_metric
 
 from backfill_handlers import inventory
 from backfill_handlers.config import parse_s3_uri
-from backfill_handlers.emit import emit_metric
 
 logger = Logger()
 tracer = Tracer()

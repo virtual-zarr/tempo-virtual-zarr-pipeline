@@ -9,12 +9,11 @@ APPENDED, and OVERWRITTEN are all successful consumption.
 """
 
 import json
-import os
 from collections import Counter
 from typing import Any, Dict, Optional
 
 from aws_lambda_powertools import Logger, Tracer
-from aws_lambda_powertools.metrics import MetricUnit, single_metric
+from aws_lambda_powertools.metrics import MetricUnit
 from aws_lambda_powertools.utilities.batch import (
     BatchProcessor,
     EventType,
@@ -24,6 +23,7 @@ from aws_lambda_powertools.utilities.data_classes import SQSEvent, SQSRecord
 from aws_lambda_powertools.utilities.typing import LambdaContext
 from icechunk import Session
 from virtualizarr_processor.manifest import PendingLedger, axis_end_lag, read_axis_end
+from virtualizarr_processor.metrics import emit_metric
 from virtualizarr_processor.processor import Processor
 from virtualizarr_processor.typing import ProcessOutcome
 
@@ -39,34 +39,6 @@ ROUTES = {
     ProcessOutcome.DEFERRED: "PENDING",
     ProcessOutcome.REJECTED: "REJECTED",
 }
-
-
-def emit_metric(
-    name: str,
-    value: float,
-    unit: MetricUnit = MetricUnit.Count,
-    **extra_dimensions: str,
-) -> None:
-    """One EMF blob in the TempoPipeline namespace. The dimension set must
-    stay exactly {Collection, Stage} plus any explicit extras (Route):
-    anything else is a different CloudWatch series, invisible to the
-    dashboard widgets and the AxisEndLag alarm."""
-    with single_metric(
-        name=name,
-        unit=unit,
-        value=value,
-        namespace="TempoPipeline",
-        default_dimensions={
-            key: val
-            for key, val in (
-                ("Collection", os.environ.get("TEMPO_COLLECTION")),
-                ("Stage", os.environ.get("STAGE")),
-                *extra_dimensions.items(),
-            )
-            if val
-        },
-    ):
-        pass
 
 
 def granule_url(message: Dict[str, Any]) -> Optional[str]:
