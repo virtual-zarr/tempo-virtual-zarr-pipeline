@@ -1,13 +1,29 @@
 """CDK assertions for the in-stack CloudWatch dashboard."""
 
 import json
+import re
+from pathlib import Path
 from typing import Any
 
 import aws_cdk as cdk
+import pytest
 from aws_cdk.assertions import Match, Template
 from conftest import resolve_joins
 from settings import StackSettings
-from stack import VirtualizarrSqsStack
+from stack import METRIC_NAMESPACE, VirtualizarrSqsStack
+from virtualizarr_processor.metrics import NAMESPACE, metric_dimensions
+
+REPO = Path(__file__).resolve().parents[2]
+
+# Sources whose emit_metric()/MetricName calls define the emitted names.
+EMITTER_SOURCES = [
+    REPO / "lambda/process_messages/handler.py",
+    REPO / "lambda/backfill/backfill_handlers/partition.py",
+    REPO / "lambda/backfill/backfill_handlers/reduce.py",
+    REPO / "lambda/backfill/backfill_handlers/resort.py",
+    REPO / "scripts/verify_store.py",
+]
+EMIT_CALL = re.compile(r'emit_metric\(\s*"(\w+)"|"MetricName":\s*"(\w+)"')
 
 
 def _template(*, backfill: bool = False, forward: bool | None = None) -> Template:
@@ -162,3 +178,73 @@ def test_codebuild_may_put_tempo_pipeline_metrics_only() -> None:
             }
         ),
     )
+
+
+def _dashboard_metrics(template: Template) -> list[list]:
+    """Every TempoPipeline metric definition in the dashboard body (flattened
+    from graph widgets), e.g.
+    ["TempoPipeline", "AxisEndLag", "Collection", "hcho", "Stage", "dev", {...}].
+
+    The backfill widget's MathExpressions (RUNNING_SUM/FILL) render their
+    using_metrics as separate top-level entries in the widget's metrics
+    array rather than nested under the expression entry, so no unwrapping
+    is needed: the expression entries themselves are excluded below because
+    their first element is a dict, not the namespace string.
+    """
+    (dashboard,) = [
+        r
+        for r in template.to_json()["Resources"].values()
+        if r["Type"] == "AWS::CloudWatch::Dashboard"
+    ]
+    body = json.loads(resolve_joins(dashboard["Properties"]["DashboardBody"]))
+    return [
+        metric
+        for widget in body["widgets"]
+        for metric in widget["properties"].get("metrics", [])
+        if isinstance(metric, list) and metric and metric[0] == METRIC_NAMESPACE
+    ]
+
+
+def test_namespaces_are_pinned_equal() -> None:
+    """stack.py cannot import the Lambda package at deploy time, so the
+    namespace exists twice; this is the pin that keeps them one value."""
+    assert METRIC_NAMESPACE == NAMESPACE
+
+
+def test_dashboard_dimensions_match_emitters(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A mismatched dimension set is a different CloudWatch series: the
+    widget or alarm querying it silently shows nothing. The emitters build
+    dimensions from env; the dashboard from settings — same values in,
+    identical sets out."""
+    monkeypatch.setenv("TEMPO_COLLECTION", "hcho")
+    monkeypatch.setenv("STAGE", "dev")
+    expected = metric_dimensions()  # {"Collection": "hcho", "Stage": "dev"}
+    metrics = _dashboard_metrics(_template(backfill=True))
+    assert metrics, "no TempoPipeline metrics found in the dashboard body"
+    for definition in metrics:
+        # ["Ns", "Name", dimName, dimValue, ..., {options}]
+        end = (
+            len(definition) - 1 if isinstance(definition[-1], dict) else len(definition)
+        )
+        pairs = definition[2:end]
+        dims = dict(zip(pairs[::2], pairs[1::2]))
+        dims.pop("Route", None)  # explicit extra, emitted per-call
+        assert dims == expected, f"{definition[1]}: {dims} != {expected}"
+
+
+def test_dashboard_queries_only_emitted_metric_names() -> None:
+    """Every name the dashboard queries must have an emitter in the source
+    tree, or the widget can never show data."""
+    emitted = {
+        group
+        for source in EMITTER_SOURCES
+        for match in EMIT_CALL.finditer(source.read_text())
+        for group in match.groups()
+        if group
+    }
+    queried = {
+        definition[1] for definition in _dashboard_metrics(_template(backfill=True))
+    }
+    assert queried and queried <= emitted, queried - emitted
