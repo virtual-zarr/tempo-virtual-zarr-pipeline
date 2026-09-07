@@ -268,6 +268,7 @@ class VirtualizarrSqsStack(Stack):
         self.process_messages_log_group = function_log_group(
             self, "process-messages-logs"
         )
+        consumer_timeout_minutes = 5
         self.process_messages_lambda = _lambda.DockerImageFunction(
             self,
             f"{settings.STACK_NAME}-process_messages_lambda",
@@ -278,7 +279,7 @@ class VirtualizarrSqsStack(Stack):
                 platform=ecr_assets.Platform.LINUX_AMD64,  # or LINUX_AMD64
             ),
             architecture=_lambda.Architecture.X86_64,
-            timeout=Duration.minutes(5),
+            timeout=Duration.minutes(consumer_timeout_minutes),
             memory_size=2048,
             environment=dict(self.processor_env),
             # Single-writer: concurrent consumers conflict on the append
@@ -333,8 +334,8 @@ class VirtualizarrSqsStack(Stack):
                 # 1800 s SQS visibility timeout is only the redelivery bound.
                 left_annotations=[
                     cloudwatch.HorizontalAnnotation(
-                        value=300000,
-                        label="Lambda timeout (5 min)",
+                        value=consumer_timeout_minutes * 60_000,
+                        label=f"Lambda timeout ({consumer_timeout_minutes} min)",
                         color=cloudwatch.Color.RED,
                     )
                 ],
@@ -530,6 +531,7 @@ class VirtualizarrSqsStack(Stack):
         that folds the pending ledger in, and the CMR poller that feeds the
         queue (ASDC publishes no SNS topic)."""
         if settings.RESORT_SCHEDULE_HOURS:
+            resort_timeout_minutes = 15
             resort_env = dict(self.processor_env)
             resort_env["RESORT_MAX_FOLD"] = str(settings.RESORT_MAX_FOLD)
             self.resort_lambda = _lambda.DockerImageFunction(
@@ -543,7 +545,7 @@ class VirtualizarrSqsStack(Stack):
                     cmd=["backfill_handlers.resort.handler"],
                 ),
                 architecture=_lambda.Architecture.X86_64,
-                timeout=Duration.minutes(15),
+                timeout=Duration.minutes(resort_timeout_minutes),
                 # A deep resort's chunk-reference relocation builds the whole
                 # shifted suffix's manifest updates in memory.
                 memory_size=4096,
@@ -607,7 +609,8 @@ class VirtualizarrSqsStack(Stack):
                     ],
                     right_annotations=[
                         cloudwatch.HorizontalAnnotation(
-                            value=900000, label="Lambda timeout (15 min)"
+                            value=resort_timeout_minutes * 60_000,
+                            label=f"Lambda timeout ({resort_timeout_minutes} min)",
                         )
                     ],
                 )

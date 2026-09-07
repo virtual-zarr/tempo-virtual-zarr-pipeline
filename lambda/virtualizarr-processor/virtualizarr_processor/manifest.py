@@ -134,9 +134,10 @@ class PendingLedger:
 
     @staticmethod
     def depth(store: Store) -> int:
-        """Entry count from the raw attribute — no per-entry validation, so
-        the consumer's PendingLedgerDepth metric stays O(1)-ish as the
-        ledger grows (the exact condition the metric exists to detect)."""
+        """Entry count from the raw attribute. The attribute is still read
+        and parsed wholesale, but skipping :meth:`read`'s per-entry pydantic
+        validation keeps the consumer's PendingLedgerDepth metric cheap as
+        the ledger grows (the exact condition the metric exists to detect)."""
         raw = zarr.open_group(store, mode="r").attrs.get(PENDING_LEDGER_ATTRIBUTE, [])
         return len(cast(Sequence[object], raw))
 

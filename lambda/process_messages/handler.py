@@ -54,13 +54,22 @@ def granule_url(message: Dict[str, Any]) -> Optional[str]:
     return None
 
 
+def parse_body(body: str) -> Dict[str, Any]:
+    """Parse an SQS record body, unwrapping an SNS envelope if present.
+
+    The sort key and the record handler must parse identically, or the
+    batch's processing order desyncs from its sorted order.
+    """
+    message = json.loads(body)
+    if "Message" in message:  # SNS envelope
+        message = json.loads(message["Message"])
+    return dict(message)
+
+
 def record_url(record: Dict[str, Any]) -> str:
     """Extract the url from a raw SQS record for batch sorting, best effort."""
     try:
-        message = json.loads(record["body"])
-        if "Message" in message:  # SNS envelope
-            message = json.loads(message["Message"])
-        return granule_url(message) or ""
+        return granule_url(parse_body(record["body"])) or ""
     except Exception:
         return ""
 
@@ -98,9 +107,7 @@ def handler(event: Any, context: LambdaContext) -> PartialItemFailureResponse:
     @tracer.capture_method
     def record_handler(record: SQSRecord) -> None:
         try:
-            message = json.loads(record.body)
-            if "Message" in message:  # SNS envelope
-                message = json.loads(message["Message"])
+            message = parse_body(record.body)
             outcome = process_notification(
                 message=message,
                 session=session,
