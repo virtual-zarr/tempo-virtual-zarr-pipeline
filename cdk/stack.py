@@ -924,6 +924,8 @@ class VirtualizarrSqsStack(Stack):
         # series legitimately goes quiet overnight: only a full day of
         # consecutive missing-or-stale hours alarms. A backfill-only stack
         # has no freshness contract, so no alarm at all.
+        # A fresh deployment still starts its first day in ALARM: the pre-creation
+        # hours evaluate as missing, hence breaching.
         if settings.FORWARD_QUEUE_ENABLED:
             self._alarm(
                 "AxisEndLagAlarm",
