@@ -4,12 +4,13 @@ Messages come from the CMR poller (``{"url": "s3://..."}``) or, if an SNS
 subscription is ever wired up, from S3 object-created notifications. Each
 batch is pre-sorted by filename timestamp so adjacent scans arriving
 together append in order. A REJECTED granule fails its record (SQS retry,
-then DLQ); DEFERRED (out-of-order, recorded in the pending ledger) and
-WRITTEN are both successful consumption.
+then DLQ); DEFERRED (out-of-order, recorded in the pending ledger),
+APPENDED, and OVERWRITTEN are all successful consumption.
 """
 
 import json
 import os
+from collections import Counter
 from typing import Any, Dict, Optional
 
 from aws_lambda_powertools import Logger, Tracer
@@ -22,7 +23,7 @@ from aws_lambda_powertools.utilities.batch.types import PartialItemFailureRespon
 from aws_lambda_powertools.utilities.data_classes import SQSEvent, SQSRecord
 from aws_lambda_powertools.utilities.typing import LambdaContext
 from icechunk import Session
-from virtualizarr_processor.manifest import axis_end_lag, read_axis_end
+from virtualizarr_processor.manifest import PendingLedger, axis_end_lag, read_axis_end
 from virtualizarr_processor.processor import Processor
 from virtualizarr_processor.typing import ProcessOutcome
 
@@ -30,23 +31,39 @@ logger = Logger()
 tracer = Tracer()
 batch_processor = BatchProcessor(event_type=EventType.SQS)
 
+# Outcome -> the routing metric's Route dimension value (DEFERRED granules
+# sit in the *pending* ledger, hence the dashboard's PENDING route).
+ROUTES = {
+    ProcessOutcome.APPENDED: "APPENDED",
+    ProcessOutcome.OVERWRITTEN: "OVERWRITTEN",
+    ProcessOutcome.DEFERRED: "PENDING",
+    ProcessOutcome.REJECTED: "REJECTED",
+}
 
-def emit_axis_end_lag(lag: float) -> None:
-    """One EMF blob for the freshness SLI. The dimension set must stay
-    exactly {Collection, Stage}: anything extra is a different CloudWatch
-    series, invisible to the dashboard and the AxisEndLag alarm."""
+
+def emit_metric(
+    name: str,
+    value: float,
+    unit: MetricUnit = MetricUnit.Count,
+    **extra_dimensions: str,
+) -> None:
+    """One EMF blob in the TempoPipeline namespace. The dimension set must
+    stay exactly {Collection, Stage} plus any explicit extras (Route):
+    anything else is a different CloudWatch series, invisible to the
+    dashboard widgets and the AxisEndLag alarm."""
     with single_metric(
-        name="AxisEndLag",
-        unit=MetricUnit.Seconds,
-        value=lag,
+        name=name,
+        unit=unit,
+        value=value,
         namespace="TempoPipeline",
         default_dimensions={
-            key: value
-            for key, value in (
+            key: val
+            for key, val in (
                 ("Collection", os.environ.get("TEMPO_COLLECTION")),
                 ("Stage", os.environ.get("STAGE")),
+                *extra_dimensions.items(),
             )
-            if value
+            if val
         },
     ):
         pass
@@ -80,12 +97,14 @@ def process_notification(
     message: Dict[str, Any],
     session: Session,
     processor: Processor,
+    counts: "Counter[ProcessOutcome]",
 ) -> None:
     url = granule_url(message)
     if not url:
         logger.warning("Message carries no granule url; skipping", extra=message)
         return
     outcome = processor.process_file(file_key=url, session=session)
+    counts[outcome] += 1
     logger.info("Processed granule", extra={"url": url, "outcome": outcome.value})
     if outcome is ProcessOutcome.REJECTED:
         raise RuntimeError(f"granule rejected: {url}")
@@ -104,6 +123,7 @@ def handler(event: Any, context: LambdaContext) -> PartialItemFailureResponse:
     # the initialize Lambda's) job, not a message-consumption side effect.
     repo = virtualizarr_processor.open_initialized_repo()
     session = virtualizarr_processor.initialize_session(repo=repo)
+    counts: "Counter[ProcessOutcome]" = Counter()
 
     @tracer.capture_method
     def record_handler(record: SQSRecord) -> None:
@@ -115,6 +135,7 @@ def handler(event: Any, context: LambdaContext) -> PartialItemFailureResponse:
                 message=message,
                 session=session,
                 processor=virtualizarr_processor,
+                counts=counts,
             )
         except Exception as e:
             logger.error(
@@ -134,18 +155,31 @@ def handler(event: Any, context: LambdaContext) -> PartialItemFailureResponse:
         # commit persists nothing for DEFERRED records either; all records,
         # including DEFERRED ones, simply retry and re-defer cleanly.
         logger.exception("Commit failed, marking all records as failed")
+        # The invocation still succeeds, so no error metric fires; this
+        # counter is the failed commit's only signal besides redelivery.
+        try:
+            emit_metric("PromoteCasRejections", 1)
+        except Exception:
+            logger.warning("Skipping metric emission", exc_info=True)
         return {
             "batchItemFailures": [
                 {"itemIdentifier": record["messageId"]} for record in records
             ]
         }
 
-    # Commit succeeded: emit the freshness SLI, best-effort — it must never
-    # fail a batch that was consumed and committed.
+    # Commit succeeded: emit the batch's metrics, best-effort — they must
+    # never fail a batch that was consumed and committed. Routing counts
+    # first; the store-reading metrics may bail independently.
     try:
-        emit_axis_end_lag(axis_end_lag(read_axis_end(session.store)))
+        for outcome, route in ROUTES.items():
+            if counts[outcome]:
+                emit_metric("GranulesRouted", counts[outcome], Route=route)
+        emit_metric("PendingLedgerDepth", len(PendingLedger.read(session.store)))
+        emit_metric(
+            "AxisEndLag", axis_end_lag(read_axis_end(session.store)), MetricUnit.Seconds
+        )
     except Exception:
-        logger.warning("Skipping AxisEndLag; time axis unreadable", exc_info=True)
+        logger.warning("Skipping metric emission; store unreadable", exc_info=True)
 
     # Return normal partial failure response (only individually-failed
     # records retry)

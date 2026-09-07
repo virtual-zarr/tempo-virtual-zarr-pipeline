@@ -247,3 +247,34 @@ def build_tiny_collection(
         urls=[f"file://{p}" for p in paths],
         inventory=inventory,
     )
+
+
+def emf_blobs(captured: str) -> list[dict[str, Any]]:
+    """EMF metric blobs among captured stdout lines (logs included)."""
+    import json
+
+    blobs = []
+    for line in captured.splitlines():
+        try:
+            blob = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(blob, dict) and "_aws" in blob:
+            blobs.append(blob)
+    return blobs
+
+
+def emf_value(
+    blobs: list[dict[str, Any]], name: str, **dimensions: str
+) -> float | None:
+    """The value of the EMF blob carrying metric `name` (matching any given
+    dimension values), or None if no blob carries it."""
+    for blob in blobs:
+        (spec,) = blob["_aws"]["CloudWatchMetrics"]
+        if not any(m["Name"] == name for m in spec["Metrics"]):
+            continue
+        if any(blob.get(key) != value for key, value in dimensions.items()):
+            continue
+        (value,) = blob[name]
+        return float(value)
+    return None

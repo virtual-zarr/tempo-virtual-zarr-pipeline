@@ -8,6 +8,7 @@ from virtualizarr_processor import backfill
 from virtualizarr_processor.processor import Processor
 
 from backfill_handlers import fork_store
+from backfill_handlers.emit import emit_metric
 
 logger = Logger()
 tracer = Tracer()
@@ -27,4 +28,8 @@ def handler(event: dict[str, Any], context: LambdaContext) -> dict[str, Any]:
     )
 
     logger.info("Committed partition", extra={"partition_id": partition_id, "tip": tip})
+    try:
+        emit_metric("PartitionsDone", 1)
+    except Exception:
+        logger.warning("Skipping PartitionsDone emission", exc_info=True)
     return {"partition_id": partition_id, "tip": tip}

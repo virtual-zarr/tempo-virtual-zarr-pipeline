@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import urllib.parse
 import urllib.request
@@ -361,6 +362,35 @@ def verify_completeness(
     return problems
 
 
+def emit_completeness_delta(count: int) -> None:
+    """Publish one CompletenessDelta point for this verify run.
+
+    CodeBuild logs are not EMF-parsed, so unlike the Lambda metrics this is
+    a direct put_metric_data call — same namespace and the same exact
+    {Collection, Stage} dimension set the dashboard queries.
+    """
+    import boto3  # deferred so the pure helpers are testable offline
+
+    boto3.client("cloudwatch").put_metric_data(
+        Namespace="TempoPipeline",
+        MetricData=[
+            {
+                "MetricName": "CompletenessDelta",
+                "Value": float(count),
+                "Unit": "Count",
+                "Dimensions": [
+                    {"Name": name, "Value": value}
+                    for name, value in (
+                        ("Collection", os.environ.get("TEMPO_COLLECTION")),
+                        ("Stage", os.environ.get("STAGE")),
+                    )
+                    if value
+                ],
+            }
+        ],
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[1])
     parser.add_argument("--samples", type=int, default=8)
@@ -400,9 +430,18 @@ def main() -> int:
     )
     if args.completeness:
         ledger_urs = {entry.granule_ur for entry in PendingLedger.read(pinned)}
-        problems += verify_completeness(
+        completeness_problems = verify_completeness(
             processor.config.concept_id, manifest, ledger_urs
         )
+        problems += completeness_problems
+        if not args.offline:
+            try:
+                emit_completeness_delta(len(completeness_problems))
+            except Exception as exc:  # best-effort; never fail the verify
+                print(
+                    f"warning: CompletenessDelta emission failed: {exc}",
+                    file=sys.stderr,
+                )
 
     if problems:
         print(f"FAIL: {len(problems)} discrepancies", file=sys.stderr)

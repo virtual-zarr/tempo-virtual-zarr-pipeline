@@ -21,7 +21,7 @@ import os
 from typing import Any
 
 from aws_lambda_powertools import Logger, Tracer
-from aws_lambda_powertools.metrics import MetricUnit, single_metric
+from aws_lambda_powertools.metrics import MetricUnit
 from aws_lambda_powertools.utilities.typing import LambdaContext
 from virtualizarr_processor import backfill
 from virtualizarr_processor.manifest import (
@@ -31,6 +31,8 @@ from virtualizarr_processor.manifest import (
 )
 from virtualizarr_processor.processor import Processor
 from virtualizarr_processor.resort import first_shifted_index, merge_pending
+
+from backfill_handlers.emit import emit_metric
 
 logger = Logger()
 tracer = Tracer()
@@ -54,6 +56,13 @@ def handler(event: dict[str, Any], context: LambdaContext) -> dict[str, Any]:
     pending = PendingLedger.read(pinned)
     if not pending:
         logger.info("Pending ledger is empty; nothing to resort")
+        # FoldedGranules=0 distinguishes "ran, nothing to fold" from
+        # "didn't run" on the dashboard; best-effort.
+        try:
+            emit_metric("FoldedGranules", 0)
+            emit_metric("PendingLedgerDepth", 0)
+        except Exception:
+            logger.warning("Skipping metric emission", exc_info=True)
         return {"resorted": False, "reason": "ledger empty"}
     fold = sorted(pending, key=lambda entry: entry.time)[:max_fold]
 
@@ -102,31 +111,31 @@ def handler(event: dict[str, Any], context: LambdaContext) -> dict[str, Any]:
     processor.validate_backfill_store(
         repo, merged, branch="resort", snapshot_id=fold_snapshot
     )
-    backfill.promote(
-        repo, source="resort", source_snapshot=fold_snapshot, expected_target_tip=tip
-    )
-    # Freshness SLI against the folded axis end (merged is time-sorted),
-    # best-effort — it must never fail a promoted run. The dimension set
-    # must stay exactly {Collection, Stage} to match the dashboard queries.
     try:
-        with single_metric(
-            name="AxisEndLag",
-            unit=MetricUnit.Seconds,
-            value=axis_end_lag(merged.granules[-1].time),
-            namespace="TempoPipeline",
-            default_dimensions={
-                key: value
-                for key, value in (
-                    ("Collection", os.environ.get("TEMPO_COLLECTION")),
-                    ("Stage", os.environ.get("STAGE")),
-                )
-                if value
-            },
-        ):
-            pass
+        backfill.promote(
+            repo,
+            source="resort",
+            source_snapshot=fold_snapshot,
+            expected_target_tip=tip,
+        )
     except Exception:
-        logger.warning("Skipping AxisEndLag emission", exc_info=True)
+        # A promote rejected by the compare-and-swap (a concurrent commit
+        # moved main) raises out of backfill.promote; count it, then let
+        # the failure propagate as before.
+        emit_metric("PromoteCasRejections", 1)
+        raise
     remaining = len(pending) - len(fold)
+    # The promoted run's metrics, best-effort — they must never fail a run
+    # whose fold already landed. Freshness comes from the folded axis end
+    # (merged is time-sorted, no store read needed).
+    try:
+        emit_metric(
+            "AxisEndLag", axis_end_lag(merged.granules[-1].time), MetricUnit.Seconds
+        )
+        emit_metric("FoldedGranules", len(fold))
+        emit_metric("PendingLedgerDepth", remaining)
+    except Exception:
+        logger.warning("Skipping metric emission", exc_info=True)
     logger.info("Resort promoted to main", extra={"remaining": remaining})
     return {
         "resorted": True,

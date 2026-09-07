@@ -17,8 +17,13 @@ class BranchInit(NamedTuple):
 
 
 class ProcessOutcome(enum.Enum):
-    """What became of one forward-processed granule."""
+    """What became of one forward-processed granule.
 
-    WRITTEN = "written"  # appended, or republication overwritten in place
+    APPENDED and OVERWRITTEN are both successful writes; they are separate
+    outcomes so the routing metric can tell growth from republication.
+    """
+
+    APPENDED = "appended"  # new scan appended at the axis end
+    OVERWRITTEN = "overwritten"  # republication/redelivery refreshed in place
     DEFERRED = "deferred"  # out of order: recorded in the pending ledger
     REJECTED = "rejected"  # validation failure — SQS retry, then DLQ

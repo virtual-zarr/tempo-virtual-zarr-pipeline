@@ -686,6 +686,9 @@ class VirtualizarrSqsStack(Stack):
                     for key in (
                         "TEMPO_COLLECTION",
                         "VIRTUAL_CHUNK_PREFIX",
+                        # Metric dimension for the TempoPipeline metrics the
+                        # partition/reduce/promote handlers emit.
+                        "STAGE",
                     )
                     if key in self.processor_env
                 },

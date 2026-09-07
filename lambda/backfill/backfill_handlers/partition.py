@@ -7,6 +7,7 @@ from aws_lambda_powertools.utilities.typing import LambdaContext
 
 from backfill_handlers import inventory
 from backfill_handlers.config import parse_s3_uri
+from backfill_handlers.emit import emit_metric
 
 logger = Logger()
 tracer = Tracer()
@@ -39,4 +40,10 @@ def handler(event: dict[str, Any], context: LambdaContext) -> dict[str, Any]:
         )
 
     logger.info("Partitioned inventory", extra={"count": len(partitions)})
+    # The dashboard's partitions-done gauge divides SUM(PartitionsDone) by
+    # this run's total; best-effort.
+    try:
+        emit_metric("PartitionsTotal", len(partitions))
+    except Exception:
+        logger.warning("Skipping PartitionsTotal emission", exc_info=True)
     return {"partitions": partitions}

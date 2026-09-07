@@ -649,7 +649,7 @@ class Processor:
                 # redelivery: refresh the slot's refs and stamps in place.
                 self._write_region(vds, session.store, index, stamp)
                 self._replaced[index] = entry
-                return ProcessOutcome.WRITTEN
+                return ProcessOutcome.OVERWRITTEN
 
             # A UR already owning a slot (in the committed manifest or this
             # batch) can no longer appear anywhere else: appending it past
@@ -687,7 +687,7 @@ class Processor:
                     last_updated_at=stamp,
                 )
                 self._appended.append(entry)
-                return ProcessOutcome.WRITTEN
+                return ProcessOutcome.APPENDED
 
             # Out of order: appending would break axis monotonicity. Record
             # it for the scheduled re-sort job; the ledger update is
