@@ -651,7 +651,8 @@ resource names):
 | `GranulesRouted` (dimension `Route`) | consumer, per committed batch | `APPENDED` = growth, `OVERWRITTEN` = republications, `PENDING` = out-of-order arrivals headed for the re-sort (routinely a large share), `REJECTED` = collisions headed for the DLQ |
 | `PendingLedgerDepth` | consumer and re-sort | nonzero is healthy; trending up across days means the re-sort is not keeping pace |
 | `FoldedGranules` | re-sort (0 when it ran with an empty ledger) | pinned at `RESORT_MAX_FOLD` every run means falling behind |
-| `PromoteCasRejections` | re-sort promote failures and consumer commit failures | occasional ones are the single-writer design working; sustained ones mean writers are fighting |
+| `PromoteFailures` | re-sort, when its promote raises | occasional ones are the single-writer design working (a concurrent commit won the CAS); sustained ones mean writers are fighting — or S3 trouble, the counter does not distinguish |
+| `CommitFailures` | consumer, when its batch commit raises | shown on the *Consumer duration* widget; the whole batch redelivers |
 | `PartitionsDone` / `PartitionsTotal` | backfill reduce / partition steps | backfill progress; the dashboard plots their running sum against the carried-forward total |
 | `CompletenessDelta` | `verify_store.py --completeness` (CodeBuild) | granules CMR lists that the store lacks, plus store entries CMR dropped; one point per verify run, so the series is sparse |
 

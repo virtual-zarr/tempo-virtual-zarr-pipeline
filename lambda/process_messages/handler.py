@@ -130,7 +130,7 @@ def handler(event: Any, context: LambdaContext) -> PartialItemFailureResponse:
         # The invocation still succeeds, so no error metric fires; this
         # counter is the failed commit's only signal besides redelivery.
         try:
-            emit_metric("PromoteCasRejections", 1)
+            emit_metric("CommitFailures", 1)
         except Exception:
             logger.warning("Skipping metric emission", exc_info=True)
         return {

@@ -318,7 +318,7 @@ def test_resort_concurrent_append_fails_the_cas(
     with pytest.raises(icechunk.IcechunkError):
         resort.handler({}, lambda_context)
     # The rejected CAS is counted before the raise propagates.
-    assert emf_value(emf_blobs(capsys.readouterr().out), "PromoteCasRejections") == 1
+    assert emf_value(emf_blobs(capsys.readouterr().out), "PromoteFailures") == 1
 
 
 def test_resort_promotes_own_fold_snapshot_despite_concurrent_resort_reinit(

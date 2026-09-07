@@ -324,7 +324,10 @@ class VirtualizarrSqsStack(Stack):
                     self.process_messages_lambda.metric_duration(statistic=statistic)
                     for statistic in ("p50", "p95", "Maximum")
                 ],
-                right=[self.process_messages_lambda.metric_throttles(statistic="Sum")],
+                right=[
+                    self.process_messages_lambda.metric_throttles(statistic="Sum"),
+                    self._custom_metric("CommitFailures", statistic="Sum"),
+                ],
                 # The 5-min function timeout is what kills an invocation; the
                 # 1800 s SQS visibility timeout is only the redelivery bound.
                 left_annotations=[
@@ -589,7 +592,7 @@ class VirtualizarrSqsStack(Stack):
                     height=6,
                     left=[
                         self._custom_metric("FoldedGranules", statistic="Sum"),
-                        self._custom_metric("PromoteCasRejections", statistic="Sum"),
+                        self._custom_metric("PromoteFailures", statistic="Sum"),
                     ],
                     # A run killed by the Lambda timeout mid-fold emits no
                     # error metric (the pending ledger just grows silently);

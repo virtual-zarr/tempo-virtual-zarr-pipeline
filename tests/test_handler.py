@@ -240,11 +240,10 @@ def test_handler_emits_routing_and_ledger_metrics(
 
 
 @patch("process_messages.handler.Processor")
-def test_handler_emits_cas_rejection_when_commit_fails(
+def test_handler_emits_commit_failure_metric(
     MockProcessor: MagicMock, capsys: Any
 ) -> None:
-    """A failed commit is otherwise invisible (the invocation still
-    succeeds); the counter is its only signal besides queue redelivery."""
+    """A failed commit is otherwise invisible (the invocation still succeeds); CommitFailures is its only signal besides queue redelivery."""
     mock_processor = MockProcessor.return_value
     mock_processor.open_initialized_repo.return_value = MagicMock()
     mock_session = MagicMock()
@@ -257,7 +256,7 @@ def test_handler_emits_cas_rejection_when_commit_fails(
 
     assert response["batchItemFailures"]  # all records retried
     blobs = emf_blobs(capsys.readouterr().out)
-    assert emf_value(blobs, "PromoteCasRejections") == 1
+    assert emf_value(blobs, "CommitFailures") == 1
     # Nothing was persisted: no routing counts, no freshness point.
     assert emf_value(blobs, "GranulesRouted", Route="APPENDED") is None
     assert emf_value(blobs, "AxisEndLag") is None

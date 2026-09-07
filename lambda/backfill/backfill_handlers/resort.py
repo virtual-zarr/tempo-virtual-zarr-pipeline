@@ -118,10 +118,14 @@ def handler(event: dict[str, Any], context: LambdaContext) -> dict[str, Any]:
             expected_target_tip=tip,
         )
     except Exception:
-        # A promote rejected by the compare-and-swap (a concurrent commit
-        # moved main) raises out of backfill.promote; count it, then let
-        # the failure propagate as before.
-        emit_metric("PromoteCasRejections", 1)
+        # Any promote failure lands here — a compare-and-swap rejection from
+        # a concurrent commit, or an infrastructure error; the name makes no
+        # CAS claim. Best-effort so a metrics failure never re-headlines the
+        # real error; then propagate as before.
+        try:
+            emit_metric("PromoteFailures", 1)
+        except Exception:
+            logger.warning("Skipping metric emission", exc_info=True)
         raise
     remaining = len(pending) - len(fold)
     # The promoted run's metrics, best-effort — they must never fail a run
