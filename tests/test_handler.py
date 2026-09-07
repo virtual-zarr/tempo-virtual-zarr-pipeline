@@ -21,6 +21,7 @@ def make_sqs_event(
     urls: list[str] | None = None,
     s3_keys: list[str] | None = None,
     bucket: str = "test-bucket",
+    receive_count: str = "1",
 ) -> dict:
     """An SQS event with poller (`{"url": ...}`) or S3-notification bodies."""
     bodies = [{"url": url} for url in urls or []]
@@ -36,7 +37,7 @@ def make_sqs_event(
                 "receiptHandle": f"receipt-{i}",
                 "body": json.dumps(body),
                 "attributes": {
-                    "ApproximateReceiveCount": "1",
+                    "ApproximateReceiveCount": receive_count,
                     "SentTimestamp": "1717600000000",
                     "ApproximateFirstReceiveTimestamp": "1717600000000",
                 },
@@ -260,6 +261,44 @@ def test_handler_emits_commit_failure_metric(
     # Nothing was persisted: no routing counts, no freshness point.
     assert emf_value(blobs, "GranulesRouted", Route="APPENDED") is None
     assert emf_value(blobs, "AxisEndLag") is None
+
+
+@patch("process_messages.handler.Processor")
+def test_rejected_counted_only_on_first_receipt(
+    MockProcessor: MagicMock, monkeypatch: pytest.MonkeyPatch, capsys: Any
+) -> None:
+    """A rejected granule redelivers up to the DLQ's maxReceiveCount (20);
+    counting every attempt would inflate GranulesRouted{REJECTED} 20x per
+    bad granule.
+
+    Uses two granules (not one) so the batch is a partial, not total,
+    failure: a single-record all-REJECTED batch makes BatchProcessor raise
+    BatchProcessingError before the commit/metrics path ever runs (see
+    test_handler_raises_when_entire_batch_fails), which would defeat this
+    test regardless of the fix under test.
+    """
+    monkeypatch.setenv("TEMPO_COLLECTION", "hcho")
+    monkeypatch.setenv("STAGE", "dev")
+    mock_processor = MockProcessor.return_value
+    mock_processor.open_initialized_repo.return_value = MagicMock()
+    mock_session = MagicMock()
+    mock_session.store = _hour_ago_store()
+    mock_processor.initialize_session.return_value = mock_session
+    mock_processor.process_file.side_effect = [
+        ProcessOutcome.REJECTED,
+        ProcessOutcome.APPENDED,
+    ]
+    mock_processor.commit_processed_files.return_value = "snapshot-123"
+
+    response = handler(
+        make_sqs_event(urls=["s3://data/a.nc", "s3://data/b.nc"], receive_count="2"),
+        MagicMock(),
+    )
+
+    assert response["batchItemFailures"]  # still fails the rejected record
+    blobs = emf_blobs(capsys.readouterr().out)
+    assert emf_value(blobs, "GranulesRouted", Route="REJECTED") is None
+    assert emf_value(blobs, "GranulesRouted", Route="APPENDED") == 1
 
 
 @patch("process_messages.handler.Processor")

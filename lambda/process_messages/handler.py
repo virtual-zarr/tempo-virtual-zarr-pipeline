@@ -69,17 +69,14 @@ def process_notification(
     message: Dict[str, Any],
     session: Session,
     processor: Processor,
-    counts: "Counter[ProcessOutcome]",
-) -> None:
+) -> Optional[ProcessOutcome]:
     url = granule_url(message)
     if not url:
         logger.warning("Message carries no granule url; skipping", extra=message)
-        return
+        return None
     outcome = processor.process_file(file_key=url, session=session)
-    counts[outcome] += 1
     logger.info("Processed granule", extra={"url": url, "outcome": outcome.value})
-    if outcome is ProcessOutcome.REJECTED:
-        raise RuntimeError(f"granule rejected: {url}")
+    return outcome
 
 
 @logger.inject_lambda_context()
@@ -103,12 +100,21 @@ def handler(event: Any, context: LambdaContext) -> PartialItemFailureResponse:
             message = json.loads(record.body)
             if "Message" in message:  # SNS envelope
                 message = json.loads(message["Message"])
-            process_notification(
+            outcome = process_notification(
                 message=message,
                 session=session,
                 processor=virtualizarr_processor,
-                counts=counts,
             )
+            if outcome is not None and (
+                outcome is not ProcessOutcome.REJECTED
+                or record.attributes.approximate_receive_count == "1"
+            ):
+                # REJECTED redelivers up to the DLQ's maxReceiveCount;
+                # counting only the first receipt keeps GranulesRouted at
+                # one per granule. The other routes never redeliver.
+                counts[outcome] += 1
+            if outcome is ProcessOutcome.REJECTED:
+                raise RuntimeError(f"granule rejected: {granule_url(message)}")
         except Exception as e:
             logger.error(
                 f"Error processing record: {str(e)}",

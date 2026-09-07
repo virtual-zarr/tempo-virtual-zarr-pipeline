@@ -648,7 +648,7 @@ resource names):
 | Metric | Emitted by | How to read it |
 |---|---|---|
 | `AxisEndLag` (seconds) | consumer after each commit; re-sort after each promote | store freshness; production lag is normally a few hours |
-| `GranulesRouted` (dimension `Route`) | consumer, per committed batch | `APPENDED` = growth, `OVERWRITTEN` = republications, `PENDING` = out-of-order arrivals headed for the re-sort (routinely a large share), `REJECTED` = collisions headed for the DLQ |
+| `GranulesRouted` (dimension `Route`) | consumer, per committed batch | `APPENDED` = growth, `OVERWRITTEN` = republications, `PENDING` = out-of-order arrivals headed for the re-sort (routinely a large share), `REJECTED` = collisions headed for the DLQ (counted on first delivery only; redeliveries are not re-counted) |
 | `PendingLedgerDepth` | consumer and re-sort | nonzero is healthy; trending up across days means the re-sort is not keeping pace |
 | `FoldedGranules` | re-sort (0 when it ran with an empty ledger) | pinned at `RESORT_MAX_FOLD` every run means falling behind |
 | `PromoteFailures` | re-sort, when its promote raises | occasional ones are the single-writer design working (a concurrent commit won the CAS); sustained ones mean writers are fighting — or S3 trouble, the counter does not distinguish |
