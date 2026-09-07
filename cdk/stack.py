@@ -66,6 +66,10 @@ from stack_constructs import (
     grant_prefixed_read_write,
 )
 
+# CDK-side twin of virtualizarr_processor.metrics.NAMESPACE (this package
+# cannot import the Lambda code); tests/cdk/test_dashboard.py pins them equal.
+METRIC_NAMESPACE = "TempoPipeline"
+
 
 def _concept_id(collection_name: str) -> str:
     """The CMR concept id from the collection's declarative TOML."""
@@ -834,6 +838,18 @@ class VirtualizarrSqsStack(Stack):
             if settings.icechunk_storage_prefix
             else "*",
         )
+        # Verify runs publish CompletenessDelta via put_metric_data
+        # (CodeBuild logs are not EMF-parsed). PutMetricData cannot be
+        # resource-scoped; the namespace condition is the scoping.
+        self.inventory_build.add_to_role_policy(
+            iam.PolicyStatement(
+                actions=["cloudwatch:PutMetricData"],
+                resources=["*"],
+                conditions={
+                    "StringEquals": {"cloudwatch:namespace": METRIC_NAMESPACE}
+                },
+            )
+        )
         if self.earthdata_secret is not None:
             self.earthdata_secret.grant_read(self.inventory_build)
 
@@ -891,7 +907,7 @@ class VirtualizarrSqsStack(Stack):
         series, and the widget or alarm querying it shows nothing.
         """
         return cloudwatch.Metric(
-            namespace="TempoPipeline",
+            namespace=METRIC_NAMESPACE,
             metric_name=metric_name,
             dimensions_map={**self._metric_dimensions, **(extra_dimensions or {})},
             statistic=statistic,

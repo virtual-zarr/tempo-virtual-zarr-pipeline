@@ -119,3 +119,36 @@ def test_backfill_progress_is_cumulative() -> None:
     ]
     assert any("RUNNING_SUM" in e for e in expressions)
     assert any("FILL" in e and "REPEAT" in e for e in expressions)
+
+
+def test_codebuild_may_put_tempo_pipeline_metrics_only() -> None:
+    """verify_store.py emits CompletenessDelta via put_metric_data from the
+    inventory CodeBuild project; without this grant the call fails silently
+    (best-effort catch) and the CMR-vs-store widget is permanently blank.
+    PutMetricData cannot be resource-scoped; the namespace condition is the
+    least-privilege scoping."""
+    _template().has_resource_properties(
+        "AWS::IAM::Policy",
+        Match.object_like(
+            {
+                "PolicyDocument": Match.object_like(
+                    {
+                        "Statement": Match.array_with(
+                            [
+                                Match.object_like(
+                                    {
+                                        "Action": "cloudwatch:PutMetricData",
+                                        "Condition": {
+                                            "StringEquals": {
+                                                "cloudwatch:namespace": "TempoPipeline"
+                                            }
+                                        },
+                                    }
+                                )
+                            ]
+                        )
+                    }
+                )
+            }
+        ),
+    )
