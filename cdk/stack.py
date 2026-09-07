@@ -966,8 +966,14 @@ class VirtualizarrSqsStack(Stack):
                 log_group_names=[self.process_messages_log_group.log_group_name],
                 view=cloudwatch.LogQueryVisualizationType.TABLE,
                 query_lines=[
-                    "fields @timestamp, url",
-                    "filter outcome = 'rejected'",
+                    # Two shapes: a clean rejection logs "Processed granule"
+                    # with outcome/url; a granule that *raises* mid-process
+                    # logs only record_handler's error line with message_id.
+                    # Both redeliver to the DLQ, so the runbook table shows
+                    # both — coalesce gives whichever identifier the line has.
+                    "fields @timestamp, coalesce(url, message_id) as granule, outcome",
+                    "filter outcome = 'rejected'"
+                    " or message like 'Error processing record'",
                     "sort @timestamp desc",
                     "limit 50",
                 ],

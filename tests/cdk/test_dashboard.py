@@ -121,6 +121,15 @@ def test_backfill_progress_is_cumulative() -> None:
     assert any("FILL" in e and "REPEAT" in e for e in expressions)
 
 
+def test_rejected_granules_query_includes_exception_path() -> None:
+    """Granules that raise inside processing never log an outcome field but
+    still reach the DLQ; the runbook table must show them too."""
+    widget = _widget(_template(), "Rejected granules")
+    query = widget["properties"]["query"]
+    assert "outcome = 'rejected'" in query
+    assert "Error processing record" in query
+
+
 def test_codebuild_may_put_tempo_pipeline_metrics_only() -> None:
     """verify_store.py emits CompletenessDelta via put_metric_data from the
     inventory CodeBuild project; without this grant the call fails silently

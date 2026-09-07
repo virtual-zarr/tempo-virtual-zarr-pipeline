@@ -630,7 +630,7 @@ Five alarms page (via `ALARM_EMAIL`, when set):
 
 | Alarm | Fires when | It usually means |
 |---|---|---|
-| `DlqMessagesAlarm` | anything lands in the DLQ | granules rejected 20 times — a UR/time collision or a persistent parse failure; the dashboard's *Rejected granules* table shows which |
+| `DlqMessagesAlarm` | anything lands in the DLQ | granules rejected 20 times — a UR/time collision or a persistent parse failure; the dashboard's *Rejected granules* table shows which (by url for validation rejections, by SQS message id for granules that raised mid-processing) |
 | `ConsumerErrorsAlarm` | the SQS consumer throws | check the consumer's log group |
 | `PollerErrorsAlarm` | the CMR poller throws | CMR unreachable, or watermark state unreadable |
 | `ResortErrorsAlarm` | the re-sort job throws | the fold failed before promoting; the ledger keeps growing until fixed |
