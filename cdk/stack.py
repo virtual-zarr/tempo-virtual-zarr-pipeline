@@ -1,6 +1,6 @@
 import textwrap
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 from aws_cdk import (
     CfnOutput,
@@ -983,24 +983,21 @@ class VirtualizarrSqsStack(Stack):
             )
         )
 
-        # Row wraps at the 24-column grid width, so the accumulated widgets
-        # lay out band by band; the alarm strip renders first. The cast works
-        # around this aws-cdk-lib version's Row stubs missing two IWidget
-        # protocol members (warnings/warnings_v2); Row is an IWidget at runtime.
-        row = cast(
-            cloudwatch.IWidget,
-            cloudwatch.Row(
-                cloudwatch.AlarmStatusWidget(
-                    alarms=list(self._alarms), width=24, height=2
-                ),
-                *self._widgets,
-            ),
-        )
+        # One constructor row: Dashboard wraps it in a Row itself, which
+        # wraps at the 24-column grid width, laying the accumulated widgets
+        # out band by band with the alarm strip first.
         dashboard = cloudwatch.Dashboard(
             self,
             "Dashboard",
             dashboard_name=settings.STACK_NAME,
-            widgets=[[row]],
+            widgets=[
+                [
+                    cloudwatch.AlarmStatusWidget(
+                        alarms=list(self._alarms), width=24, height=2
+                    ),
+                    *self._widgets,
+                ]
+            ],
         )
         CfnOutput(
             self,
