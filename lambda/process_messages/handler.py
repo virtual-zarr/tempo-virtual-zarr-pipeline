@@ -4,14 +4,16 @@ Messages come from the CMR poller (``{"url": "s3://..."}``) or, if an SNS
 subscription is ever wired up, from S3 object-created notifications. Each
 batch is pre-sorted by filename timestamp so adjacent scans arriving
 together append in order. A REJECTED granule fails its record (SQS retry,
-then DLQ); DEFERRED (out-of-order, recorded in the pending ledger) and
-WRITTEN are both successful consumption.
+then DLQ); DEFERRED (out-of-order, recorded in the pending ledger),
+APPENDED, and OVERWRITTEN are all successful consumption.
 """
 
 import json
+from collections import Counter
 from typing import Any, Dict, Optional
 
 from aws_lambda_powertools import Logger, Tracer
+from aws_lambda_powertools.metrics import MetricUnit
 from aws_lambda_powertools.utilities.batch import (
     BatchProcessor,
     EventType,
@@ -20,12 +22,24 @@ from aws_lambda_powertools.utilities.batch.types import PartialItemFailureRespon
 from aws_lambda_powertools.utilities.data_classes import SQSEvent, SQSRecord
 from aws_lambda_powertools.utilities.typing import LambdaContext
 from icechunk import Session
+from virtualizarr_processor.manifest import PendingLedger, axis_end_lag
+from virtualizarr_processor.metrics import emit_metric
 from virtualizarr_processor.processor import Processor
 from virtualizarr_processor.typing import ProcessOutcome
 
 logger = Logger()
 tracer = Tracer()
 batch_processor = BatchProcessor(event_type=EventType.SQS)
+
+# Committed outcome -> the routing metric's Route dimension value (DEFERRED
+# granules sit in the *pending* ledger, hence the dashboard's PENDING
+# route). REJECTED is not here: it never commits, so it is emitted at first
+# receipt in record_handler rather than in the post-commit block.
+ROUTES = {
+    ProcessOutcome.APPENDED: "APPENDED",
+    ProcessOutcome.OVERWRITTEN: "OVERWRITTEN",
+    ProcessOutcome.DEFERRED: "PENDING",
+}
 
 
 def granule_url(message: Dict[str, Any]) -> Optional[str]:
@@ -40,13 +54,22 @@ def granule_url(message: Dict[str, Any]) -> Optional[str]:
     return None
 
 
+def parse_body(body: str) -> Dict[str, Any]:
+    """Parse an SQS record body, unwrapping an SNS envelope if present.
+
+    The sort key and the record handler must parse identically, or the
+    batch's processing order desyncs from its sorted order.
+    """
+    message = json.loads(body)
+    if "Message" in message:  # SNS envelope
+        message = json.loads(message["Message"])
+    return dict(message)
+
+
 def record_url(record: Dict[str, Any]) -> str:
     """Extract the url from a raw SQS record for batch sorting, best effort."""
     try:
-        message = json.loads(record["body"])
-        if "Message" in message:  # SNS envelope
-            message = json.loads(message["Message"])
-        return granule_url(message) or ""
+        return granule_url(parse_body(record["body"])) or ""
     except Exception:
         return ""
 
@@ -56,15 +79,14 @@ def process_notification(
     message: Dict[str, Any],
     session: Session,
     processor: Processor,
-) -> None:
+) -> Optional[ProcessOutcome]:
     url = granule_url(message)
     if not url:
         logger.warning("Message carries no granule url; skipping", extra=message)
-        return
+        return None
     outcome = processor.process_file(file_key=url, session=session)
     logger.info("Processed granule", extra={"url": url, "outcome": outcome.value})
-    if outcome is ProcessOutcome.REJECTED:
-        raise RuntimeError(f"granule rejected: {url}")
+    return outcome
 
 
 @logger.inject_lambda_context()
@@ -80,24 +102,40 @@ def handler(event: Any, context: LambdaContext) -> PartialItemFailureResponse:
     # the initialize Lambda's) job, not a message-consumption side effect.
     repo = virtualizarr_processor.open_initialized_repo()
     session = virtualizarr_processor.initialize_session(repo=repo)
+    counts: "Counter[ProcessOutcome]" = Counter()
 
     @tracer.capture_method
     def record_handler(record: SQSRecord) -> None:
         try:
-            message = json.loads(record.body)
-            if "Message" in message:  # SNS envelope
-                message = json.loads(message["Message"])
-            process_notification(
+            message = parse_body(record.body)
+            outcome = process_notification(
                 message=message,
                 session=session,
                 processor=virtualizarr_processor,
             )
         except Exception as e:
+            # outcome=errored is the structured field the dashboard's
+            # rejected-granules query filters on; the message text is prose.
             logger.error(
                 f"Error processing record: {str(e)}",
-                extra={"message_id": record.message_id},
+                extra={"message_id": record.message_id, "outcome": "errored"},
             )
             raise
+        if outcome is ProcessOutcome.REJECTED:
+            # Emitted here, not in the post-commit block: a rejection never
+            # commits, and that block is unreachable both when every record
+            # fails (BatchProcessor raises out of the handler) and when the
+            # commit fails — the paths a rejected granule routinely takes.
+            # First receipt only, so redeliveries up to the DLQ's
+            # maxReceiveCount count one per granule.
+            if record.attributes.approximate_receive_count == "1":
+                emit_metric("GranulesRouted", 1, Route="REJECTED")
+            # Raised outside the try above: this is routing, not an error,
+            # and its granule already appears in the "Processed granule"
+            # log line the dashboard's rejected-granules table queries.
+            raise RuntimeError(f"granule rejected: {granule_url(message)}")
+        if outcome is not None:
+            counts[outcome] += 1
 
     with batch_processor(records=records, handler=record_handler) as batch:
         batch.process()
@@ -110,12 +148,31 @@ def handler(event: Any, context: LambdaContext) -> PartialItemFailureResponse:
         # commit persists nothing for DEFERRED records either; all records,
         # including DEFERRED ones, simply retry and re-defer cleanly.
         logger.exception("Commit failed, marking all records as failed")
+        # The invocation still succeeds, so no error metric fires; this
+        # counter is the failed commit's only signal besides redelivery.
+        emit_metric("CommitFailures", 1)
         return {
             "batchItemFailures": [
                 {"itemIdentifier": record["messageId"]} for record in records
             ]
         }
 
-    # Commit succeeded — return normal partial failure response
-    # (only individually-failed records retry)
+    # Commit succeeded: emit the batch's metrics (emit_metric itself is
+    # best-effort, so none of these can fail a consumed-and-committed
+    # batch). Freshness comes from the axis end the processor tracked
+    # while writing; only the ledger depth still reads the store, so only
+    # it can bail — independently of the other two.
+    for outcome, route in ROUTES.items():
+        if counts[outcome]:
+            emit_metric("GranulesRouted", counts[outcome], Route=route)
+    axis_end = virtualizarr_processor.axis_end
+    if axis_end is not None:
+        emit_metric("AxisEndLag", axis_end_lag(axis_end), MetricUnit.Seconds)
+    try:
+        emit_metric("PendingLedgerDepth", PendingLedger.depth(session.store))
+    except Exception:
+        logger.warning("Skipping ledger depth; store unreadable", exc_info=True)
+
+    # Return normal partial failure response (only individually-failed
+    # records retry)
     return batch_processor.response()

@@ -485,8 +485,8 @@ file, all under
 
 | Message url | Why | Expected consumer outcome |
 |---|---|---|
-| `TEMPO_HCHO_L3_V04_20260824T154044Z_S007.nc` | first scan after the newest slot (`S006`) | `WRITTEN` — appended to the axis |
-| `TEMPO_HCHO_L3_V04_20260824T144044Z_S006.nc` | newest slot itself, same UR | `WRITTEN` — slot overwritten in place, store unchanged |
+| `TEMPO_HCHO_L3_V04_20260824T154044Z_S007.nc` | first scan after the newest slot (`S006`) | `APPENDED` — appended to the axis |
+| `TEMPO_HCHO_L3_V04_20260824T144044Z_S006.nc` | newest slot itself, same UR | `OVERWRITTEN` — slot refreshed in place, store shape unchanged |
 | `TEMPO_HCHO_L3_V04_20260824T110012Z_S001.nc` | before the oldest slot (`S002`) | `DEFERRED` — pending ledger; the re-sort job folds it in later |
 
 Send appends oldest-first (`S007` before `S008`): an append lands only past
@@ -510,9 +510,9 @@ aws lambda list-event-source-mappings \
   --query 'EventSourceMappings[?contains(FunctionArn, `processmessages`)].State' --output text
 ```
 
-Then watch the consumer's log for the outcome (`WRITTEN` / `DEFERRED`; a
-`REJECTED` granule retries and lands in `<stack>-Dlq`, which should stay
-empty). In the console: the function's Monitor tab → View CloudWatch logs →
+Then watch the consumer's log for the outcome (logged lowercase:
+`appended` / `overwritten` / `deferred`; a `rejected` granule retries and
+lands in `<stack>-Dlq`, which should stay empty). In the console: the function's Monitor tab → View CloudWatch logs →
 Live Tail; the queue's own Monitoring tab graphs messages waiting/in flight.
 
 ```bash
@@ -605,7 +605,7 @@ per-collection env files (`.env_hcho` / `.env_no2`, plus the gitignored
 | `EARTHDATA_SECRET_ARN` | — | Secrets Manager secret with EDL credentials for source reads |
 | `GARBAGE_COLLECTION_FREQUENCY` | — | days between Icechunk GC runs (needs `VPC_ID`) |
 | `GC_EXPIRY_DAYS` | 30 | snapshot expiry for GC runs — also the store's rollback window |
-| `ALARM_EMAIL` | — | notification email for the DLQ-depth and scheduled-job-failure alarms |
+| `ALARM_EMAIL` | — | notification email for all alarms (see [Monitoring](#monitoring)) |
 | `OWNER` | — | `Owner` cost-allocation tag on every resource; unset applies no tag |
 | `CLIENT` | — | `Client` cost-allocation tag on every resource; unset applies no tag |
 
@@ -621,6 +621,62 @@ Concurrent backfill runs are not supported.
 
 ![Architecture](./docs/architecture-dark.png#gh-dark-mode-only)
 ![Architecture](./docs/architecture.png#gh-light-mode-only)
+
+## Monitoring
+
+Each deployment renders its own CloudWatch dashboard, named after the
+stack; the `DashboardUrl` stack output links to it. It is built in
+`cdk/stack.py` from the same metric objects the alarms use, so there is
+nothing to import or configure — deploy and it exists.
+
+### Alarms
+
+Five alarms page (via `ALARM_EMAIL`, when set):
+
+| Alarm | Fires when | It usually means |
+|---|---|---|
+| `DlqMessagesAlarm` | anything lands in the DLQ | granules rejected 20 times — a UR/time collision or a persistent parse failure; the dashboard's *Rejected granules* table shows which (by url for validation rejections, by SQS message id for granules that raised mid-processing) |
+| `ConsumerErrorsAlarm` | the SQS consumer throws | check the consumer's log group |
+| `PollerErrorsAlarm` | the CMR poller throws | CMR unreachable, or watermark state unreadable |
+| `ResortErrorsAlarm` | the re-sort job throws | the fold failed before promoting; the ledger keeps growing until fixed |
+| `AxisEndLagAlarm` | the store's newest time slot is > 24 h old, **or the `AxisEndLag` metric goes missing, for 24 consecutive hours** | the top-line staleness check. Treating missing data as breaching is deliberate: a dead poller or a re-sort killed by its timeout emits no error metric at all — the freshness metric going quiet is the only signal. The 24-hour evaluation window exists because TEMPO is daylight-only: the emitters legitimately go quiet overnight, and a single quiet hour must not page. Only created when forward processing is enabled. A fresh deployment may hold ALARM for up to its first day: the alarm's evaluation window predates the first emission, and those missing hours count as breaching until the first committed batch or promoted re-sort. |
+
+Throttles on the consumer are *expected* (its reserved concurrency is 1;
+SQS redelivers) and are displayed on the dashboard but never alarmed.
+
+### Custom metrics
+
+The handlers emit CloudWatch metrics in the `TempoPipeline` namespace,
+dimensioned by `Collection` and `Stage` (so queries never need physical
+resource names):
+
+| Metric | Emitted by | How to read it |
+|---|---|---|
+| `AxisEndLag` (seconds) | consumer after each commit; re-sort after each promote | store freshness; production lag is normally a few hours |
+| `GranulesRouted` (dimension `Route`) | consumer, per committed batch | `APPENDED` = growth, `OVERWRITTEN` = republications, `PENDING` = out-of-order arrivals headed for the re-sort (routinely a large share), `REJECTED` = collisions headed for the DLQ (counted on first delivery only; redeliveries are not re-counted) |
+| `PendingLedgerDepth` | consumer and re-sort | nonzero is healthy; trending up across days means the re-sort is not keeping pace |
+| `FoldedGranules` | re-sort (0 when it ran with an empty ledger) | pinned at `RESORT_MAX_FOLD` every run means falling behind |
+| `PromoteFailures` | re-sort, when its promote raises | occasional ones are the single-writer design working (a concurrent commit won the CAS); sustained ones mean writers are fighting — or S3 trouble, the counter does not distinguish |
+| `CommitFailures` | consumer, when its batch commit raises | shown on the *Consumer duration* widget; the whole batch redelivers |
+| `PartitionsDone` / `PartitionsTotal` | backfill reduce / partition steps | backfill progress; the dashboard plots their running sum against the carried-forward total |
+| `CompletenessDelta` | `verify_store.py --completeness` (CodeBuild) | granules CMR lists that the store lacks, plus store entries CMR dropped; one point per verify run, so the series is sparse |
+
+Emission is best-effort: a metric failure never fails a batch or a
+re-sort run. If a widget shows *no data*, first check the corresponding
+job has actually run (e.g. `CompletenessDelta` appears only after a
+verify run).
+
+### During a backfill
+
+The dashboard's backfill section (rendered when `BACKFILL_ENABLED`) shows
+Step Functions executions, the cumulative partitions-done/total graph, and worker errors —
+watch it during the initial fill. Afterward, the two numbers worth a
+daily glance are the *Store freshness* and *Pending ledger depth* tiles.
+
+A cross-account Grafana dashboard covering both collections is planned
+but not built; see
+[`docs/grafana-monitoring-plan.md`](./docs/grafana-monitoring-plan.md)
+(on its own branch until merged).
 
 ## Development
 

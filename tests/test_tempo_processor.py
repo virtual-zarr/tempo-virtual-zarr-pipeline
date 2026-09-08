@@ -263,7 +263,7 @@ def forward(processor: Processor, urls: list[str]) -> list[ProcessOutcome]:
     session = processor.initialize_session(repo)
     outcomes = [processor.process_file(url, session) for url in urls]
     # DEFERRED writes the pending ledger through the session too, so it
-    # needs a commit just like WRITTEN; an all-REJECTED batch leaves the
+    # needs a commit just like a write; an all-REJECTED batch leaves the
     # session untouched and skips committing (nothing changed to commit).
     if any(o is not ProcessOutcome.REJECTED for o in outcomes):
         processor.commit_processed_files(session)
@@ -278,7 +278,7 @@ def test_forward_appends_in_order(tiny: TinyCollection) -> None:
         time_value=new_time,
         weight_scale=9.0,
     )
-    assert forward(processor, [f"file://{new}"]) == [ProcessOutcome.WRITTEN]
+    assert forward(processor, [f"file://{new}"]) == [ProcessOutcome.APPENDED]
 
     repo = processor.open_backfill_repo(authorize_virtual_reads=True)
     group = zarr.open_group(repo.readonly_session("main").store, mode="r")
@@ -297,7 +297,7 @@ def test_forward_appends_in_order(tiny: TinyCollection) -> None:
 def test_forward_redelivery_is_idempotent(tiny: TinyCollection) -> None:
     processor = backfilled(tiny)
     # The already-backfilled granule 1 is redelivered: same UR, same time.
-    assert forward(processor, [tiny.urls[1]]) == [ProcessOutcome.WRITTEN]
+    assert forward(processor, [tiny.urls[1]]) == [ProcessOutcome.OVERWRITTEN]
 
     repo = processor.open_backfill_repo(authorize_virtual_reads=True)
     group = zarr.open_group(repo.readonly_session("main").store, mode="r")
@@ -381,7 +381,7 @@ def test_forward_mid_write_failure_refuses_commit(
         processor.process_file(tiny.urls[1], session),
         processor.process_file(f"file://{new}", session),
     ]
-    assert outcomes == [ProcessOutcome.REJECTED, ProcessOutcome.WRITTEN]
+    assert outcomes == [ProcessOutcome.REJECTED, ProcessOutcome.APPENDED]
     with pytest.raises(PartialWriteError):
         processor.commit_processed_files(session)
     # Nothing from the batch reached main.
@@ -453,7 +453,7 @@ def test_forward_rejects_moved_timestamp_within_same_batch(
         time_value=new_time - 7.0,  # off-axis, before it
     )
     assert forward(processor, [f"file://{first}", f"file://{second}"]) == [
-        ProcessOutcome.WRITTEN,
+        ProcessOutcome.APPENDED,
         ProcessOutcome.REJECTED,
     ]
 
@@ -473,7 +473,7 @@ def test_forward_republication_overwrites_in_place(tiny: TinyCollection) -> None
     write_tempo_granule(
         tiny.granule_paths[1], time_value=tiny.times[1], weight_scale=42.0
     )
-    assert forward(processor, [tiny.urls[1]]) == [ProcessOutcome.WRITTEN]
+    assert forward(processor, [tiny.urls[1]]) == [ProcessOutcome.OVERWRITTEN]
 
     repo = processor.open_backfill_repo(authorize_virtual_reads=True)
     group = zarr.open_group(repo.readonly_session("main").store, mode="r")
