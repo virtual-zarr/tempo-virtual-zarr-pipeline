@@ -1,7 +1,13 @@
+import sys
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import pytest
 from backfill_handlers import fork, init, reduce, worker
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from tempo_fixtures import emf_blobs, emf_value  # noqa: E402
 
 BUCKET = "test-backfill-bucket"
 
@@ -9,6 +15,7 @@ BUCKET = "test-backfill-bucket"
 def test_reduce_commits_all_worker_forks(
     tempo_pipeline: SimpleNamespace,
     lambda_context: MagicMock,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     init.handler({"inventory_uri": tempo_pipeline.inventory_uri}, lambda_context)
     fork_result = fork.handler(
@@ -33,3 +40,5 @@ def test_reduce_commits_all_worker_forks(
 
     assert isinstance(result["tip"], str) and result["tip"]
     assert result["partition_id"] == "0"
+    # One PartitionsDone per committed partition; SUM feeds the gauge.
+    assert emf_value(emf_blobs(capsys.readouterr().out), "PartitionsDone") == 1

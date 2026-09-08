@@ -5,6 +5,7 @@ from typing import Any
 from aws_lambda_powertools import Logger, Tracer
 from aws_lambda_powertools.utilities.typing import LambdaContext
 from virtualizarr_processor import backfill
+from virtualizarr_processor.metrics import emit_metric
 from virtualizarr_processor.processor import Processor
 
 from backfill_handlers import fork_store
@@ -27,4 +28,5 @@ def handler(event: dict[str, Any], context: LambdaContext) -> dict[str, Any]:
     )
 
     logger.info("Committed partition", extra={"partition_id": partition_id, "tip": tip})
+    emit_metric("PartitionsDone", 1)
     return {"partition_id": partition_id, "tip": tip}

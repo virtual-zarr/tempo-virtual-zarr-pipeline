@@ -145,3 +145,22 @@ def test_lambdas_use_stack_owned_log_groups() -> None:
         assert group["DeletionPolicy"] == "Delete"
     for fn in functions:
         assert "LogGroup" in str(fn["Properties"].get("LoggingConfig", {}))
+
+
+def test_stage_env_reaches_every_metric_emitting_lambda() -> None:
+    """The TempoPipeline custom metrics dimension on Stage; every emitting
+    Lambda (consumer, re-sort, all backfill handlers) must carry it. The
+    poller emits nothing and keeps its own minimal env."""
+    tmpl = _template(backfill=True, forward=True).to_json()["Resources"]
+    checked = 0
+    for resource in tmpl.values():
+        if resource["Type"] != "AWS::Lambda::Function":
+            continue
+        if resource["Properties"].get("PackageType") != "Image":
+            continue
+        env = resource["Properties"]["Environment"]["Variables"]
+        if "QUEUE_URL" in env:  # the CMR poller
+            continue
+        assert env.get("STAGE") == "dev"
+        checked += 1
+    assert checked >= 8  # consumer, re-sort + 6 backfill handlers

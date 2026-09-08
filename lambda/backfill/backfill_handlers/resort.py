@@ -21,9 +21,15 @@ import os
 from typing import Any
 
 from aws_lambda_powertools import Logger, Tracer
+from aws_lambda_powertools.metrics import MetricUnit
 from aws_lambda_powertools.utilities.typing import LambdaContext
 from virtualizarr_processor import backfill
-from virtualizarr_processor.manifest import PendingLedger, StoreManifest
+from virtualizarr_processor.manifest import (
+    PendingLedger,
+    StoreManifest,
+    axis_end_lag,
+)
+from virtualizarr_processor.metrics import emit_metric
 from virtualizarr_processor.processor import Processor
 from virtualizarr_processor.resort import first_shifted_index, merge_pending
 
@@ -49,6 +55,10 @@ def handler(event: dict[str, Any], context: LambdaContext) -> dict[str, Any]:
     pending = PendingLedger.read(pinned)
     if not pending:
         logger.info("Pending ledger is empty; nothing to resort")
+        # FoldedGranules=0 distinguishes "ran, nothing to fold" from
+        # "didn't run" on the dashboard.
+        emit_metric("FoldedGranules", 0)
+        emit_metric("PendingLedgerDepth", 0)
         return {"resorted": False, "reason": "ledger empty"}
     fold = sorted(pending, key=lambda entry: entry.time)[:max_fold]
 
@@ -97,10 +107,27 @@ def handler(event: dict[str, Any], context: LambdaContext) -> dict[str, Any]:
     processor.validate_backfill_store(
         repo, merged, branch="resort", snapshot_id=fold_snapshot
     )
-    backfill.promote(
-        repo, source="resort", source_snapshot=fold_snapshot, expected_target_tip=tip
-    )
+    try:
+        backfill.promote(
+            repo,
+            source="resort",
+            source_snapshot=fold_snapshot,
+            expected_target_tip=tip,
+        )
+    except Exception:
+        # Any promote failure lands here — a compare-and-swap rejection from
+        # a concurrent commit, or an infrastructure error; the name makes no
+        # CAS claim.
+        emit_metric("PromoteFailures", 1)
+        raise
     remaining = len(pending) - len(fold)
+    # The promoted run's metrics. Freshness comes from the folded axis end
+    # (merged is time-sorted, no store read needed).
+    emit_metric(
+        "AxisEndLag", axis_end_lag(merged.granules[-1].time), MetricUnit.Seconds
+    )
+    emit_metric("FoldedGranules", len(fold))
+    emit_metric("PendingLedgerDepth", remaining)
     logger.info("Resort promoted to main", extra={"remaining": remaining})
     return {
         "resorted": True,

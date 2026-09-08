@@ -58,6 +58,9 @@ def test_forward_state_env_reaches_lambdas() -> None:
                     "Variables": Match.object_like(
                         {
                             "TEMPO_COLLECTION": "hcho",
+                            # AxisEndLag emission dimensions the dashboard
+                            # queries by.
+                            "STAGE": "dev",
                         }
                     )
                 },
@@ -147,9 +150,11 @@ def test_s3_prefix_scopes_state_env_and_run_artifact_lifecycle() -> None:
 
 def test_alarms_cover_dlq_consumer_and_scheduled_jobs() -> None:
     """Failure states are fail-safe but silent; alarms make them visible."""
-    # Forward deployment: DLQ depth, consumer, re-sort, and poller errors.
-    _template().resource_count_is("AWS::CloudWatch::Alarm", 4)
-    # Backfill-only deployment: no scheduled forward jobs to watch.
+    # Forward deployment: DLQ depth, consumer, re-sort, and poller errors,
+    # plus the AxisEndLag staleness alarm.
+    _template().resource_count_is("AWS::CloudWatch::Alarm", 5)
+    # Backfill-only deployment: no scheduled forward jobs and no freshness alarm
+    # (a backfill-only stack has no freshness contract).
     _template(BACKFILL_ENABLED=True).resource_count_is("AWS::CloudWatch::Alarm", 2)
 
 

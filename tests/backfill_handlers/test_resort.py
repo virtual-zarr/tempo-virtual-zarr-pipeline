@@ -2,6 +2,7 @@
 
 import pickle
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -20,6 +21,8 @@ from virtualizarr_processor.resort import merge_pending
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from tempo_fixtures import (  # noqa: E402
+    emf_blobs,
+    emf_value,
     expected_vertical_column,
     expected_weight,
     write_tempo_granule,
@@ -51,16 +54,27 @@ def defer(repo: Repository, entries: list[GranuleEntry]) -> None:
 
 
 def test_resort_with_empty_ledger_is_a_noop(
-    tempo_pipeline: SimpleNamespace, lambda_context: MagicMock
+    tempo_pipeline: SimpleNamespace,
+    lambda_context: MagicMock,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     backfilled_processor(tempo_pipeline)
     result = resort.handler({}, lambda_context)
     assert result == {"resorted": False, "reason": "ledger empty"}
+    # FoldedGranules=0 distinguishes "ran, nothing to fold" from "didn't run".
+    blobs = emf_blobs(capsys.readouterr().out)
+    assert emf_value(blobs, "FoldedGranules") == 0
+    assert emf_value(blobs, "PendingLedgerDepth") == 0
 
 
 def test_resort_folds_pending_granules_in(
-    tempo_pipeline: SimpleNamespace, lambda_context: MagicMock
+    tempo_pipeline: SimpleNamespace,
+    lambda_context: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
+    # The fixture already sets TEMPO_COLLECTION (to the tiny config path).
+    monkeypatch.setenv("STAGE", "dev")
     tiny = tempo_pipeline.tiny
     processor = backfilled_processor(tempo_pipeline)
     repo = processor.open_backfill_repo()
@@ -120,6 +134,21 @@ def test_resort_folds_pending_granules_in(
         + ["tail"]
     )
     assert [entry.granule_ur for entry in manifest.granules] == expected_urs
+
+    # The promote emits the run's metrics: freshness against the folded
+    # axis end, the fold size, and the drained ledger's depth.
+    from virtualizarr_processor.manifest import TEMPO_EPOCH
+
+    blobs = emf_blobs(capsys.readouterr().out)
+    (blob,) = [b for b in blobs if "AxisEndLag" in b]
+    (spec,) = blob["_aws"]["CloudWatchMetrics"]
+    assert spec["Namespace"] == "TempoPipeline"
+    assert spec["Dimensions"] == [["Collection", "Stage"]]
+    now_since_epoch = (datetime.now(timezone.utc) - TEMPO_EPOCH).total_seconds()
+    (lag,) = blob["AxisEndLag"]
+    assert lag == pytest.approx(now_since_epoch - tail_time, abs=120)
+    assert emf_value(blobs, "FoldedGranules") == 2
+    assert emf_value(blobs, "PendingLedgerDepth") == 0
 
 
 def test_resort_relocates_without_rereading_ingested_sources(
@@ -261,6 +290,7 @@ def test_resort_concurrent_append_fails_the_cas(
     tempo_pipeline: SimpleNamespace,
     lambda_context: MagicMock,
     monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     """An append landing on main after the resort pinned its snapshot must
     fail the promote CAS — never be silently erased (review finding #2)."""
@@ -287,6 +317,8 @@ def test_resort_concurrent_append_fails_the_cas(
     monkeypatch.setattr(resort.backfill, "promote", promote_after_concurrent_append)
     with pytest.raises(icechunk.IcechunkError):
         resort.handler({}, lambda_context)
+    # The rejected CAS is counted before the raise propagates.
+    assert emf_value(emf_blobs(capsys.readouterr().out), "PromoteFailures") == 1
 
 
 def test_resort_promotes_own_fold_snapshot_despite_concurrent_resort_reinit(

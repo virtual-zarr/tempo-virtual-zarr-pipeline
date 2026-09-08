@@ -150,3 +150,23 @@ def test_storage_prefix_combines_like_the_cdk_stack(
 
     monkeypatch.setenv("S3_PREFIX", "/tempo/")
     assert storage_prefix() == "tempo/hcho-v04"
+
+
+def test_epoch_matches_every_collection_time_units() -> None:
+    """TEMPO_EPOCH exists so axis_end_lag needs no config; a collection
+    declaring a different epoch in time_units would put AxisEndLag off by
+    the delta (alarm pinned in ALARM or permanently green) silently."""
+    import tomllib
+    from datetime import datetime
+    from pathlib import Path
+
+    import virtualizarr_processor.manifest as manifest
+
+    toml_files = list((Path(manifest.__file__).parent / "collections").glob("*.toml"))
+    assert toml_files
+    for path in toml_files:
+        units = str(tomllib.loads(path.read_text())["time_units"])
+        prefix, _, stamp = units.partition("seconds since ")
+        assert not prefix, f"{path.name}: unexpected time_units {units!r}"
+        epoch = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+        assert epoch == manifest.TEMPO_EPOCH, path.name
