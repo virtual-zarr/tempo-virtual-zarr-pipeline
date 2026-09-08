@@ -4,6 +4,7 @@ from typing import Any
 
 from aws_lambda_powertools import Logger, Tracer
 from aws_lambda_powertools.utilities.typing import LambdaContext
+from virtualizarr_processor.metrics import emit_metric
 
 from backfill_handlers import inventory
 from backfill_handlers.config import parse_s3_uri
@@ -39,4 +40,9 @@ def handler(event: dict[str, Any], context: LambdaContext) -> dict[str, Any]:
         )
 
     logger.info("Partitioned inventory", extra={"count": len(partitions)})
+    # The dashboard's backfill-progress widget plots RUNNING_SUM of
+    # PartitionsDone against this total carried forward with FILL(REPEAT):
+    # the total lands in a single 5-minute bin, so per-bin math against it
+    # (a division, say) would render empty everywhere else.
+    emit_metric("PartitionsTotal", len(partitions))
     return {"partitions": partitions}

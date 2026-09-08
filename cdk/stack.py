@@ -66,6 +66,13 @@ from stack_constructs import (
     grant_prefixed_read_write,
 )
 
+# The metric identity comes from the emission side itself (the
+# virtualizarr-processor package is installed in every synth path), so the
+# dashboard, the Lambdas' env plumbing, and the backfill env allowlist
+# cannot drift from what the handlers emit.
+from virtualizarr_processor.metrics import DIMENSION_ENV as METRIC_DIMENSION_ENV
+from virtualizarr_processor.metrics import NAMESPACE as METRIC_NAMESPACE
+
 
 def _concept_id(collection_name: str) -> str:
     """The CMR concept id from the collection's declarative TOML."""
@@ -93,6 +100,19 @@ class VirtualizarrSqsStack(Stack):
         super().__init__(scope, construct_id, **kwargs)
 
         Tags.of(self).add("Project", settings.PROJECT)
+
+        # Dashboard widgets and alarms accumulate at each component's
+        # construction site (so setting-gated components gate their own
+        # widgets) and are assembled by _dashboard() at the end.
+        self._widgets: list[cloudwatch.IWidget] = []
+        self._alarms: list[cloudwatch.Alarm] = []
+        # Custom-metric identity shared with the (deferred) emission side:
+        # namespace TempoPipeline, dimensions Collection and Stage.
+        self._metric_dimensions = {
+            dimension: value
+            for dimension, key in METRIC_DIMENSION_ENV.items()
+            if (value := getattr(settings, key))
+        }
 
         self.dlq = sqs.Queue(
             self,
@@ -131,6 +151,32 @@ class VirtualizarrSqsStack(Stack):
             ),
             "Granules were rejected to the dead-letter queue",
         )
+
+        # Dashboard top-line tiles: is the store fresh, is the queue moving,
+        # is anything dead-lettered, how far behind is the pending ledger.
+        for title, metric in (
+            ("Store freshness", self._custom_metric("AxisEndLag")),
+            (
+                "Queue oldest message age",
+                self.queue.metric_approximate_age_of_oldest_message(
+                    period=Duration.minutes(5), statistic="Maximum"
+                ),
+            ),
+            (
+                "DLQ depth",
+                self.dlq.metric_approximate_number_of_messages_visible(
+                    period=Duration.minutes(5), statistic="Maximum"
+                ),
+            ),
+            ("Pending ledger depth", self._custom_metric("PendingLedgerDepth")),
+        ):
+            self._widgets.append(
+                # One metric per tile: a second metric silently drops the
+                # sparkline, which is what makes trends readable here.
+                cloudwatch.SingleValueWidget(
+                    title=title, metrics=[metric], sparkline=True, width=6, height=4
+                )
+            )
 
         if settings.ICECHUNK_BUCKET:
             self.icechunk_bucket = s3.Bucket.from_bucket_name(
@@ -184,8 +230,11 @@ class VirtualizarrSqsStack(Stack):
             "ICECHUNK_BUCKET": self.icechunk_bucket.bucket_name,
             "ICECHUNK_REGION": settings.ACCOUNT_REGION,
         }
-        if settings.TEMPO_COLLECTION:
-            self.processor_env["TEMPO_COLLECTION"] = settings.TEMPO_COLLECTION
+        # Metric-dimension env vars for the TempoPipeline custom metrics.
+        for key in METRIC_DIMENSION_ENV.values():
+            value = getattr(settings, key)
+            if value:
+                self.processor_env[key] = value
         if settings.VIRTUAL_CHUNK_PREFIX:
             self.processor_env["VIRTUAL_CHUNK_PREFIX"] = settings.VIRTUAL_CHUNK_PREFIX
         if storage_prefix:
@@ -215,17 +264,22 @@ class VirtualizarrSqsStack(Stack):
                 )
             )
 
+        # Held for the dashboard's rejected-granules log-query widget.
+        self.process_messages_log_group = function_log_group(
+            self, "process-messages-logs"
+        )
+        consumer_timeout_minutes = 5
         self.process_messages_lambda = _lambda.DockerImageFunction(
             self,
             f"{settings.STACK_NAME}-process_messages_lambda",
-            log_group=function_log_group(self, "process-messages-logs"),
+            log_group=self.process_messages_log_group,
             code=_lambda.DockerImageCode.from_image_asset(
                 directory="lambda",
                 file="process_messages/Dockerfile",
                 platform=ecr_assets.Platform.LINUX_AMD64,  # or LINUX_AMD64
             ),
             architecture=_lambda.Architecture.X86_64,
-            timeout=Duration.minutes(5),
+            timeout=Duration.minutes(consumer_timeout_minutes),
             memory_size=2048,
             environment=dict(self.processor_env),
             # Single-writer: concurrent consumers conflict on the append
@@ -238,6 +292,54 @@ class VirtualizarrSqsStack(Stack):
             "ConsumerErrorsAlarm",
             self.process_messages_lambda.metric_errors(period=Duration.minutes(5)),
             "The forward-processing consumer failed",
+        )
+
+        # Dashboard forward-processing section (queue and consumer are
+        # unconditional; the poller and re-sort widgets are appended inside
+        # their setting-gated blocks and disappear with them).
+        self._widgets.append(
+            cloudwatch.TextWidget(markdown="## Forward processing", width=24, height=1)
+        )
+        self._widgets.append(
+            cloudwatch.GraphWidget(
+                title="Granule routing",
+                stacked=True,
+                width=12,
+                height=6,
+                left=[
+                    self._custom_metric(
+                        "GranulesRouted",
+                        statistic="Sum",
+                        period=Duration.minutes(30),
+                        extra_dimensions={"Route": route},
+                    )
+                    for route in ("APPENDED", "OVERWRITTEN", "REJECTED", "PENDING")
+                ],
+            )
+        )
+        self._widgets.append(
+            cloudwatch.GraphWidget(
+                title="Consumer duration",
+                width=12,
+                height=6,
+                left=[
+                    self.process_messages_lambda.metric_duration(statistic=statistic)
+                    for statistic in ("p50", "p95", "Maximum")
+                ],
+                right=[
+                    self.process_messages_lambda.metric_throttles(statistic="Sum"),
+                    self._custom_metric("CommitFailures", statistic="Sum"),
+                ],
+                # The 5-min function timeout is what kills an invocation; the
+                # 1800 s SQS visibility timeout is only the redelivery bound.
+                left_annotations=[
+                    cloudwatch.HorizontalAnnotation(
+                        value=consumer_timeout_minutes * 60_000,
+                        label=f"Lambda timeout ({consumer_timeout_minutes} min)",
+                        color=cloudwatch.Color.RED,
+                    )
+                ],
+            )
         )
 
         self.queue.grant_consume_messages(self.process_messages_lambda)
@@ -422,12 +524,14 @@ class VirtualizarrSqsStack(Stack):
 
         self._build_backfill(settings)
         self._build_inventory_project(settings)
+        self._dashboard(settings)
 
     def _forward_ops(self, settings: StackSettings) -> None:
         """The scheduled forward-processing jobs: the re-sort job
         that folds the pending ledger in, and the CMR poller that feeds the
         queue (ASDC publishes no SNS topic)."""
         if settings.RESORT_SCHEDULE_HOURS:
+            resort_timeout_minutes = 15
             resort_env = dict(self.processor_env)
             resort_env["RESORT_MAX_FOLD"] = str(settings.RESORT_MAX_FOLD)
             self.resort_lambda = _lambda.DockerImageFunction(
@@ -441,7 +545,7 @@ class VirtualizarrSqsStack(Stack):
                     cmd=["backfill_handlers.resort.handler"],
                 ),
                 architecture=_lambda.Architecture.X86_64,
-                timeout=Duration.minutes(15),
+                timeout=Duration.minutes(resort_timeout_minutes),
                 # A deep resort's chunk-reference relocation builds the whole
                 # shifted suffix's manifest updates in memory.
                 memory_size=4096,
@@ -483,6 +587,33 @@ class VirtualizarrSqsStack(Stack):
                 "ResortErrorsAlarm",
                 self.resort_lambda.metric_errors(period=Duration.hours(1)),
                 "The scheduled re-sort job failed",
+            )
+            self._widgets.append(
+                cloudwatch.GraphWidget(
+                    title="Re-sort",
+                    width=12,
+                    height=6,
+                    left=[
+                        self._custom_metric("FoldedGranules", statistic="Sum"),
+                        self._custom_metric("PromoteFailures", statistic="Sum"),
+                    ],
+                    # A run killed by the Lambda timeout mid-fold emits no
+                    # error metric (the pending ledger just grows silently);
+                    # duration trending toward the 15-min line is the only
+                    # early warning for that failure mode.
+                    right=[self.resort_lambda.metric_duration(statistic="Maximum")],
+                    left_annotations=[
+                        cloudwatch.HorizontalAnnotation(
+                            value=settings.RESORT_MAX_FOLD, label="RESORT_MAX_FOLD"
+                        )
+                    ],
+                    right_annotations=[
+                        cloudwatch.HorizontalAnnotation(
+                            value=resort_timeout_minutes * 60_000,
+                            label=f"Lambda timeout ({resort_timeout_minutes} min)",
+                        )
+                    ],
+                )
             )
 
         if settings.POLL_SCHEDULE_MINUTES:
@@ -532,6 +663,17 @@ class VirtualizarrSqsStack(Stack):
                 self.cmr_poller_lambda.metric_errors(period=Duration.hours(1)),
                 "The scheduled CMR poller failed",
             )
+            self._widgets.append(
+                cloudwatch.GraphWidget(
+                    title="Poller",
+                    width=12,
+                    height=6,
+                    left=[
+                        self.cmr_poller_lambda.metric_invocations(statistic="Sum"),
+                        self.cmr_poller_lambda.metric_errors(statistic="Sum"),
+                    ],
+                )
+            )
 
     def _build_backfill(self, settings: StackSettings) -> None:
         if settings.BACKFILL_ENABLED:
@@ -554,10 +696,7 @@ class VirtualizarrSqsStack(Stack):
                 earthdata_secret_arn=settings.EARTHDATA_SECRET_ARN,
                 extra_env={
                     key: self.processor_env[key]
-                    for key in (
-                        "TEMPO_COLLECTION",
-                        "VIRTUAL_CHUNK_PREFIX",
-                    )
+                    for key in ("VIRTUAL_CHUNK_PREFIX", *METRIC_DIMENSION_ENV.values())
                     if key in self.processor_env
                 },
             )
@@ -568,6 +707,70 @@ class VirtualizarrSqsStack(Stack):
                 value=self.backfill_pipeline.state_machine.state_machine_arn,
                 description="Start a backfill with: aws stepfunctions start-execution "
                 '--state-machine-arn <this> --input \'{"inventory_uri": "s3://..."}\'',
+            )
+
+            # Dashboard backfill section, rendered only when the backfill
+            # pipeline is deployed.
+            state_machine = self.backfill_pipeline.state_machine
+            self._widgets.append(
+                cloudwatch.TextWidget(markdown="## Backfill", width=24, height=1)
+            )
+            self._widgets.append(
+                cloudwatch.GraphWidget(
+                    title="Backfill executions",
+                    width=12,
+                    height=6,
+                    left=[
+                        state_machine.metric_started(statistic="Sum"),
+                        state_machine.metric_succeeded(statistic="Sum"),
+                        state_machine.metric_failed(statistic="Sum"),
+                    ],
+                    right=[state_machine.metric_time(statistic="Maximum")],
+                )
+            )
+            self._widgets.append(
+                # Cumulative progress: RUNNING_SUM accumulates the per-bin
+                # completion counts and FILL(REPEAT) carries the one-shot
+                # PartitionsTotal point forward, so the two lines converge
+                # as the backfill lands. (Per-bin division cannot work:
+                # PartitionsTotal exists in exactly one 5-minute bin.) A
+                # window spanning two backfill runs mixes their sums — fine
+                # for its purpose of watching one run.
+                cloudwatch.GraphWidget(
+                    title="Backfill progress",
+                    width=6,
+                    height=6,
+                    left=[
+                        cloudwatch.MathExpression(
+                            expression="RUNNING_SUM([done])",
+                            label="partitions done",
+                            using_metrics={
+                                "done": self._custom_metric(
+                                    "PartitionsDone", statistic="Sum"
+                                )
+                            },
+                        ),
+                        cloudwatch.MathExpression(
+                            expression="FILL(total, REPEAT)",
+                            label="partitions total",
+                            using_metrics={
+                                "total": self._custom_metric("PartitionsTotal")
+                            },
+                        ),
+                    ],
+                )
+            )
+            self._widgets.append(
+                cloudwatch.GraphWidget(
+                    title="Backfill worker failures",
+                    width=6,
+                    height=6,
+                    left=[
+                        self.backfill_pipeline.functions["worker"].metric_errors(
+                            statistic="Sum"
+                        )
+                    ],
+                )
             )
 
     def _build_inventory_project(self, settings: StackSettings) -> None:
@@ -636,6 +839,16 @@ class VirtualizarrSqsStack(Stack):
             if settings.icechunk_storage_prefix
             else "*",
         )
+        # Verify runs publish CompletenessDelta via put_metric_data
+        # (CodeBuild logs are not EMF-parsed). PutMetricData cannot be
+        # resource-scoped; the namespace condition is the scoping.
+        self.inventory_build.add_to_role_policy(
+            iam.PolicyStatement(
+                actions=["cloudwatch:PutMetricData"],
+                resources=["*"],
+                conditions={"StringEquals": {"cloudwatch:namespace": METRIC_NAMESPACE}},
+            )
+        )
         if self.earthdata_secret is not None:
             self.earthdata_secret.grant_read(self.inventory_build)
 
@@ -648,22 +861,156 @@ class VirtualizarrSqsStack(Stack):
         )
 
     def _alarm(
-        self, construct_id: str, metric: cloudwatch.IMetric, description: str
+        self,
+        construct_id: str,
+        metric: cloudwatch.IMetric,
+        description: str,
+        *,
+        threshold: float = 0,
+        evaluation_periods: int = 1,
+        treat_missing_data: cloudwatch.TreatMissingData = (
+            cloudwatch.TreatMissingData.NOT_BREACHING
+        ),
     ) -> cloudwatch.Alarm:
-        """An "anything above zero" alarm, wired to the alarm topic if any."""
+        """An alarm wired to the alarm topic (if any) and registered on the
+        dashboard's alarm strip. Defaults give "anything above zero"."""
         alarm = cloudwatch.Alarm(
             self,
             construct_id,
             metric=metric,
-            threshold=0,
+            threshold=threshold,
             comparison_operator=(cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD),
-            evaluation_periods=1,
-            treat_missing_data=cloudwatch.TreatMissingData.NOT_BREACHING,
+            evaluation_periods=evaluation_periods,
+            treat_missing_data=treat_missing_data,
             alarm_description=description,
         )
         if self.alarm_topic is not None:
             alarm.add_alarm_action(cloudwatch_actions.SnsAction(self.alarm_topic))
+        self._alarms.append(alarm)
         return alarm
+
+    def _custom_metric(
+        self,
+        metric_name: str,
+        *,
+        statistic: str = "Maximum",
+        period: Duration | None = None,
+        extra_dimensions: dict[str, str] | None = None,
+    ) -> cloudwatch.Metric:
+        """A custom metric the pipeline's handlers emit as CloudWatch EMF.
+
+        Names and the {Collection, Stage} dimension set must match the
+        emission side exactly (virtualizarr_processor.metrics.emit_metric,
+        the shared helper every Lambda handler and verify_store.py use) —
+        a mismatched name or an extra dimension is a different CloudWatch
+        series, and the widget or alarm querying it shows nothing.
+        """
+        return cloudwatch.Metric(
+            namespace=METRIC_NAMESPACE,
+            metric_name=metric_name,
+            dimensions_map={**self._metric_dimensions, **(extra_dimensions or {})},
+            statistic=statistic,
+            period=period or Duration.minutes(5),
+        )
+
+    def _dashboard(self, settings: StackSettings) -> None:
+        """The data-quality widgets, the staleness alarm, and the dashboard
+        assembled from every widget and alarm the components accumulated."""
+        # Store freshness: AxisEndLag is seconds between now and the last
+        # time-axis slot, emitted by the consumer after each commit and by
+        # the re-sort after each promote. Missing data breaches because a
+        # silently-dead poller or a re-sort killed by its timeout emits no
+        # error metric — the series going quiet is the only signal. But the
+        # emitters are event-driven and TEMPO is daylight-only, so the
+        # series legitimately goes quiet overnight: only a full day of
+        # consecutive missing-or-stale hours alarms. A backfill-only stack
+        # has no freshness contract, so no alarm at all.
+        # A fresh deployment still starts its first day in ALARM: the pre-creation
+        # hours evaluate as missing, hence breaching.
+        if settings.FORWARD_QUEUE_ENABLED:
+            self._alarm(
+                "AxisEndLagAlarm",
+                self._custom_metric("AxisEndLag", period=Duration.hours(1)),
+                "The store's time axis is more than 24 h stale, "
+                "or its freshness metric stopped arriving for 24 h",
+                threshold=86400,
+                evaluation_periods=24,
+                treat_missing_data=cloudwatch.TreatMissingData.BREACHING,
+            )
+
+        # Dashboard data-quality section.
+        self._widgets.append(
+            cloudwatch.TextWidget(markdown="## Data quality", width=24, height=1)
+        )
+        self._widgets.append(
+            # A sawtooth, not a continuous series: one point per verify run,
+            # via put_metric_data (CodeBuild logs are not EMF-parsed).
+            cloudwatch.GraphWidget(
+                title="CMR-vs-store delta",
+                width=8,
+                height=6,
+                left=[self._custom_metric("CompletenessDelta")],
+            )
+        )
+        self._widgets.append(
+            # The consumer's powertools Logger writes one structured JSON
+            # line per granule ("Processed granule", with url and outcome
+            # fields); this surfaces the rejected ones — the reason is in
+            # the adjacent log lines.
+            cloudwatch.LogQueryWidget(
+                title="Rejected granules",
+                width=16,
+                height=6,
+                log_group_names=[self.process_messages_log_group.log_group_name],
+                view=cloudwatch.LogQueryVisualizationType.TABLE,
+                query_lines=[
+                    # Two shapes, both filtered on structured fields (never
+                    # on message prose, which rewording would silently
+                    # break): a clean rejection logs "Processed granule"
+                    # with outcome=rejected and url; a granule that *raises*
+                    # mid-process logs record_handler's error line with
+                    # outcome=errored and message_id — coalesce gives
+                    # whichever identifier the line has. Each attempt logs
+                    # again and a granule redelivers up to the DLQ's
+                    # maxReceiveCount, so aggregate per granule or a few
+                    # concurrently-failing granules would fill the 50-row
+                    # cap with duplicates and hide the rest.
+                    "filter outcome in ['rejected', 'errored']",
+                    "stats latest(@timestamp) as last_attempt,"
+                    " latest(outcome) as last_outcome,"
+                    " count(*) as attempts"
+                    " by coalesce(url, message_id) as granule",
+                    "sort last_attempt desc",
+                    "limit 50",
+                ],
+            )
+        )
+
+        # One constructor row: Dashboard wraps it in a Row itself, which
+        # wraps at the 24-column grid width, laying the accumulated widgets
+        # out band by band with the alarm strip first.
+        dashboard = cloudwatch.Dashboard(
+            self,
+            "Dashboard",
+            dashboard_name=settings.STACK_NAME,
+            widgets=[
+                [
+                    cloudwatch.AlarmStatusWidget(
+                        alarms=list(self._alarms), width=24, height=2
+                    ),
+                    *self._widgets,
+                ]
+            ],
+        )
+        CfnOutput(
+            self,
+            "DashboardUrl",
+            value=(
+                f"https://{self.region}.console.aws.amazon.com/cloudwatch/home"
+                f"?region={self.region}#dashboards/dashboard/{dashboard.dashboard_name}"
+            ),
+            description="The stack's CloudWatch dashboard",
+        )
 
     def _validate_bucket_region(self, settings: StackSettings) -> None:
         """Fail the deploy if the existing Icechunk bucket is in another region.

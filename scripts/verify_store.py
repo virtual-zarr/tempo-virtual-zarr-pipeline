@@ -44,7 +44,7 @@ import sys
 import urllib.parse
 import urllib.request
 from contextlib import contextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from typing import Any, Callable, Iterator, Optional, cast
 
 import h5py
@@ -57,12 +57,13 @@ from virtualizarr_processor.granule import make_registry
 from virtualizarr_processor.inventory import BackfillInventory
 from virtualizarr_processor.manifest import (
     MANIFEST_ARRAYS,
+    TEMPO_EPOCH,
     PendingLedger,
     StoreManifest,
 )
+from virtualizarr_processor.metrics import NAMESPACE, metric_dimensions
 
 COORDINATES = ("time", "latitude", "longitude")
-TEMPO_EPOCH = datetime(1980, 1, 6, tzinfo=timezone.utc)
 CMR_GRANULES_URL = "https://cmr.earthdata.nasa.gov/search/granules.umm_json"
 # Wide enough to absorb the nominal-vs-in-file time offset (tens of
 # seconds), narrow enough to exclude the closest neighboring scan (8 min).
@@ -361,6 +362,31 @@ def verify_completeness(
     return problems
 
 
+def emit_completeness_delta(count: int) -> None:
+    """Publish one CompletenessDelta point for this verify run.
+
+    CodeBuild logs are not EMF-parsed, so unlike the Lambda metrics this is
+    a direct put_metric_data call; the metric identity is imported from
+    virtualizarr_processor.metrics so it cannot drift from the emitters.
+    """
+    import boto3  # deferred so the pure helpers are testable offline
+
+    boto3.client("cloudwatch").put_metric_data(
+        Namespace=NAMESPACE,
+        MetricData=[
+            {
+                "MetricName": "CompletenessDelta",
+                "Value": float(count),
+                "Unit": "Count",
+                "Dimensions": [
+                    {"Name": name, "Value": value}
+                    for name, value in metric_dimensions().items()
+                ],
+            }
+        ],
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[1])
     parser.add_argument("--samples", type=int, default=8)
@@ -400,9 +426,18 @@ def main() -> int:
     )
     if args.completeness:
         ledger_urs = {entry.granule_ur for entry in PendingLedger.read(pinned)}
-        problems += verify_completeness(
+        completeness_problems = verify_completeness(
             processor.config.concept_id, manifest, ledger_urs
         )
+        problems += completeness_problems
+        if not args.offline:
+            try:
+                emit_completeness_delta(len(completeness_problems))
+            except Exception as exc:  # best-effort; never fail the verify
+                print(
+                    f"warning: CompletenessDelta emission failed: {exc}",
+                    file=sys.stderr,
+                )
 
     if problems:
         print(f"FAIL: {len(problems)} discrepancies", file=sys.stderr)

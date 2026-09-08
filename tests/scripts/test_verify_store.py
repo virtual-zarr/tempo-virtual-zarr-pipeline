@@ -255,3 +255,32 @@ def test_fill_values_decode_to_nan_and_verify_clean(tiny: TinyCollection) -> Non
     session = repo.readonly_session("main")
     decoded = xr.open_dataset(session.store, engine="zarr", consolidated=False)
     assert np.isnan(decoded["vertical_column"].isel(time=0).values[0, 0])
+
+
+def test_completeness_delta_put_metric_data(monkeypatch: pytest.MonkeyPatch) -> None:
+    """CodeBuild logs are not EMF-parsed, so the verify run publishes its
+    one point per run via put_metric_data, dimensioned exactly like the
+    Lambda-emitted metrics."""
+    import boto3
+
+    sent: dict = {}
+
+    class FakeCloudWatch:
+        def put_metric_data(self, **kwargs: object) -> None:
+            sent.update(kwargs)
+
+    monkeypatch.setenv("TEMPO_COLLECTION", "hcho")
+    monkeypatch.setenv("STAGE", "dev")
+    monkeypatch.setattr(boto3, "client", lambda service: FakeCloudWatch())
+
+    vs.emit_completeness_delta(3)
+
+    assert sent["Namespace"] == "TempoPipeline"
+    (datum,) = sent["MetricData"]
+    assert datum["MetricName"] == "CompletenessDelta"
+    assert datum["Value"] == 3.0
+    assert datum["Unit"] == "Count"
+    assert datum["Dimensions"] == [
+        {"Name": "Collection", "Value": "hcho"},
+        {"Name": "Stage", "Value": "dev"},
+    ]

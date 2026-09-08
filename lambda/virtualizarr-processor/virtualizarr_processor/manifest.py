@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Iterable, Mapping, Sequence
+from datetime import datetime, timezone
 from typing import cast
 
 import numpy as np
@@ -32,6 +33,18 @@ PENDING_LEDGER_ATTRIBUTE = "pending_ledger"
 PIPELINE_STATE_ATTRIBUTES: frozenset[str] = frozenset(
     {STORE_META_ATTRIBUTE, PENDING_LEDGER_ATTRIBUTE}
 )
+
+
+# The time axis stores seconds since this epoch. The collections' TOML
+# declares the same epoch in their time_units; tests/test_manifest.py pins
+# the two equal so they cannot silently drift.
+TEMPO_EPOCH = datetime(1980, 1, 6, tzinfo=timezone.utc)
+
+
+def axis_end_lag(axis_end: float) -> float:
+    """Seconds between now and the store's last time slot — the freshness SLI
+    behind the AxisEndLag metric and its staleness alarm."""
+    return (datetime.now(timezone.utc) - TEMPO_EPOCH).total_seconds() - axis_end
 
 
 def storage_prefix() -> str | None:
@@ -118,6 +131,15 @@ class PendingLedger:
         return tuple(
             GranuleEntry.model_validate(item) for item in cast(Sequence[object], raw)
         )
+
+    @staticmethod
+    def depth(store: Store) -> int:
+        """Entry count from the raw attribute. The attribute is still read
+        and parsed wholesale, but skipping :meth:`read`'s per-entry pydantic
+        validation keeps the consumer's PendingLedgerDepth metric cheap as
+        the ledger grows (the exact condition the metric exists to detect)."""
+        raw = zarr.open_group(store, mode="r").attrs.get(PENDING_LEDGER_ATTRIBUTE, [])
+        return len(cast(Sequence[object], raw))
 
     @staticmethod
     def write(store: Store, entries: Iterable[GranuleEntry]) -> None:
