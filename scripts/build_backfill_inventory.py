@@ -40,6 +40,7 @@ Usage:
 """
 
 import argparse
+import contextlib
 import sys
 import time as time_module
 from concurrent.futures import ThreadPoolExecutor
@@ -143,7 +144,7 @@ def read_time_via_earthaccess(url: str) -> float:
     for attempt in range(READ_ATTEMPTS):
         try:
             [f] = earthaccess.open([url])
-            with f, h5py.File(f) as h5:
+            with contextlib.closing(f), h5py.File(f) as h5:
                 return float(h5["time"][0])
         except Exception as error:
             # earthaccess raises this when it can't confirm us-west-2
