@@ -2,7 +2,7 @@
 
 Each stack whose `ALARM_EMAIL` is set creates one SNS topic and subscribes
 that address to it; every CloudWatch alarm in the stack (DLQ depth,
-consumer/poller/re-sort failures) publishes there. Without
+consumer/poller/re-sort failures, store staleness) publishes there. Without
 `ALARM_EMAIL` the alarms are console-only.
 
 `ALARM_EMAIL` is a local-only setting: put it in the gitignored
