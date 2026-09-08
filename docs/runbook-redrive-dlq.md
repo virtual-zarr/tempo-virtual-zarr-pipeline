@@ -11,7 +11,7 @@ self-purges. Triage promptly.
 
 Everything here is safe to repeat: peeking uses `--visibility-timeout 0`
 (consumes nothing), and the consumer's routing is idempotent — a redriven
-granule already in the store re-resolves as `OVERWRITTEN`, an out-of-order
+granule already in the store re-resolves as `written`, an out-of-order
 one defers to the pending ledger (deduped by granule UR), and anything
 genuinely broken re-rejects back to the DLQ with a fresh retention clock.
 The worst case of a redrive is ending up where you started.
