@@ -11,7 +11,7 @@ self-purges. Triage promptly.
 
 Everything here is safe to repeat: peeking uses `--visibility-timeout 0`
 (consumes nothing), and the consumer's routing is idempotent — a redriven
-granule already in the store re-resolves as `written`, an out-of-order
+granule already in the store re-resolves as `overwritten`, an out-of-order
 one defers to the pending ledger (deduped by granule UR), and anything
 genuinely broken re-rejects back to the DLQ with a fresh retention clock.
 The worst case of a redrive is ending up where you started.
@@ -28,7 +28,8 @@ DLQ_URL=$(aws sqs get-queue-url --queue-name "${STACK_NAME}-Dlq" \
 
 ## Step 0 — stale backlog or live failure?
 
-Depth over time answers it (queue names are case-sensitive: `-Dlq`):
+Depth over time answers it — the stack dashboard's "DLQ depth" tile shows
+the curve, or from the CLI (queue names are case-sensitive: `-Dlq`):
 
 ```bash
 aws cloudwatch get-metric-statistics --namespace AWS/SQS \
@@ -81,10 +82,9 @@ aws sqs list-message-move-tasks --source-arn "$DLQ_ARN"   # progress
 
 Expected behaviors mid-redrive, none of which need intervention:
 
-- The consumer logs floods of `written` (slot exists in the axis: appended
-  or refreshed in place, including already-ingested duplicates — logged as
-  the separate outcomes `appended`/`overwritten` once the observability
-  changes are deployed) and
+- The consumer logs floods of `appended`/`overwritten` (slot exists in
+  the axis, including already-ingested duplicates; deployments predating
+  the observability changes log both as `written`) and
   `deferred` (historical granules headed for the pending ledger — the
   scheduled re-sort folds them in; see the drain runbook if it backs up).
 - DLQ depth drops to ~0, then some messages trickle back over the next
