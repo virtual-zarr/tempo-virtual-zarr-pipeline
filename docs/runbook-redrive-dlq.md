@@ -81,8 +81,9 @@ aws sqs list-message-move-tasks --source-arn "$DLQ_ARN"   # progress
 
 Expected behaviors mid-redrive, none of which need intervention:
 
-- The consumer logs floods of `overwritten` (already-ingested duplicates)
-  and `deferred` (historical granules headed for the pending ledger — the
+- The consumer logs floods of `written` (slot exists in the axis: appended
+  or refreshed in place, including already-ingested duplicates) and
+  `deferred` (historical granules headed for the pending ledger — the
   scheduled re-sort folds them in; see the drain runbook if it backs up).
 - DLQ depth drops to ~0, then some messages trickle back over the next
   hour or two as genuine failures re-exhaust their 20 receives.
