@@ -51,6 +51,15 @@ def run_backfill(processor: Processor, tiny: TinyCollection) -> zarr.Group:
     return zarr.open_group(reader.readonly_session("main").store, mode="r")
 
 
+def test_repo_opens_with_manifest_splitting(tiny: TinyCollection) -> None:
+    # Unsplit manifests span the whole archive and are rewritten in memory
+    # on every commit; a single-granule append OOMed the consumer once the
+    # full backfill promoted. Every writer opens through this path.
+    repo = Processor().open_backfill_repo()
+    assert repo.config.manifest is not None
+    assert repo.config.manifest.splitting is not None
+
+
 def test_backfill_end_to_end(tiny: TinyCollection) -> None:
     processor = Processor()
     group = run_backfill(processor, tiny)
