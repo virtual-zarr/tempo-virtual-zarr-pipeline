@@ -122,7 +122,10 @@ def instrumented_reader(
                 latencies.append(
                     (url.rsplit("/", 1)[-1], round(time_module.monotonic() - start, 3))
                 )
-            if n % PROGRESS_EVERY == 0 or n == total:
+            # Early ticks distinguish "warming up" from "stalled" within
+            # the first minute; a 250-granule first tick can be minutes
+            # away and reads as a hang (observed 2026-09-09).
+            if n in (10, 50) or n % PROGRESS_EVERY == 0 or n == total:
                 # flush: CodeBuild streams the log; Python buffers stderr pipes
                 print(f"  {n}/{total} headers read", file=sys.stderr, flush=True)
 
