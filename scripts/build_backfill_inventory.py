@@ -4,6 +4,8 @@
 #     "earthaccess>=0.14",
 #     "boto3>=1.34.0",
 #     "h5py",
+#     "obstore",
+#     "obspec-utils",
 #     "virtualizarr-processor",
 # ]
 #
@@ -27,9 +29,14 @@ Republished granules (same UR, new revision) are deduped keeping the
 newest revision. The pydantic model validates the result before anything
 is written.
 
-Requires Earthdata credentials (``~/.netrc`` or ``$EARTHDATA_TOKEN``) for
-the per-granule reads; run in us-west-2 with ``--access direct`` for the
-production inventory.
+Every run also reports a profile: per-granule read latencies, phase wall
+times, and an RSS timeline (written under ``--profile-dir``, summary to
+stderr) — the numbers that size the CodeBuild container and the
+workers/timeout budget for a full ~17k-granule sweep.
+
+Built for one environment: the stack's us-west-2 CodeBuild project,
+which sets ``$EARTHDATA_TOKEN`` (required for the per-granule reads) and
+passes ``--access direct --read-access external``.
 
 Usage:
     uv run scripts/build_backfill_inventory.py
@@ -40,7 +47,13 @@ Usage:
 """
 
 import argparse
+import csv
+import functools
+import os
+import resource
+import statistics
 import sys
+import threading
 import time as time_module
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -53,6 +66,11 @@ from virtualizarr_processor.inventory import SCHEMA_ID, BackfillInventory, Granu
 TIME_UNITS = "seconds since 1980-01-06T00:00:00Z"
 READ_ATTEMPTS = 4
 BACKOFF_SECONDS = (10, 30, 60)
+PROGRESS_EVERY = 250
+# Error-message substrings marking a permanent failure (expired/rejected
+# token): retrying cannot help, fail fast instead of burning ~100s of
+# backoff per granule.
+PERMANENT_ERROR_MARKERS = ("401", "Unauthorized", "403", "Forbidden")
 
 
 class InventoryError(Exception):
@@ -80,6 +98,35 @@ def dedupe_republications(granules: list[Any]) -> list[Any]:
         if ur not in newest or _revision(granule) > _revision(newest[ur]):
             newest[ur] = granule
     return list(newest.values())
+
+
+def instrumented_reader(
+    read_time: Callable[[str], float],
+    total: int,
+    latencies: list[tuple[str, float]],
+) -> Callable[[str], float]:
+    """Wrap ``read_time`` with a progress line every PROGRESS_EVERY
+    completions and per-granule latency capture (retries included)."""
+    lock = threading.Lock()
+    done = 0
+
+    def read(url: str) -> float:
+        nonlocal done
+        start = time_module.monotonic()
+        try:
+            return read_time(url)
+        finally:
+            with lock:
+                done += 1
+                n = done
+                latencies.append(
+                    (url.rsplit("/", 1)[-1], round(time_module.monotonic() - start, 3))
+                )
+            if n % PROGRESS_EVERY == 0 or n == total:
+                # flush: CodeBuild streams the log; Python buffers stderr pipes
+                print(f"  {n}/{total} headers read", file=sys.stderr, flush=True)
+
+    return read
 
 
 def build_inventory(
@@ -111,8 +158,28 @@ def build_inventory(
         else [data_link(granule, read_access) for granule in deduped]
     )
 
+    # Collect failures instead of letting the first one abort the pool:
+    # on a ~17k-granule sweep, one bad granule at hour 6 must not discard
+    # every completed read — finish the sweep, then report all failures.
+    failures: list[tuple[str, str]] = []
+
+    def read_or_record(url: str) -> float:
+        try:
+            return read_time(url)
+        except Exception as error:
+            failures.append((url, f"{type(error).__name__}: {error}"))
+            return float("nan")
+
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        times = list(pool.map(read_time, read_urls))
+        times = list(pool.map(read_or_record, read_urls))
+    if failures:
+        preview = "; ".join(
+            f"{u.rsplit('/', 1)[-1]} ({e})" for u, e in failures[:3]
+        )
+        raise InventoryError(
+            f"{len(failures)} of {len(read_urls)} granule reads failed — "
+            f"first: {preview}"
+        )
 
     entries = sorted(
         (
@@ -135,21 +202,13 @@ def build_inventory(
     )
 
 
-def read_time_via_earthaccess(url: str) -> float:
-    """Read the granule's exact /time[0] from its header."""
-    import earthaccess
-    import h5py
-
+def _with_retries(read_once: Callable[[str], float], url: str) -> float:
+    """Run ``read_once(url)`` with the shared backoff/retry policy."""
     for attempt in range(READ_ATTEMPTS):
         try:
-            [f] = earthaccess.open([url])
-            with h5py.File(f) as h5:
-                return float(h5["time"][0])
+            return read_once(url)
         except Exception as error:
-            # earthaccess raises this when it can't confirm us-west-2
-            # (no EC2 IMDS on CodeBuild/Lambda, earthaccess#444): it's
-            # configuration, not transient — retrying can't help.
-            if "not in-region" in str(error):
+            if any(marker in str(error) for marker in PERMANENT_ERROR_MARKERS):
                 raise
             if attempt == READ_ATTEMPTS - 1:
                 raise
@@ -161,6 +220,62 @@ def read_time_via_earthaccess(url: str) -> float:
             )
             time_module.sleep(delay)
     raise AssertionError("unreachable")
+
+
+@functools.lru_cache(maxsize=4)
+def _http_store(base_url: str) -> Any:
+    # ponytail: token-only auth, duplicating what virtualizarr_processor.
+    # granule's EDL plumbing does more completely (username/password,
+    # secret ARN). If this reader graduates into the repo, build the
+    # store via granule.py's auth helpers instead of here.
+    from obstore.store import HTTPStore
+
+    return HTTPStore.from_url(
+        base_url,
+        client_options={
+            "default_headers": {
+                "Authorization": f"Bearer {os.environ['EARTHDATA_TOKEN']}"
+            }
+        },
+    )
+
+
+def _read_once_obspec(url: str) -> float:
+    """Read /time[0] via a small-block cache instead of fsspec readahead.
+
+    h5py touches ~2.3 KB in ~6 scattered regions of a ~900 MB granule
+    (measured 2026-09-09 on TEMPO_NO2_L3_V04 S001); earthaccess/fsspec's
+    5 MB readahead turns that into ~37 MB transferred per granule.
+    256 KB blocks fetch ~1.5 MB in the same ~6 requests — the block size
+    is deliberately small because the access pattern is scattered tiny
+    metadata reads, not streaming.
+    """
+    import h5py
+    from obspec_utils.readers import BlockStoreReader
+
+    scheme_host, _, path = url.removeprefix("https://").partition("/")
+    reader = BlockStoreReader(
+        _http_store(f"https://{scheme_host}"),
+        path,
+        block_size=256 * 1024,
+        max_cached_blocks=64,
+    )
+    with h5py.File(reader) as h5:
+        return float(h5["time"][0])
+
+
+def read_granule_time(url: str) -> float:
+    """Read the granule's exact /time[0] from its header.
+
+    HTTPS-only, Bearer-authed with ``$EARTHDATA_TOKEN`` — the CodeBuild
+    configuration (``--read-access external``; CDK wires the token
+    secret). This is the script's only supported environment.
+    """
+    if not url.startswith("https://"):
+        raise InventoryError(
+            f"reads are https-only, got {url} — pass --read-access external"
+        )
+    return _with_retries(_read_once_obspec, url)
 
 
 def write_inventory(inventory: BackfillInventory, path: Path) -> None:
@@ -185,6 +300,97 @@ def upload(path: Path, s3_uri: str) -> None:
     if not bucket or not key:
         raise InventoryError(f"--s3-uri must look like s3://bucket/key: {s3_uri}")
     boto3.client("s3").upload_file(str(path), bucket, key)
+
+
+# -- profiling ---------------------------------------------------------------
+
+
+def _rss_mb() -> float | None:
+    """Resident set size, or None where /proc doesn't exist (macOS)."""
+    try:
+        with open("/proc/self/statm") as f:
+            return int(f.read().split()[1]) * resource.getpagesize() / 1e6
+    except OSError:
+        return None
+
+
+def _sample_memory(
+    rows: list[tuple[float, float]], t0: float, stop: threading.Event
+) -> None:
+    while not stop.wait(5):
+        rss = _rss_mb()
+        if rss is not None:
+            rows.append((round(time_module.monotonic() - t0, 1), round(rss, 1)))
+
+
+def write_profile(
+    out: Path,
+    phases: list[tuple[str, float]],
+    latencies: list[tuple[str, float]],
+    memory: list[tuple[float, float]],
+) -> None:
+    """Write read_latencies.csv, memory_timeline.csv, and summary.txt
+    (summary also to stderr, so it survives in the CodeBuild log even
+    when the container's files don't)."""
+    out.mkdir(parents=True, exist_ok=True)
+    with (out / "read_latencies.csv").open("w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["granule", "seconds"])
+        writer.writerows(latencies)
+    with (out / "memory_timeline.csv").open("w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["elapsed_s", "rss_mb"])
+        writer.writerows(memory)
+
+    lines = ["== Phases =="]
+    lines += [f"  {name:<20} {seconds:>10.1f} s" for name, seconds in phases]
+    if latencies:
+        values = sorted(seconds for _, seconds in latencies)
+        big = len(values) >= 100
+        q = statistics.quantiles(values, n=100) if big else []
+        lines += [
+            "",
+            f"== Read latencies ({len(values)} granules, retries included) ==",
+            f"  min/median/mean: {values[0]:.2f} / "
+            f"{statistics.median(values):.2f} / {statistics.mean(values):.2f} s",
+            f"  p90/p99/max:     {q[89] if big else values[-1]:.2f} / "
+            f"{q[98] if big else values[-1]:.2f} / {values[-1]:.2f} s",
+            "  slowest 5:",
+        ]
+        lines += [
+            f"    {seconds:>8.2f} s  {name}"
+            for name, seconds in sorted(latencies, key=lambda r: -r[1])[:5]
+        ]
+    # ru_maxrss is KB on Linux but bytes on macOS
+    divisor = 1e3 if sys.platform == "linux" else 1e6
+    peak_mb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / divisor
+    lines += ["", "== Memory =="]
+    if memory:
+        lines += [
+            f"  start/end sampled RSS: {memory[0][1]:.0f} / {memory[-1][1]:.0f} MB"
+        ]
+    lines += [f"  peak RSS:              {peak_mb:.0f} MB"]
+    (out / "summary.txt").write_text("\n".join(lines) + "\n")
+    print("\n".join(lines), file=sys.stderr)
+    print(f"Profile written to {out}/", file=sys.stderr)
+
+
+def _self_test() -> None:
+    """Offline check of the profile-report path (no network, no creds)."""
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as d:
+        out = Path(d) / "profile"
+        write_profile(
+            out,
+            phases=[("CMR search", 1.0), ("read+sort+validate", 2.0)],
+            latencies=[(f"g{i}", 0.1 * i) for i in range(1, 201)],
+            memory=[(0.0, 100.0), (5.0, 120.0)],
+        )
+        summary = (out / "summary.txt").read_text()
+        assert "p90/p99/max" in summary and "peak RSS" in summary, summary
+        assert len((out / "read_latencies.csv").read_text().splitlines()) == 201
+    print("self-test ok", file=sys.stderr)
 
 
 def main() -> int:
@@ -240,56 +446,93 @@ def main() -> int:
         "--concept-id",
         help="Explicit CMR collection concept ID (overrides --collection)",
     )
+    parser.add_argument(
+        "--profile-dir",
+        default="profile-out",
+        help="Directory for the run profile (latencies, RSS timeline, summary)",
+    )
+    parser.add_argument(
+        "--self-test",
+        action="store_true",
+        help="Check the profile-reporting path offline and exit",
+    )
     args = parser.parse_args()
+    if args.self_test:
+        _self_test()
+        return 0
     concept_id = args.concept_id or load_collection(args.collection).concept_id
     output = Path(args.output or f"inventories/tempo-{args.collection}-inventory.json")
 
-    import earthaccess
+    # CMR search needs no auth; the per-granule reads need the token.
+    if not os.environ.get("EARTHDATA_TOKEN"):
+        raise InventoryError("EARTHDATA_TOKEN is not set (CodeBuild wires it)")
 
-    # "all" tries $EARTHDATA_TOKEN / $EARTHDATA_USERNAME+PASSWORD first,
-    # then ~/.netrc — matching the docstring's promise.
-    earthaccess.login()
-
-    print(f"Searching CMR for all granules of {concept_id}...", file=sys.stderr)
-    granules = search_granules(concept_id, args.start, args.end)
-    print(f"  {len(granules)} granules returned", file=sys.stderr)
-    if args.max_count:
-        granules = sorted(
-            granules,
-            key=lambda g: str(
-                g["umm"]["TemporalExtent"]["RangeDateTime"]["BeginningDateTime"]
-            ),
-        )[-args.max_count :]
-
-    shortname = str(granules[0]["umm"]["CollectionReference"]["ShortName"])
-    print(
-        f"Reading exact /time from {len(granules)} granule headers "
-        f"({args.workers} workers)...",
-        file=sys.stderr,
+    t0 = time_module.monotonic()
+    phases: list[tuple[str, float]] = []
+    latencies: list[tuple[str, float]] = []
+    first_rss = _rss_mb()
+    memory: list[tuple[float, float]] = (
+        [(0.0, round(first_rss, 1))] if first_rss is not None else []
     )
-    inventory = build_inventory(
-        granules,
-        access=args.access,
-        read_access=args.read_access,
-        read_time=read_time_via_earthaccess,
-        collection_shortname=shortname,
-        concept_id=concept_id,
-        workers=args.workers,
-    )
+    stop = threading.Event()
+    threading.Thread(
+        target=_sample_memory, args=(memory, t0, stop), daemon=True
+    ).start()
 
-    write_inventory(inventory, output)
-    print(f"Wrote {len(inventory.granules)} granules to {output}", file=sys.stderr)
-    print(f"  first: {inventory.granules[0].url}", file=sys.stderr)
-    print(f"  last:  {inventory.granules[-1].url}", file=sys.stderr)
+    try:
+        print(f"Searching CMR for all granules of {concept_id}...", file=sys.stderr)
+        phase_start = time_module.monotonic()
+        granules = search_granules(concept_id, args.start, args.end)
+        phases.append(("CMR search", time_module.monotonic() - phase_start))
+        print(f"  {len(granules)} granules returned", file=sys.stderr)
+        if args.max_count:
+            granules = sorted(
+                granules,
+                key=lambda g: str(
+                    g["umm"]["TemporalExtent"]["RangeDateTime"]["BeginningDateTime"]
+                ),
+            )[-args.max_count :]
 
-    if args.s3_uri:
-        upload(output, args.s3_uri)
-        print(f"Uploaded to {args.s3_uri}", file=sys.stderr)
+        if not granules:
+            raise InventoryError("No granules matched the query")
+        shortname = str(granules[0]["umm"]["CollectionReference"]["ShortName"])
         print(
-            f"Start the run with: scripts/start_backfill.sh <name> {args.s3_uri}",
+            f"Reading exact /time from {len(granules)} granule headers "
+            f"({args.workers} workers)...",
             file=sys.stderr,
         )
-    return 0
+        phase_start = time_module.monotonic()
+        inventory = build_inventory(
+            granules,
+            access=args.access,
+            read_access=args.read_access,
+            read_time=instrumented_reader(
+                read_granule_time, len(granules), latencies
+            ),
+            collection_shortname=shortname,
+            concept_id=concept_id,
+            workers=args.workers,
+        )
+        phases.append(("read+sort+validate", time_module.monotonic() - phase_start))
+
+        write_inventory(inventory, output)
+        print(f"Wrote {len(inventory.granules)} granules to {output}", file=sys.stderr)
+        print(f"  first: {inventory.granules[0].url}", file=sys.stderr)
+        print(f"  last:  {inventory.granules[-1].url}", file=sys.stderr)
+
+        if args.s3_uri:
+            upload(output, args.s3_uri)
+            print(f"Uploaded to {args.s3_uri}", file=sys.stderr)
+            print(
+                f"Start the run with: scripts/start_backfill.sh <name> {args.s3_uri}",
+                file=sys.stderr,
+            )
+        return 0
+    finally:
+        # Written on failure too: a partial profile is exactly what you
+        # want after an OOM kill's survivor run or a mid-sweep crash.
+        stop.set()
+        write_profile(Path(args.profile_dir), phases, latencies, memory)
 
 
 if __name__ == "__main__":
