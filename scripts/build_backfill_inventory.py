@@ -222,16 +222,37 @@ def _with_retries(read_once: Callable[[str], float], url: str) -> float:
     raise AssertionError("unreachable")
 
 
-@functools.lru_cache(maxsize=4)
-def _http_store(base_url: str) -> Any:
-    # ponytail: token-only auth, duplicating what virtualizarr_processor.
-    # granule's EDL plumbing does more completely (username/password,
-    # secret ARN). If this reader graduates into the repo, build the
-    # store via granule.py's auth helpers instead of here.
+def _s3_store_cls() -> Any:
+    """Indirection so tests can substitute S3Store without obstore."""
+    from obstore.store import S3Store
+
+    return S3Store
+
+
+def _https_store_cls() -> Any:
+    """Indirection so tests can substitute HTTPStore without obstore."""
     from obstore.store import HTTPStore
 
-    return HTTPStore.from_url(
-        base_url,
+    return HTTPStore
+
+
+@functools.lru_cache(maxsize=4)
+def _store_for_s3(bucket: str) -> Any:
+    # Reuses the exact credential flow the deployed workers use
+    # (granule.make_registry): EDL token -> temporary DAAC S3 creds,
+    # auto-refreshed by the provider. Direct in-region range GETs skip
+    # the TEA auth-redirect round trips that dominate HTTPS reads.
+    from virtualizarr_processor import granule
+
+    return _s3_store_cls().from_url(
+        f"s3://{bucket}", credential_provider=granule.s3_credential_provider(bucket)
+    )
+
+
+@functools.lru_cache(maxsize=4)
+def _store_for_https(host: str) -> Any:
+    return _https_store_cls().from_url(
+        f"https://{host}",
         client_options={
             "default_headers": {
                 "Authorization": f"Bearer {os.environ['EARTHDATA_TOKEN']}"
@@ -240,42 +261,39 @@ def _http_store(base_url: str) -> Any:
     )
 
 
-def _read_once_obspec(url: str) -> float:
-    """Read /time[0] via a small-block cache instead of fsspec readahead.
+def _store_and_path(url: str) -> tuple[Any, str]:
+    """Resolve a granule url to (obstore store, in-store path)."""
+    if url.startswith("s3://"):
+        bucket, _, path = url.removeprefix("s3://").partition("/")
+        return _store_for_s3(bucket), path
+    if url.startswith("https://"):
+        host, _, path = url.removeprefix("https://").partition("/")
+        return _store_for_https(host), path
+    raise InventoryError(f"unsupported url scheme for header read: {url}")
+
+
+def _read_once_block(url: str) -> float:
+    """Read /time[0] through a 256 KB block cache.
 
     h5py touches ~2.3 KB in ~6 scattered regions of a ~900 MB granule
-    (measured 2026-09-09 on TEMPO_NO2_L3_V04 S001); earthaccess/fsspec's
-    5 MB readahead turns that into ~37 MB transferred per granule.
-    256 KB blocks fetch ~1.5 MB in the same ~6 requests — the block size
-    is deliberately small because the access pattern is scattered tiny
-    metadata reads, not streaming.
+    (measured 2026-09-09 on TEMPO_NO2_L3_V04 S001); fsspec's 5 MB
+    readahead turned that into ~37 MB transferred per granule. Small
+    blocks keep it to ~1.5 MB in the same ~6 requests — deliberately
+    small because the access pattern is scattered tiny metadata reads,
+    not streaming.
     """
     import h5py
     from obspec_utils.readers import BlockStoreReader
 
-    scheme_host, _, path = url.removeprefix("https://").partition("/")
-    reader = BlockStoreReader(
-        _http_store(f"https://{scheme_host}"),
-        path,
-        block_size=256 * 1024,
-        max_cached_blocks=64,
-    )
+    store, path = _store_and_path(url)
+    reader = BlockStoreReader(store, path, block_size=256 * 1024, max_cached_blocks=64)
     with h5py.File(reader) as h5:
         return float(h5["time"][0])
 
 
 def read_granule_time(url: str) -> float:
-    """Read the granule's exact /time[0] from its header.
-
-    HTTPS-only, Bearer-authed with ``$EARTHDATA_TOKEN`` — the CodeBuild
-    configuration (``--read-access external``; CDK wires the token
-    secret). This is the script's only supported environment.
-    """
-    if not url.startswith("https://"):
-        raise InventoryError(
-            f"reads are https-only, got {url} — pass --read-access external"
-        )
-    return _with_retries(_read_once_obspec, url)
+    """Read the granule's exact /time[0] from its header."""
+    return _with_retries(_read_once_block, url)
 
 
 def write_inventory(inventory: BackfillInventory, path: Path) -> None:
@@ -465,7 +483,10 @@ def main() -> int:
 
     # CMR search needs no auth; the per-granule reads need the token.
     if not os.environ.get("EARTHDATA_TOKEN"):
-        raise InventoryError("EARTHDATA_TOKEN is not set (CodeBuild wires it)")
+        raise InventoryError(
+            "EARTHDATA_TOKEN is not set (CodeBuild wires it; needed for "
+            "the s3credentials exchange and https reads)"
+        )
 
     t0 = time_module.monotonic()
     phases: list[tuple[str, float]] = []
