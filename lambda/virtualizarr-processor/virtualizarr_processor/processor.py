@@ -81,6 +81,10 @@ from virtualizarr_processor.typing import BranchInit, ProcessOutcome
 logger = logging.getLogger(__name__)
 
 DEFAULT_VIRTUAL_CHUNK_PREFIX = "s3://asdc-prod-protected/"
+# Append-dimension slots (time chunks are one slot) per manifest split.
+# Bounds commit memory to one split's references instead of the archive's;
+# a full-axis read fetches n_slots/500 manifests per array, still cheap.
+MANIFEST_SPLIT_SLOTS = 500
 PARSE_ATTEMPTS = 3
 PARSE_BACKOFF_SECONDS = (5, 15)
 
@@ -149,6 +153,25 @@ class Processor:
 
         prefix = os.environ.get("VIRTUAL_CHUNK_PREFIX", DEFAULT_VIRTUAL_CHUNK_PREFIX)
         config = icechunk.RepositoryConfig.default()
+        # Split chunk manifests along the append dimension. Icechunk's
+        # default is one manifest per array, so once the full archive is
+        # in the store every commit rewrites whole-archive manifests in
+        # memory — which OOMed the 2 GB consumer on a single-granule
+        # append (and strained backfill reduce). With splits, a commit
+        # rewrites only the splits it touches: an append rewrites just
+        # the tail. Existing unsplit stores need a one-time
+        # repo.rewrite_manifests(...) with this config to convert.
+        config.manifest = icechunk.ManifestConfig(
+            splitting=icechunk.ManifestSplittingConfig.from_dict(
+                {
+                    icechunk.ManifestSplitCondition.AnyArray(): {
+                        icechunk.ManifestSplitDimCondition.DimensionName(
+                            self.config.append_dim
+                        ): MANIFEST_SPLIT_SLOTS
+                    }
+                }
+            )
+        )
         chunk_store: (
             icechunk.ObjectStoreConfig.LocalFileSystem
             | icechunk.ObjectStoreConfig.S3Compatible
