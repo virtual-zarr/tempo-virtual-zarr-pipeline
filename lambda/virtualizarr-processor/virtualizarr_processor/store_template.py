@@ -66,6 +66,12 @@ TEMPO_L3_VOLATILE_ATTRIBUTES: frozenset[str] = frozenset(
         "coremetadata",
         "REFERENCE_LIST",
         "DIMENSION_LIST",
+        # The DAAC's processing-software version: bumped mid-archive
+        # without reprocessing older granules (2023 NO2 granules carry
+        # v4.8.2, the v4.8.4-era template's expectation), and the next
+        # bump would hit forward processing the same way. Metadata-only:
+        # store attributes come from the template, never the granule.
+        "sdpc_version",
     }
 )
 
@@ -294,6 +300,13 @@ def _attribute_differences(
             continue
         if key not in actual:
             differences.append(f"{path or '/'}: attribute {key!r} missing from {where}")
+        elif key == "coordinates" and _same_name_set(want, actual[key]):
+            # CF "coordinates" is a blank-separated name list whose order
+            # carries no meaning (axis order comes from the variable's
+            # dimensions); the DAAC emits it in varying order across
+            # granules, e.g. 2025 NO2 granules with "time longitude
+            # latitude" against a "time latitude longitude" template.
+            continue
         elif not _values_equal(want, actual[key]):
             differences.append(
                 f"{path or '/'}: attribute {key!r} expected {want!r}, "
@@ -303,6 +316,14 @@ def _attribute_differences(
     if unexpected:
         _warn_unexpected_attributes(path, unexpected)
     return differences
+
+
+def _same_name_set(a: object, b: object) -> bool:
+    """True when both values are blank-separated name lists of the same
+    names, in any order (a genuinely different set still mismatches)."""
+    return (
+        isinstance(a, str) and isinstance(b, str) and set(a.split()) == set(b.split())
+    )
 
 
 def _warn_unexpected_attributes(path: str, names: Iterable[str]) -> None:
