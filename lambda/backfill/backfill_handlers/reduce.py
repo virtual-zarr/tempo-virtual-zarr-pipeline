@@ -22,9 +22,12 @@ def handler(event: dict[str, Any], context: LambdaContext) -> dict[str, Any]:
     repo = processor.open_backfill_repo()
 
     child_uris = fork_store.list_forks(event["forks_out_prefix"])
-    children = [fork_store.load_fork(uri) for uri in child_uris]
+    # Stream blobs one at a time: a full partition's forks held at once
+    # (50 blobs plus 50 unpickled sessions) exceeds the Lambda's memory.
     tip = backfill.merge_and_commit(
-        repo, children, message=f"Backfill partition {partition_id}"
+        repo,
+        (fork_store.load_fork(uri) for uri in child_uris),
+        message=f"Backfill partition {partition_id}",
     )
 
     logger.info("Committed partition", extra={"partition_id": partition_id, "tip": tip})
