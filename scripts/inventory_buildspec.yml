@@ -22,3 +22,4 @@ phases:
         --read-access external
         ${MAX_COUNT:+--max-count "$MAX_COUNT"}
         --s3-uri "$S3_URI"
+        --workers 16
