@@ -113,6 +113,11 @@ def _s3_credential_provider(bucket: str) -> "NasaEarthdataCredentialProvider | N
     return NasaEarthdataCredentialProvider(endpoint, auth=auth)
 
 
+# Public name for external callers (the inventory build script); the
+# leading-underscore original predates out-of-package use.
+s3_credential_provider = _s3_credential_provider
+
+
 class EarthdataIcechunkCredentialFetcher:
     """Picklable ``get_credentials`` for icechunk's refreshable S3 credentials.
 

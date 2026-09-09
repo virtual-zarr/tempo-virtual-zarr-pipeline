@@ -32,15 +32,15 @@ def _template(**overrides: object) -> Template:
 
 def test_inventory_build_project() -> None:
     """The project builds from the inventory-prefix source zip with the
-    in-repo buildspec, and outlives CodeBuild's 1 h default timeout (the
-    full header sweep takes hours)."""
+    in-repo buildspec, and outlives CodeBuild's 1 h default timeout (a
+    cold full sweep over direct S3, with margin)."""
     template = _template()
     template.resource_count_is("AWS::CodeBuild::Project", 1)
     template.has_resource_properties(
         "AWS::CodeBuild::Project",
         Match.object_like(
             {
-                "TimeoutInMinutes": 480,
+                "TimeoutInMinutes": 120,
                 "Source": Match.object_like(
                     {
                         "Type": "S3",
