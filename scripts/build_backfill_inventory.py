@@ -55,7 +55,7 @@ import statistics
 import sys
 import threading
 import time as time_module
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -100,36 +100,21 @@ def dedupe_republications(granules: list[Any]) -> list[Any]:
     return list(newest.values())
 
 
-def instrumented_reader(
-    read_time: Callable[[str], float],
-    total: int,
-    latencies: list[tuple[str, float]],
-) -> Callable[[str], float]:
-    """Wrap ``read_time`` with a progress line every PROGRESS_EVERY
-    completions and per-granule latency capture (retries included)."""
-    lock = threading.Lock()
-    done = 0
+def _timed_read(
+    read_time: Callable[[str], float], index: int, url: str
+) -> tuple[int, float, float, str | None]:
+    """One granule's read, timed, with the error carried as data.
 
-    def read(url: str) -> float:
-        nonlocal done
-        start = time_module.monotonic()
-        try:
-            return read_time(url)
-        finally:
-            with lock:
-                done += 1
-                n = done
-                latencies.append(
-                    (url.rsplit("/", 1)[-1], round(time_module.monotonic() - start, 3))
-                )
-            # Early ticks distinguish "warming up" from "stalled" within
-            # the first minute; a 250-granule first tick can be minutes
-            # away and reads as a hang (observed 2026-09-09).
-            if n in (10, 50) or n % PROGRESS_EVERY == 0 or n == total:
-                # flush: CodeBuild streams the log; Python buffers stderr pipes
-                print(f"  {n}/{total} headers read", file=sys.stderr, flush=True)
-
-    return read
+    Top-level so ProcessPoolExecutor can pickle it. Returns
+    ``(index, time_or_nan, latency_seconds, error_or_None)``.
+    """
+    start = time_module.monotonic()
+    try:
+        value = read_time(url)
+        return index, value, time_module.monotonic() - start, None
+    except Exception as error:
+        latency = time_module.monotonic() - start
+        return index, float("nan"), latency, f"{type(error).__name__}: {error}"
 
 
 def build_inventory(
@@ -142,6 +127,8 @@ def build_inventory(
     concept_id: str,
     workers: int = 4,
     known_times: dict[str, dict] | None = None,
+    use_processes: bool = False,
+    latencies: list[tuple[str, float]] | None = None,
 ) -> BackfillInventory:
     """Build the validated typed inventory for ``granules``.
 
@@ -150,9 +137,14 @@ def build_inventory(
     ``known_times`` is the previous run's sidecar cache
     (``{granule_ur: {"time": float, "revision": int}}``); a granule whose
     CMR revision matches its cached entry is not re-read — its /time
-    cannot have changed. Raises ``InventoryError`` or
-    ``pydantic.ValidationError`` for any set that cannot form a valid
-    axis.
+    cannot have changed. ``use_processes`` runs the sweep in a process
+    pool: h5py serializes every HDF5 call (network reads included) on
+    one process-wide lock, so threads never scale — measured 2026-09-09,
+    16 workers indistinguishable from serial. Requires a picklable
+    ``read_time`` (the module-level default is). ``latencies`` collects
+    ``(granule name, seconds)`` per read when given. Raises
+    ``InventoryError`` or ``pydantic.ValidationError`` for any set that
+    cannot form a valid axis.
     """
     if not granules:
         raise InventoryError("No granules matched the query")
@@ -187,17 +179,36 @@ def build_inventory(
     # on a ~17k-granule sweep, one bad granule at hour 6 must not discard
     # every completed read — finish the sweep, then report all failures.
     failures: list[tuple[str, str]] = []
-
-    def read_or_record(item: tuple[int, str]) -> tuple[int, float]:
-        index, url = item
-        try:
-            return index, read_time(url)
-        except Exception as error:
-            failures.append((url, f"{type(error).__name__}: {error}"))
-            return index, float("nan")
-
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        fresh = dict(pool.map(read_or_record, to_read))
+    fresh: dict[int, float] = {}
+    # ponytail: relies on Linux's default fork start method — COW shares
+    # the ~700 MB CMR result list with children instead of duplicating it
+    # into each of 8 workers on a 3 GB container. The only pre-fork
+    # thread is the lock-free RSS sampler, so the 3.12 multithreaded-fork
+    # warning is acceptable; switch to forkserver if children ever hang
+    # or when 3.14 changes the default.
+    executor_cls = ProcessPoolExecutor if use_processes else ThreadPoolExecutor
+    done = 0
+    with executor_cls(max_workers=workers) as pool:
+        futures = [
+            pool.submit(_timed_read, read_time, index, url) for index, url in to_read
+        ]
+        for future in as_completed(futures):
+            index, value, latency, error = future.result()
+            fresh[index] = value
+            url = read_urls[index]
+            if latencies is not None:
+                latencies.append((url.rsplit("/", 1)[-1], round(latency, 3)))
+            if error is not None:
+                failures.append((url, error))
+            done += 1
+            # Early ticks distinguish "warming up" from "stalled" within
+            # the first minute; a 250-granule first tick can be minutes
+            # away and reads as a hang (observed 2026-09-09). flush:
+            # CodeBuild streams the log; Python buffers stderr pipes.
+            if done in (10, 50) or done % PROGRESS_EVERY == 0 or done == len(to_read):
+                print(
+                    f"  {done}/{len(to_read)} headers read", file=sys.stderr, flush=True
+                )
     if failures:
         preview = "; ".join(f"{u.rsplit('/', 1)[-1]} ({e})" for u, e in failures[:3])
         raise InventoryError(
@@ -597,13 +608,15 @@ def main() -> int:
             granules,
             access=args.access,
             read_access=args.read_access,
-            # The progress denominator counts all granules; cache hits
-            # make it finish early — the "reused" line explains the gap.
-            read_time=instrumented_reader(read_granule_time, len(granules), latencies),
+            read_time=read_granule_time,
             collection_shortname=shortname,
             concept_id=concept_id,
             workers=args.workers,
             known_times=known_times,
+            # Processes, not threads: h5py's process-wide lock serializes
+            # every read a thread pool would make (see build_inventory).
+            use_processes=True,
+            latencies=latencies,
         )
         phases.append(("read+sort+validate", time_module.monotonic() - phase_start))
 

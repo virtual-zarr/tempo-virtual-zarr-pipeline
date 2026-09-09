@@ -77,3 +77,27 @@ def test_cache_roundtrip_local(tmp_path: pathlib.Path) -> None:
 
 def test_missing_cache_is_empty(tmp_path: pathlib.Path) -> None:
     assert bbi.load_time_cache(str(tmp_path / "nope.json")) == {}
+
+
+def _time_from_url(url: str) -> float:
+    """Module-level so the process pool can pickle it (fork on Linux)."""
+    return float(url.rsplit("g", 1)[-1].removesuffix(".nc"))
+
+
+def test_process_pool_sweep_matches_thread_results() -> None:
+    """The production path (use_processes=True) produces the same
+    inventory and per-granule latencies as the thread path."""
+    latencies: list[tuple[str, float]] = []
+    inventory = bbi.build_inventory(
+        [Granule("g3"), Granule("g1"), Granule("g2")],
+        access="direct",
+        read_time=_time_from_url,
+        collection_shortname="TEMPO_NO2_L3",
+        concept_id="C1",
+        workers=2,
+        use_processes=True,
+        latencies=latencies,
+    )
+    assert [e.granule_ur for e in inventory.granules] == ["g1", "g2", "g3"]
+    assert sorted(name for name, _ in latencies) == ["g1.nc", "g2.nc", "g3.nc"]
+    assert all(seconds >= 0 for _, seconds in latencies)
