@@ -9,6 +9,7 @@ snapshot.
 """
 
 import pickle
+from typing import Iterable
 
 from icechunk import Repository
 
@@ -26,18 +27,23 @@ def create_fork(repo: Repository, *, branch: str = "backfill") -> bytes:
 
 def merge_and_commit(
     repo: Repository,
-    child_fork_bytes: list[bytes],
+    child_fork_bytes: Iterable[bytes],
     *,
     branch: str = "backfill",
     message: str,
 ) -> str:
     """Open a fresh writable session, merge all child forks, and commit once.
 
+    Merges one fork at a time (icechunk's variadic merge is the same
+    pairwise loop), so a caller can stream blobs and only the accumulating
+    session plus one child are ever in memory — a full partition's blobs
+    held at once OOMed the 2026-09-09 NO2 backfill's reduce Lambda.
+
     Returns the new tip snapshot id.
     """
     session = repo.writable_session(branch)
-    forks = [pickle.loads(b) for b in child_fork_bytes]
-    session.merge(*forks)
+    for blob in child_fork_bytes:
+        session.merge(pickle.loads(blob))
     return session.commit(message)
 
 

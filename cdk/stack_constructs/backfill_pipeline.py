@@ -87,7 +87,10 @@ class BackfillPipeline(Construct):
                 ),
                 architecture=lmb.Architecture.X86_64,
                 timeout=Duration.minutes(15),
-                memory_size=2048,
+                # Reduce accumulates a whole partition's merged session
+                # (like the resort Lambda's 4096); the rest handle one
+                # batch or metadata only.
+                memory_size=4096 if action == "reduce" else 2048,
                 environment=dict(env),
             )
             if not icechunk_prefix:
