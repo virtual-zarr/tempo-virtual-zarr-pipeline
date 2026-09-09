@@ -315,6 +315,41 @@ class TestValidateGranule:
                 granule_template(), no_coord, coordinates={"latitude": LATITUDE}
             )
 
+    @staticmethod
+    def _template_with_coordinates() -> GroupSpec:
+        flat = granule_template().to_flat()
+        vc = flat["/vertical_column"]
+        flat["/vertical_column"] = vc.model_copy(
+            update={
+                "attributes": {
+                    **vc.attributes,
+                    "coordinates": "time latitude longitude",
+                }
+            }
+        )
+        return GroupSpec.from_flat(flat)
+
+    def test_coordinates_attribute_order_is_ignored(self) -> None:
+        # The DAAC emits the CF coordinates name list in varying order
+        # across granules; order carries no meaning.
+        reordered = granule(
+            var_attrs={
+                "units": "molecules/cm^2",
+                "coordinates": "time longitude latitude",
+            }
+        )
+        validate_granule(self._template_with_coordinates(), reordered)
+
+    def test_coordinates_attribute_different_names_raise(self) -> None:
+        renamed = granule(
+            var_attrs={
+                "units": "molecules/cm^2",
+                "coordinates": "time longitude altitude",
+            }
+        )
+        with pytest.raises(GranuleValidationError, match="coordinates"):
+            validate_granule(self._template_with_coordinates(), renamed)
+
     def test_differing_expected_attribute_raises(self) -> None:
         wrong_units = granule(var_attrs={"units": "DU"})
 
