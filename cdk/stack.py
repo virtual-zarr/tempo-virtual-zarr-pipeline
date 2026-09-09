@@ -825,9 +825,10 @@ class VirtualizarrSqsStack(Stack):
                 compute_type=codebuild.ComputeType.SMALL,
             ),
             environment_variables=env,
-            # The full ~13.6k-granule header sweep far exceeds the 1 h
-            # CodeBuild default (and Lambda's 15 min ceiling).
-            timeout=Duration.hours(8),
+            # Direct-S3 header reads put the full sweep well under an
+            # hour; 2 h leaves margin for a cold cache plus retries while
+            # still failing a wedged build the same morning it starts.
+            timeout=Duration.hours(2),
         )
         self.icechunk_bucket.grant_put(
             self.inventory_build, f"{settings.inventory_prefix}/*"

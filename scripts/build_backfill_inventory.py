@@ -35,8 +35,8 @@ stderr) — the numbers that size the CodeBuild container and the
 workers/timeout budget for a full ~17k-granule sweep.
 
 Built for one environment: the stack's us-west-2 CodeBuild project,
-which sets ``$EARTHDATA_TOKEN`` (required for the per-granule reads) and
-passes ``--access direct --read-access external``.
+which sets ``$EARTHDATA_TOKEN`` (required for the s3credentials exchange
+behind the direct-S3 header reads) and passes ``--access direct``.
 
 Usage:
     uv run scripts/build_backfill_inventory.py
@@ -199,12 +199,9 @@ def build_inventory(
     with ThreadPoolExecutor(max_workers=workers) as pool:
         fresh = dict(pool.map(read_or_record, to_read))
     if failures:
-        preview = "; ".join(
-            f"{u.rsplit('/', 1)[-1]} ({e})" for u, e in failures[:3]
-        )
+        preview = "; ".join(f"{u.rsplit('/', 1)[-1]} ({e})" for u, e in failures[:3])
         raise InventoryError(
-            f"{len(failures)} of {len(to_read)} granule reads failed — "
-            f"first: {preview}"
+            f"{len(failures)} of {len(to_read)} granule reads failed — first: {preview}"
         )
     times = [cached[i] if i in cached else fresh[i] for i in range(len(deduped))]
 
@@ -602,9 +599,7 @@ def main() -> int:
             read_access=args.read_access,
             # The progress denominator counts all granules; cache hits
             # make it finish early — the "reused" line explains the gap.
-            read_time=instrumented_reader(
-                read_granule_time, len(granules), latencies
-            ),
+            read_time=instrumented_reader(read_granule_time, len(granules), latencies),
             collection_shortname=shortname,
             concept_id=concept_id,
             workers=args.workers,

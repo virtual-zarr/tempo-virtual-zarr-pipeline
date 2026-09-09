@@ -18,5 +18,6 @@ phases:
       - uv run scripts/build_backfill_inventory.py
         --collection "$COLLECTION"
         --access direct
+        --workers 8
         ${MAX_COUNT:+--max-count "$MAX_COUNT"}
         --s3-uri "$S3_URI"
