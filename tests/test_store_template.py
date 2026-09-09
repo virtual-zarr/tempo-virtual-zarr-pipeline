@@ -287,6 +287,10 @@ class TestStripAttributes:
     def test_tempo_volatile_list_covers_profiled_attrs(self) -> None:
         assert "history" in TEMPO_L3_VOLATILE_ATTRIBUTES
         assert "time_coverage_start" in TEMPO_L3_VOLATILE_ATTRIBUTES
+        # The DAAC's processing-software version drifts across the archive
+        # within one collection version (v4.8.2 granules from 2023 vs a
+        # v4.8.4-generated template failed the 2026-09-09 NO2 backfill).
+        assert "sdpc_version" in TEMPO_L3_VOLATILE_ATTRIBUTES
 
 
 class TestValidateGranule:

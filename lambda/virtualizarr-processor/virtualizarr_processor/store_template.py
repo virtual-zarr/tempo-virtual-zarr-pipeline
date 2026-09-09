@@ -66,6 +66,12 @@ TEMPO_L3_VOLATILE_ATTRIBUTES: frozenset[str] = frozenset(
         "coremetadata",
         "REFERENCE_LIST",
         "DIMENSION_LIST",
+        # The DAAC's processing-software version: bumped mid-archive
+        # without reprocessing older granules (2023 NO2 granules carry
+        # v4.8.2, the v4.8.4-era template's expectation), and the next
+        # bump would hit forward processing the same way. Metadata-only:
+        # store attributes come from the template, never the granule.
+        "sdpc_version",
     }
 )
 
