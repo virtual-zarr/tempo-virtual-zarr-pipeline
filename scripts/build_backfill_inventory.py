@@ -138,48 +138,72 @@ def build_inventory(
     collection_shortname: str,
     concept_id: str,
     workers: int = 4,
+    known_times: dict[str, dict] | None = None,
 ) -> BackfillInventory:
     """Build the validated typed inventory for ``granules``.
 
     ``read_time(url) -> float`` supplies each granule's exact in-file
-    time; it is injectable so the logic can be tested offline. Raises
-    ``InventoryError`` or ``pydantic.ValidationError`` for any set that
-    cannot form a valid axis.
+    time; it is injectable so the logic can be tested offline.
+    ``known_times`` is the previous run's sidecar cache
+    (``{granule_ur: {"time": float, "revision": int}}``); a granule whose
+    CMR revision matches its cached entry is not re-read — its /time
+    cannot have changed. Raises ``InventoryError`` or
+    ``pydantic.ValidationError`` for any set that cannot form a valid
+    axis.
     """
     if not granules:
         raise InventoryError("No granules matched the query")
     deduped = dedupe_republications(granules)
     urls = [data_link(granule, access) for granule in deduped]
-    # Recorded link flavor and read transport are independent: CodeBuild
-    # can't read s3:// (earthaccess#444) but must record it for the workers.
+    # Recorded link flavor and read transport are independent; both are
+    # normally the same direct s3:// links now that reads go over S3.
     read_urls = (
         urls
         if read_access in (None, access)
         else [data_link(granule, read_access) for granule in deduped]
     )
 
+    known_times = known_times or {}
+    cached: dict[int, float] = {}
+    to_read: list[tuple[int, str]] = []
+    for i, granule in enumerate(deduped):
+        ur = str(granule["umm"].get("GranuleUR", granule["meta"]["concept-id"]))
+        entry = known_times.get(ur)
+        if entry is not None and entry.get("revision") == _revision(granule):
+            cached[i] = float(entry["time"])
+        else:
+            to_read.append((i, read_urls[i]))
+    if cached:
+        print(
+            f"  {len(cached)} of {len(deduped)} times reused from the "
+            "previous inventory's sidecar cache",
+            file=sys.stderr,
+        )
+
     # Collect failures instead of letting the first one abort the pool:
     # on a ~17k-granule sweep, one bad granule at hour 6 must not discard
     # every completed read — finish the sweep, then report all failures.
     failures: list[tuple[str, str]] = []
 
-    def read_or_record(url: str) -> float:
+    def read_or_record(item: tuple[int, str]) -> tuple[int, float]:
+        index, url = item
         try:
-            return read_time(url)
+            return index, read_time(url)
         except Exception as error:
             failures.append((url, f"{type(error).__name__}: {error}"))
-            return float("nan")
+            return index, float("nan")
 
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        times = list(pool.map(read_or_record, read_urls))
+        fresh = dict(pool.map(read_or_record, to_read))
     if failures:
         preview = "; ".join(
             f"{u.rsplit('/', 1)[-1]} ({e})" for u, e in failures[:3]
         )
         raise InventoryError(
-            f"{len(failures)} of {len(read_urls)} granule reads failed — "
+            f"{len(failures)} of {len(to_read)} granule reads failed — "
             f"first: {preview}"
         )
+    times = [cached[i] if i in cached else fresh[i] for i in range(len(deduped))]
 
     entries = sorted(
         (
@@ -309,6 +333,46 @@ def search_granules(concept_id: str, start: str | None, end: str | None) -> list
     if start or end:
         kwargs["temporal"] = (start, end)
     return list(earthaccess.search_data(**kwargs))
+
+
+def _cache_uri(s3_uri_or_path: str) -> str:
+    return f"{s3_uri_or_path}.times.json"
+
+
+def load_time_cache(s3_uri_or_path: str) -> dict[str, dict]:
+    """Previous run's ``{granule_ur: {time, revision}}`` sidecar, or {}.
+
+    A granule's /time never changes for a given CMR revision, so a
+    rebuild only needs to read granules that are new or republished —
+    the cache makes full rebuilds incremental.
+    """
+    import json
+
+    uri = _cache_uri(s3_uri_or_path)
+    try:
+        if uri.startswith("s3://"):
+            import boto3
+
+            bucket, _, key = uri.removeprefix("s3://").partition("/")
+            body = boto3.client("s3").get_object(Bucket=bucket, Key=key)["Body"]
+            return dict(json.loads(body.read()))
+        return dict(json.loads(Path(uri).read_text()))
+    except Exception:
+        return {}  # first run, missing sidecar, or unreadable: full sweep
+
+
+def save_time_cache(s3_uri_or_path: str, cache: dict[str, dict]) -> None:
+    import json
+
+    uri = _cache_uri(s3_uri_or_path)
+    data = json.dumps(cache).encode()
+    if uri.startswith("s3://"):
+        import boto3
+
+        bucket, _, key = uri.removeprefix("s3://").partition("/")
+        boto3.client("s3").put_object(Bucket=bucket, Key=key, Body=data)
+    else:
+        Path(uri).write_bytes(data)
 
 
 def upload(path: Path, s3_uri: str) -> None:
@@ -517,6 +581,12 @@ def main() -> int:
         if not granules:
             raise InventoryError("No granules matched the query")
         shortname = str(granules[0]["umm"]["CollectionReference"]["ShortName"])
+        # UR -> CMR revision, for the sidecar cache written after upload.
+        revisions = {
+            str(g["umm"].get("GranuleUR", g["meta"]["concept-id"])): _revision(g)
+            for g in granules
+        }
+        known_times = load_time_cache(args.s3_uri) if args.s3_uri else {}
         print(
             f"Reading exact /time from {len(granules)} granule headers "
             f"({args.workers} workers)...",
@@ -527,12 +597,15 @@ def main() -> int:
             granules,
             access=args.access,
             read_access=args.read_access,
+            # The progress denominator counts all granules; cache hits
+            # make it finish early — the "reused" line explains the gap.
             read_time=instrumented_reader(
                 read_granule_time, len(granules), latencies
             ),
             collection_shortname=shortname,
             concept_id=concept_id,
             workers=args.workers,
+            known_times=known_times,
         )
         phases.append(("read+sort+validate", time_module.monotonic() - phase_start))
 
@@ -544,6 +617,16 @@ def main() -> int:
         if args.s3_uri:
             upload(output, args.s3_uri)
             print(f"Uploaded to {args.s3_uri}", file=sys.stderr)
+            save_time_cache(
+                args.s3_uri,
+                {
+                    e.granule_ur: {
+                        "time": e.time,
+                        "revision": revisions.get(e.granule_ur, 0),
+                    }
+                    for e in inventory.granules
+                },
+            )
             print(
                 f"Start the run with: scripts/start_backfill.sh <name> {args.s3_uri}",
                 file=sys.stderr,
