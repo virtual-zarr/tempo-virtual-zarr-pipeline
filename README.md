@@ -720,6 +720,11 @@ in `~/.netrc`.
   realistic S3-hosted store (100 recent granules, credential-less virtual
   chunk container); run on in-region compute.
 
+[`benchmark_no2_event.ipynb`](./exploration/benchmark_no2_event.ipynb)
+implements an event-based comparison of file-based netCDF access with Virtual
+Zarr / Icechunk, including point and AOI workloads, correctness gates,
+instrumentation, scientific analysis, and visualization.
+
 The production inventory builder
 ([`scripts/build_backfill_inventory.py`](./scripts/build_backfill_inventory.py),
 described above) lives in `scripts/` with the other production tooling; it
