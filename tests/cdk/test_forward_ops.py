@@ -158,6 +158,20 @@ def test_alarms_cover_dlq_consumer_and_scheduled_jobs() -> None:
     _template(BACKFILL_ENABLED=True).resource_count_is("AWS::CloudWatch::Alarm", 2)
 
 
+def test_alarm_notifications_are_readable_and_actionable() -> None:
+    """The SNS email leads with the alarm name and shows only the
+    description beyond raw metric math — the name must be the stack-prefixed
+    construct id (not the CDK physical-ID hash) and every description must
+    say where to look or what to do next."""
+    alarms = _template().find_resources("AWS::CloudWatch::Alarm")
+    assert alarms
+    for alarm in alarms.values():
+        props = alarm["Properties"]
+        assert props["AlarmName"].startswith("virtualizarr-data-pipelines-")
+        description = props["AlarmDescription"]
+        assert "logs" in description or "redrive" in description
+
+
 def test_alarm_email_wires_an_sns_topic() -> None:
     _template().resource_count_is("AWS::SNS::Topic", 0)
     with_email = _template(ALARM_EMAIL="ops@example.com")

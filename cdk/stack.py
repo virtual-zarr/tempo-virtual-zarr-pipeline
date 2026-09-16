@@ -149,7 +149,11 @@ class VirtualizarrSqsStack(Stack):
             self.dlq.metric_approximate_number_of_messages_visible(
                 period=Duration.minutes(5), statistic="Maximum"
             ),
-            "Granules were rejected to the dead-letter queue",
+            "Granules were rejected to the dead-letter queue after exhausting "
+            "their 20 receives. The store is missing them, SQS never retries "
+            "out of the DLQ, and they expire 14 days after original enqueue. "
+            "Triage the messages in the DLQ and redrive them to the source "
+            "queue.",
         )
 
         # Dashboard top-line tiles: is the store fresh, is the queue moving,
@@ -291,7 +295,11 @@ class VirtualizarrSqsStack(Stack):
         self._alarm(
             "ConsumerErrorsAlarm",
             self.process_messages_lambda.metric_errors(period=Duration.minutes(5)),
-            "The forward-processing consumer failed",
+            "The forward-processing consumer errored. SQS retries each "
+            "granule up to 20 times, so a blip self-heals, but sustained "
+            "errors stall the store and end in the dead-letter queue. Check "
+            "the consumer Lambda's CloudWatch logs (the FunctionName "
+            "dimension below) for the traceback.",
         )
 
         # Dashboard forward-processing section (queue and consumer are
@@ -586,7 +594,10 @@ class VirtualizarrSqsStack(Stack):
             self._alarm(
                 "ResortErrorsAlarm",
                 self.resort_lambda.metric_errors(period=Duration.hours(1)),
-                "The scheduled re-sort job failed",
+                "The scheduled re-sort job failed, so out-of-order granules "
+                "stay parked and the pending ledger grows with every poll. "
+                "Check the re-sort Lambda's CloudWatch logs (the FunctionName "
+                "dimension below) around the alarm time.",
             )
             self._widgets.append(
                 cloudwatch.GraphWidget(
@@ -661,7 +672,11 @@ class VirtualizarrSqsStack(Stack):
             self._alarm(
                 "PollerErrorsAlarm",
                 self.cmr_poller_lambda.metric_errors(period=Duration.hours(1)),
-                "The scheduled CMR poller failed",
+                "The scheduled CMR poller failed: nothing is feeding the "
+                "queue, so the store goes stale until it recovers. Check the "
+                "poller Lambda's CloudWatch logs (the FunctionName dimension "
+                "below). The poll watermark only advances on success, so the "
+                "next clean run re-covers the gap by itself.",
             )
             self._widgets.append(
                 cloudwatch.GraphWidget(
@@ -878,6 +893,10 @@ class VirtualizarrSqsStack(Stack):
         alarm = cloudwatch.Alarm(
             self,
             construct_id,
+            # Explicit name: the SNS email's subject and body lead with the
+            # alarm name, and the default physical ID is unreadable
+            # (tempo-no2-ResortErrorsAlarm526A8D9F-jdsanKVkTBkf).
+            alarm_name=f"{self.stack_name}-{construct_id}",
             metric=metric,
             threshold=threshold,
             comparison_operator=(cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD),
@@ -932,8 +951,12 @@ class VirtualizarrSqsStack(Stack):
             self._alarm(
                 "AxisEndLagAlarm",
                 self._custom_metric("AxisEndLag", period=Duration.hours(1)),
-                "The store's time axis is more than 24 h stale, "
-                "or its freshness metric stopped arriving for 24 h",
+                "The store's time axis is more than 24 h stale, or its "
+                "freshness metric stopped arriving for 24 h: the upstream "
+                "product paused, or the poller/consumer/re-sort stalled "
+                "(check the dashboard and their logs). Note a freshly "
+                "deployed stack spends its first day in ALARM "
+                "(pre-creation hours evaluate as missing).",
                 threshold=86400,
                 evaluation_periods=24,
                 treat_missing_data=cloudwatch.TreatMissingData.BREACHING,
