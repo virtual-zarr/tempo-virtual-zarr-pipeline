@@ -1,4 +1,4 @@
-"""Measure how often CMR publishes TEMPO granules out of scan-time order.
+"""Measure TEMPO publication behavior: out-of-order rate and production lag.
 
 Re-derives the design doc's "fact 8" (~7% of adjacent pairs swapped,
 ~0.4% republished) instead of leaving it folklore: fetches the granules
@@ -41,6 +41,7 @@ class Granule:
     published: datetime  # meta revision-date (latest revision)
     revision_id: int
     scan_start: datetime  # umm BeginningDateTime
+    production: datetime | None = None  # umm DataGranule.ProductionDateTime
 
 
 @dataclass(frozen=True)
@@ -86,13 +87,66 @@ def measure(granules: list[Granule], swap_window: timedelta) -> Report:
     )
 
 
+@dataclass(frozen=True)
+class LagReport:
+    fresh: int
+    median: timedelta | None  # scan start -> CMR publication
+    p90: timedelta | None
+    median_production: timedelta | None  # scan start -> ProductionDateTime
+    median_delivery: timedelta | None  # ProductionDateTime -> CMR publication
+
+
+def _percentile(deltas: list[timedelta], q: float) -> timedelta:
+    ordered = sorted(deltas)
+    return ordered[min(int(q * len(ordered)), len(ordered) - 1)]
+
+
+def measure_lag(granules: list[Granule], window_start: datetime) -> LagReport:
+    """Publication lag of fresh scans: scan start -> CMR revision date.
+
+    Only scans from inside the lookback window count — a historical
+    arrival would report its multi-year archive delay as "lag". Granules
+    revised beyond the sample's baseline revision are excluded too: CMR
+    keeps only the latest revision's date, which measures the redelivery,
+    not first publication. Where ``ProductionDateTime`` is present the
+    median is split into processing (scan -> production) and delivery
+    (production -> publication).
+    """
+    baseline = min((g.revision_id for g in granules), default=1)
+    fresh = [
+        g
+        for g in granules
+        if g.scan_start >= window_start and g.revision_id == baseline
+    ]
+    if not fresh:
+        return LagReport(0, None, None, None, None)
+    lags = [g.published - g.scan_start for g in fresh]
+    processing = [
+        g.production - g.scan_start for g in fresh if g.production is not None
+    ]
+    delivery = [g.published - g.production for g in fresh if g.production is not None]
+    return LagReport(
+        fresh=len(fresh),
+        median=_percentile(lags, 0.5),
+        p90=_percentile(lags, 0.9),
+        median_production=_percentile(processing, 0.5) if processing else None,
+        median_delivery=_percentile(delivery, 0.5) if delivery else None,
+    )
+
+
+def _hours(delta: timedelta | None) -> str:
+    return "n/a" if delta is None else f"{delta.total_seconds() / 3600:.1f} h"
+
+
 def parse_granule(item: dict[str, Any]) -> Granule:
     meta = item["meta"]
     begin = item["umm"]["TemporalExtent"]["RangeDateTime"]["BeginningDateTime"]
+    production = item["umm"].get("DataGranule", {}).get("ProductionDateTime")
     return Granule(
         published=_parse_iso(meta["revision-date"]),
         revision_id=int(meta["revision-id"]),
         scan_start=_parse_iso(begin),
+        production=_parse_iso(production) if production else None,
     )
 
 
@@ -159,6 +213,20 @@ def main() -> int:
         f"  republished (revised beyond ingest baseline): {report.republished} "
         f"({report.republished_pct:.1f}%)"
     )
+    lag = measure_lag(granules, since)
+    if lag.fresh:
+        print(
+            f"  production lag, scan start -> CMR publication "
+            f"({lag.fresh} fresh scans): median {_hours(lag.median)}, "
+            f"p90 {_hours(lag.p90)}"
+        )
+        if lag.median_production is not None:
+            processing, delivery = (
+                _hours(lag.median_production),
+                _hours(lag.median_delivery),
+            )
+            print(f"    scan -> ProductionDateTime: median {processing}")
+            print(f"    ProductionDateTime -> publication: median {delivery}")
     return 0
 
 
