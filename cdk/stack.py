@@ -159,7 +159,17 @@ class VirtualizarrSqsStack(Stack):
         # Dashboard top-line tiles: is the store fresh, is the queue moving,
         # is anything dead-lettered, how far behind is the pending ledger.
         for title, metric in (
-            ("Store freshness", self._custom_metric("AxisEndLag")),
+            (
+                # Total scan->store lag: includes ~3.5 h of upstream
+                # production+publication even when the pipeline is instant
+                # — the "Lag attribution (hours)" widget splits it.
+                "Store lag (scan -> store)",
+                cloudwatch.MathExpression(
+                    expression="lag/3600",
+                    label="hours",
+                    using_metrics={"lag": self._custom_metric("AxisEndLag")},
+                ),
+            ),
             (
                 "Queue oldest message age",
                 self.queue.metric_approximate_age_of_oldest_message(
@@ -334,8 +344,12 @@ class VirtualizarrSqsStack(Stack):
                     self.process_messages_lambda.metric_duration(statistic=statistic)
                     for statistic in ("p50", "p95", "Maximum")
                 ],
+                # No Throttles here: reserved concurrency 1 makes throttling
+                # the by-design single-writer backpressure, and a benign
+                # 70-count burst auto-scales to the same height as the
+                # timeout annotation, faking timeouts. Queue pressure reads
+                # from the "Queue oldest message age" tile instead.
                 right=[
-                    self.process_messages_lambda.metric_throttles(statistic="Sum"),
                     self._custom_metric("CommitFailures", statistic="Sum"),
                 ],
                 # The 5-min function timeout is what kills an invocation; the
