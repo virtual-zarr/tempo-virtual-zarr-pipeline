@@ -249,10 +249,10 @@ def test_dashboard_queries_only_emitted_metric_names() -> None:
     assert queried and queried <= emitted, queried - emitted
 
 
-def test_store_lag_tile_reads_in_hours() -> None:
-    """The headline number bundles upstream production lag (~3.5 h even
-    when the pipeline is instant) with pipeline lag — name it as total
-    scan->store lag and show hours, not a raw 12600 seconds."""
+def test_store_lag_tile_shows_raw_seconds_for_console_humanization() -> None:
+    """The tile shows AxisEndLag raw: the Seconds unit makes the console
+    humanize the value ("4.2 hr"), while /3600 math keeps the Seconds unit
+    on the divided number and captions hours as seconds (observed live)."""
     widget = _widget(_template(), "Store lag (scan -> store)")
     flat = json.dumps(widget)
-    assert "/3600" in flat and "AxisEndLag" in flat
+    assert "AxisEndLag" in flat and "/3600" not in flat

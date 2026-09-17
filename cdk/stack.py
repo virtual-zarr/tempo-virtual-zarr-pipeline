@@ -161,19 +161,13 @@ class VirtualizarrSqsStack(Stack):
         for title, metric in (
             (
                 # Total scan->store lag: includes ~3.5 h of upstream
-                # production+publication even when the pipeline is instant
-                # — the "Lag attribution (hours)" widget splits it.
+                # production+publication even when the pipeline is instant.
+                # Raw seconds on purpose: the metric's Seconds unit makes
+                # the console humanize the value ("4.2 hr"), while any /3600
+                # math keeps the Seconds unit on the divided number and
+                # captions hours as seconds.
                 "Store lag (scan -> store)",
-                cloudwatch.MathExpression(
-                    # CEIL strips the source unit: scalar math alone keeps
-                    # AxisEndLag's "Seconds", and the tile would caption the
-                    # hours value with "Seconds". Function results carry no
-                    # unit; ceiling whole seconds before /3600 is lossless
-                    # at display precision.
-                    expression="CEIL(lag)/3600",
-                    label="hours",
-                    using_metrics={"lag": self._custom_metric("AxisEndLag")},
-                ),
+                self._custom_metric("AxisEndLag"),
             ),
             (
                 "Queue oldest message age",
