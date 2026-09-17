@@ -159,7 +159,17 @@ class VirtualizarrSqsStack(Stack):
         # Dashboard top-line tiles: is the store fresh, is the queue moving,
         # is anything dead-lettered, how far behind is the pending ledger.
         for title, metric in (
-            ("Store freshness", self._custom_metric("AxisEndLag")),
+            (
+                # Total scan->store lag: includes ~3.5 h of upstream
+                # production+publication even when the pipeline is instant
+                # — the "Lag attribution (hours)" widget splits it.
+                "Store lag (scan -> store)",
+                cloudwatch.MathExpression(
+                    expression="lag/3600",
+                    label="hours",
+                    using_metrics={"lag": self._custom_metric("AxisEndLag")},
+                ),
+            ),
             (
                 "Queue oldest message age",
                 self.queue.metric_approximate_age_of_oldest_message(
