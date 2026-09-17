@@ -344,8 +344,12 @@ class VirtualizarrSqsStack(Stack):
                     self.process_messages_lambda.metric_duration(statistic=statistic)
                     for statistic in ("p50", "p95", "Maximum")
                 ],
+                # No Throttles here: reserved concurrency 1 makes throttling
+                # the by-design single-writer backpressure, and a benign
+                # 70-count burst auto-scales to the same height as the
+                # timeout annotation, faking timeouts. Queue pressure reads
+                # from the "Queue oldest message age" tile instead.
                 right=[
-                    self.process_messages_lambda.metric_throttles(statistic="Sum"),
                     self._custom_metric("CommitFailures", statistic="Sum"),
                 ],
                 # The 5-min function timeout is what kills an invocation; the

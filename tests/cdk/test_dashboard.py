@@ -247,6 +247,8 @@ def test_dashboard_queries_only_emitted_metric_names() -> None:
         definition[1] for definition in _dashboard_metrics(_template(backfill=True))
     }
     assert queried and queried <= emitted, queried - emitted
+
+
 def test_store_lag_tile_reads_in_hours() -> None:
     """The headline number bundles upstream production lag (~3.5 h even
     when the pipeline is instant) with pipeline lag — name it as total
