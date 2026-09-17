@@ -165,7 +165,12 @@ class VirtualizarrSqsStack(Stack):
                 # — the "Lag attribution (hours)" widget splits it.
                 "Store lag (scan -> store)",
                 cloudwatch.MathExpression(
-                    expression="lag/3600",
+                    # CEIL strips the source unit: scalar math alone keeps
+                    # AxisEndLag's "Seconds", and the tile would caption the
+                    # hours value with "Seconds". Function results carry no
+                    # unit; ceiling whole seconds before /3600 is lossless
+                    # at display precision.
+                    expression="CEIL(lag)/3600",
                     label="hours",
                     using_metrics={"lag": self._custom_metric("AxisEndLag")},
                 ),
