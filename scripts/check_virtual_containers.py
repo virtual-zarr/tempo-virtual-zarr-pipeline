@@ -26,7 +26,8 @@ version history.
 The store defaults to the processor's environment variables
 ($ICECHUNK_BUCKET, $S3_PREFIX/$ICECHUNK_PREFIX, $ICECHUNK_REGION).
 ``--bucket``/``--prefix`` and friends point it somewhere else, such as a
-published copy. Reading chunks needs Earthdata credentials either way.
+published copy. Store credentials come from boto3 (so --profile and
+AWS_PROFILE work); reading chunks needs Earthdata credentials either way.
 
 Usage:
     uv run --env-file .env_no2 scripts/check_virtual_containers.py
@@ -43,6 +44,7 @@ import os
 import sys
 from typing import Any, cast
 
+import boto3
 import icechunk
 import numpy as np
 import zarr
@@ -113,23 +115,44 @@ def read_one_chunk(repo: icechunk.Repository) -> str:
     return f"{name}{list(index)} = {value}"
 
 
-def resolve_region(explicit: str | None) -> str:
-    """The store's region, from the flag or the usual environment variables.
+def resolve_region(explicit: str | None, session_region: str | None) -> str:
+    """The store's region, preferring the deployment's own variable.
 
     Left unset, icechunk asks EC2's instance metadata service for a default
     and fails on anything that is not an EC2 instance, several frames deep
-    in an unrelated-looking dispatch error. The deployed environment sets
-    ICECHUNK_REGION; a laptop or CloudShell usually has AWS_REGION.
+    in a dispatch error that never mentions the region.
     """
-    for value in (
-        explicit,
-        os.environ.get("ICECHUNK_REGION"),
-        os.environ.get("AWS_REGION"),
-        os.environ.get("AWS_DEFAULT_REGION"),
-    ):
+    for value in (explicit, os.environ.get("ICECHUNK_REGION"), session_region):
         if value:
             return value
-    raise SystemExit("no region: pass --region, or set ICECHUNK_REGION or AWS_REGION")
+    raise SystemExit(
+        "no region: pass --region, or set ICECHUNK_REGION or AWS_REGION, "
+        "or give the profile one"
+    )
+
+
+def store_credentials(session: boto3.Session) -> dict[str, str | None]:
+    """Static S3 credentials for the store, resolved by boto3.
+
+    icechunk's own from_env path defers to the AWS SDK for Rust, which
+    reports finding nothing as a dispatch failure from whichever call
+    needed the credentials. boto3 walks the same chain (environment, shared
+    credentials file, SSO, container and instance roles) and says so
+    plainly. They are resolved once and passed as static values, so a run
+    outliving a short-lived session token would have to be repeated.
+    """
+    credentials = session.get_credentials()
+    if credentials is None:
+        raise SystemExit(
+            "no AWS credentials: pass --profile, or set AWS_PROFILE or "
+            "AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY"
+        )
+    frozen = credentials.get_frozen_credentials()
+    return {
+        "access_key_id": frozen.access_key,
+        "secret_access_key": frozen.secret_key,
+        "session_token": frozen.token,
+    }
 
 
 def open_storage(args: argparse.Namespace) -> icechunk.Storage:
@@ -144,7 +167,9 @@ def open_storage(args: argparse.Namespace) -> icechunk.Storage:
             "pass --bucket/--prefix, or set ICECHUNK_BUCKET and "
             "S3_PREFIX/ICECHUNK_PREFIX, or ICECHUNK_LOCAL_PATH"
         )
-    region = resolve_region(args.region)
+    session = boto3.Session(profile_name=args.profile)
+    region = resolve_region(args.region, session.region_name)
+    credentials = {} if args.anonymous else store_credentials(session)
     print(f"store:        s3://{bucket}/{prefix} ({region})", file=sys.stderr)
     return icechunk.s3_storage(
         bucket=bucket,
@@ -152,7 +177,7 @@ def open_storage(args: argparse.Namespace) -> icechunk.Storage:
         region=region,
         endpoint_url=args.endpoint_url,
         anonymous=args.anonymous or None,
-        from_env=None if args.anonymous else True,
+        **credentials,  # type: ignore[arg-type]
     )
 
 
@@ -161,6 +186,7 @@ def main() -> int:
     parser.add_argument("--bucket")
     parser.add_argument("--prefix")
     parser.add_argument("--region")
+    parser.add_argument("--profile", help="AWS profile to read the store with")
     parser.add_argument("--endpoint-url", help="for S3-compatible stores")
     parser.add_argument(
         "--anonymous", action="store_true", help="read the store without credentials"

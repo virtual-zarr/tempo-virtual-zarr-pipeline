@@ -9,6 +9,8 @@ import pathlib
 import pickle
 import sys
 
+import boto3
+import botocore.session
 import check_virtual_containers
 import icechunk
 import pytest
@@ -58,18 +60,41 @@ def break_persisted_container(path: pathlib.Path) -> None:
     icechunk.Repository.open(storage=storage, config=config).save_config()
 
 
-def test_region_falls_back_to_the_aws_variables(
+def test_region_falls_back_to_the_session_before_giving_up(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    for name in ("ICECHUNK_REGION", "AWS_REGION", "AWS_DEFAULT_REGION"):
-        monkeypatch.delenv(name, raising=False)
+    monkeypatch.delenv("ICECHUNK_REGION", raising=False)
+    resolve = check_virtual_containers.resolve_region
     # Unset, icechunk would ask EC2's metadata service and fail off EC2.
     with pytest.raises(SystemExit):
-        check_virtual_containers.resolve_region(None)
+        resolve(None, None)
 
-    monkeypatch.setenv("AWS_REGION", "us-west-2")
-    assert check_virtual_containers.resolve_region(None) == "us-west-2"
-    assert check_virtual_containers.resolve_region("us-east-1") == "us-east-1"
+    assert resolve(None, "us-west-2") == "us-west-2"
+    assert resolve("us-east-1", "us-west-2") == "us-east-1"
+    monkeypatch.setenv("ICECHUNK_REGION", "eu-west-1")
+    assert resolve(None, "us-west-2") == "eu-west-1"
+
+
+def test_missing_credentials_are_reported_not_deferred_to_icechunk() -> None:
+    empty = boto3.Session(botocore_session=botocore.session.Session())
+    empty.get_credentials = lambda: None  # type: ignore[method-assign]
+    # The point is that this is a SystemExit naming the fix, rather than
+    # icechunk's dispatch failure from whichever call needed credentials.
+    with pytest.raises(SystemExit):
+        check_virtual_containers.store_credentials(empty)
+
+
+def test_credentials_are_frozen_for_icechunk() -> None:
+    session = boto3.Session(
+        aws_access_key_id="AKIAEXAMPLE",
+        aws_secret_access_key="secret",
+        aws_session_token="token",
+    )
+    assert check_virtual_containers.store_credentials(session) == {
+        "access_key_id": "AKIAEXAMPLE",
+        "secret_access_key": "secret",
+        "session_token": "token",
+    }
 
 
 def test_uncovered_urls_reports_one_prefix_per_location() -> None:
