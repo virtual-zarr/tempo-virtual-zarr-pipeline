@@ -14,6 +14,9 @@ COLLECTIONS = {
 }
 DEFAULT_COLLECTION = "hcho"
 
+# The pipeline's S3 store for a collection: STORE_URI.format("hcho" | "no2").
+STORE_URI = "s3://airquality-data-store-develop/tempo/{}/v04"
+
 # Smoke-test variable subset per collection: primary column variable + quality flag.
 VARIABLES = {
     "hcho": ["vertical_column", "main_data_quality_flag"],

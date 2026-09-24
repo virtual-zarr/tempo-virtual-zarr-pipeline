@@ -26,13 +26,14 @@ BACKOFF_SECONDS = (10, 30, 60)
 
 
 def earthdata_token() -> str:
-    earthaccess.login(strategy="netrc")
+    earthaccess.login()  # tries env vars, then ~/.netrc, then a prompt
     token: str | None = (getattr(earthaccess.__auth__, "token", None) or {}).get(
         "access_token"
     )
     if not token:
         raise RuntimeError(
-            "earthaccess.login() produced no bearer token; check ~/.netrc"
+            "earthaccess.login() produced no bearer token; "
+            "set EARTHDATA_TOKEN or configure ~/.netrc"
         )
     return token
 
