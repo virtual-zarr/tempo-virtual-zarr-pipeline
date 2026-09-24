@@ -17,11 +17,13 @@ is in place before step 3 writes it. If a run dies partway the destination
 keeps its previous repo file and the next run catches up. Source commits
 made during a run are picked up by the next one.
 
-Source Coop is a separate account behind its own endpoint, so objects are
-streamed through this process instead of copied server-side. That is
-affordable here because the store holds metadata, coordinates and
-byte-range references (a few GB), not granule data. Readers still need
-Earthdata Login to fetch the chunk bytes.
+The destination is a separate account reached with its own credentials, so
+there is no single identity that can read the source and write the
+destination: objects are streamed through this process rather than copied
+server-side. That is affordable because the store holds metadata,
+coordinates and byte-range references (a few GB), not granule data, and
+because both ends are in us-west-2. Readers still need Earthdata Login to
+fetch the chunk bytes.
 
 Nothing is ever deleted from the destination.
 
@@ -32,6 +34,12 @@ $SOURCE_COOP_SECRET_ACCESS_KEY and optionally
 $SOURCE_COOP_SESSION_TOKEN. Source Coop issues its own keys; AWS
 credentials are not accepted there, so these are required rather than
 falling back to the ambient chain.
+
+The destination defaults to Source Coop's direct-S3 address: the real
+bucket us-west-2.opendata.source.coop in us-west-2, with the account and
+repository as leading key segments (pangeo/tempo-virtual-icechunk/).
+--dest-bucket, --dest-region and --dest-endpoint reach the same
+repository through the data.source.coop endpoint instead.
 
 Usage:
     uv run --env-file .env_no2 scripts/mirror_to_source_coop.py --dry-run
@@ -55,10 +63,13 @@ IMMUTABLE_PREFIXES = ("snapshots", "manifests", "transactions", "chunks")
 REPO_INFO_KEY = "repo"  # icechunk-format's REPO_INFO_FILE_PATH
 CONFIG_KEY = "config.yaml"
 
-DEST_ENDPOINT = "https://data.source.coop"
-DEST_REGION = "us-east-1"
-DEST_BUCKET = "pangeo"
-DEST_ROOT = "tempo-virtual-icechunk"
+# Source Coop's direct-S3 address: a real bucket in us-west-2, with the
+# account and repository as the leading key segments. The data.source.coop
+# endpoint is the other way in; --dest-endpoint switches to it.
+DEST_ENDPOINT = None
+DEST_REGION = "us-west-2"
+DEST_BUCKET = "us-west-2.opendata.source.coop"
+DEST_ROOT = "pangeo/tempo-virtual-icechunk"
 
 
 def source_client(region: str | None) -> Any:
@@ -81,31 +92,41 @@ def source_client(region: str | None) -> Any:
     return boto3.client("s3", region_name=resolved, config=config)
 
 
-def destination_client() -> Any:
+def destination_client(region: str, endpoint: str | None) -> Any:
     """An S3 client for Source Coop, with its own credentials.
 
-    Required rather than optional: boto3 falls back to the ambient chain
-    for any key left as None, which would sign requests to a third party
-    with whatever AWS credentials the source read used, and fail as a bare
-    AccessDenied. Path-style addressing because the endpoint serves buckets
-    as a path segment (data.source.coop/pangeo/...), not as a subdomain.
+    The credentials are required rather than optional: boto3 falls back to
+    the ambient chain for any key left as None, which would sign these
+    requests with whatever AWS credentials the source read used and fail as
+    a bare AccessDenied.
+
+    Path-style addressing either way. The default bucket name contains dots,
+    so virtual-hosted addressing would not match its TLS certificate; and
+    the data.source.coop endpoint has no per-bucket subdomain to address at
+    all.
     """
     key = os.environ.get("SOURCE_COOP_ACCESS_KEY_ID")
     secret = os.environ.get("SOURCE_COOP_SECRET_ACCESS_KEY")
     if not key or not secret:
         raise SystemExit(
             "set SOURCE_COOP_ACCESS_KEY_ID and SOURCE_COOP_SECRET_ACCESS_KEY "
-            f"to credentials for {DEST_ENDPOINT}; AWS credentials are not "
-            "accepted there"
+            "to the credentials Source Coop issued for the repository; your "
+            "own AWS credentials grant nothing there"
         )
     return boto3.client(
         "s3",
-        endpoint_url=DEST_ENDPOINT,
-        region_name=DEST_REGION,
+        endpoint_url=endpoint,
+        region_name=region,
         aws_access_key_id=key,
         aws_secret_access_key=secret,
         aws_session_token=os.environ.get("SOURCE_COOP_SESSION_TOKEN"),
-        config=Config(s3={"addressing_style": "path"}),
+        # ignore_configured_endpoint_urls for the same reason as the source:
+        # without an explicit endpoint, AWS_ENDPOINT_URL would capture this
+        # client too.
+        config=Config(  # type: ignore[call-arg]
+            s3={"addressing_style": "path"},
+            ignore_configured_endpoint_urls=True,
+        ),
     )
 
 
@@ -205,6 +226,14 @@ def main() -> int:
         "--dest-prefix",
         help=f"destination repository root (default: {DEST_ROOT}/<source prefix>)",
     )
+    parser.add_argument("--dest-bucket", default=DEST_BUCKET)
+    parser.add_argument("--dest-region", default=DEST_REGION)
+    parser.add_argument(
+        "--dest-endpoint",
+        default=DEST_ENDPOINT,
+        help="S3-compatible endpoint, e.g. https://data.source.coop "
+        "(default: none, the bucket is real S3)",
+    )
     parser.add_argument(
         "--source-region", help="region of the source store (default: $ICECHUNK_REGION)"
     )
@@ -231,10 +260,10 @@ def main() -> int:
     dst_prefix = (args.dest_prefix or f"{DEST_ROOT}/{src_prefix}").strip("/")
 
     src = source_client(args.source_region)
-    dst = destination_client()
+    dst = destination_client(args.dest_region, args.dest_endpoint)
+    where = args.dest_endpoint or f"s3://{args.dest_region}"
     print(
-        f"s3://{src_bucket}/{src_prefix}/ -> "
-        f"{DEST_ENDPOINT}/{DEST_BUCKET}/{dst_prefix}/",
+        f"s3://{src_bucket}/{src_prefix}/ -> {where}/{args.dest_bucket}/{dst_prefix}/",
         file=sys.stderr,
     )
     mirror(
@@ -242,7 +271,7 @@ def main() -> int:
         dst,
         src_bucket=src_bucket,
         src_prefix=f"{src_prefix.strip('/')}/",
-        dst_bucket=DEST_BUCKET,
+        dst_bucket=args.dest_bucket,
         dst_prefix=f"{dst_prefix}/",
         workers=args.workers,
         dry_run=args.dry_run,

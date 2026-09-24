@@ -79,15 +79,27 @@ def test_destination_credentials_are_required(monkeypatch: Any) -> None:
     monkeypatch.delenv("SOURCE_COOP_ACCESS_KEY_ID", raising=False)
     monkeypatch.delenv("SOURCE_COOP_SECRET_ACCESS_KEY", raising=False)
     with pytest.raises(SystemExit):
-        mirror_to_source_coop.destination_client()
+        mirror_to_source_coop.destination_client(
+            mirror_to_source_coop.DEST_REGION, mirror_to_source_coop.DEST_ENDPOINT
+        )
 
     monkeypatch.setenv("SOURCE_COOP_ACCESS_KEY_ID", "key")
     monkeypatch.setenv("SOURCE_COOP_SECRET_ACCESS_KEY", "secret")
-    client = mirror_to_source_coop.destination_client()
-    # Path-style: the bucket is a path segment of data.source.coop, not a
-    # subdomain of it.
-    assert client.meta.config.s3["addressing_style"] == "path"
-    assert client.meta.endpoint_url == mirror_to_source_coop.DEST_ENDPOINT
+    # An ambient endpoint must not capture this client either.
+    monkeypatch.setenv("AWS_ENDPOINT_URL", "https://wrong.example")
+
+    default = mirror_to_source_coop.destination_client(
+        mirror_to_source_coop.DEST_REGION, mirror_to_source_coop.DEST_ENDPOINT
+    )
+    # Path-style: the default bucket name has dots, so a virtual-hosted host
+    # would not match the certificate.
+    assert default.meta.config.s3["addressing_style"] == "path"
+    assert default.meta.endpoint_url == "https://s3.us-west-2.amazonaws.com"
+
+    endpoint = mirror_to_source_coop.destination_client(
+        "us-east-1", "https://data.source.coop"
+    )
+    assert endpoint.meta.endpoint_url == "https://data.source.coop"
 
 
 def test_publishes_whole_store_with_repo_info_last(s3: Any) -> None:
