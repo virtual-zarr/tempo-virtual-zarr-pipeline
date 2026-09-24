@@ -161,7 +161,8 @@ class VirtualizarrSqsStack(Stack):
         for title, metric in (
             (
                 # Total scan->store lag: includes ~3.5 h of upstream
-                # production+publication even when the pipeline is instant.
+                # production+publication even when the pipeline is instant
+                # — the "Lag attribution (hours)" widget splits it.
                 # Raw seconds on purpose: the metric's Seconds unit makes
                 # the console humanize the value ("4.2 hr"), while any /3600
                 # math keeps the Seconds unit on the divided number and
@@ -644,6 +645,14 @@ class VirtualizarrSqsStack(Stack):
             poller_env = {
                 "QUEUE_URL": self.queue.queue_url,
                 "POLL_WATERMARK_URI": self.poll_watermark_uri,
+                "REVISION_BASELINE": str(settings.REVISION_BASELINE),
+                # Metric dimension identity for the poller's own EMF
+                # emission (GranulesSeen, ProductionLag, CmrLag).
+                **{
+                    key: self.processor_env[key]
+                    for key in METRIC_DIMENSION_ENV.values()
+                    if key in self.processor_env
+                },
             }
             if settings.POLL_START_ISO:
                 poller_env["POLL_START_ISO"] = settings.POLL_START_ISO
@@ -699,6 +708,64 @@ class VirtualizarrSqsStack(Stack):
                     left=[
                         self.cmr_poller_lambda.metric_invocations(statistic="Sum"),
                         self.cmr_poller_lambda.metric_errors(statistic="Sum"),
+                    ],
+                )
+            )
+            self._widgets.append(
+                # The store's total lag decomposed: upstream production
+                # (scan -> ProductionDateTime), CMR (-> revision-date), and
+                # virtualization (-> store commit). Stacked, so the top of
+                # the stack tracks total scan->store lag and the widest
+                # band names the culprit. Fresh first publications only —
+                # the poller gates the lag emission.
+                cloudwatch.GraphWidget(
+                    title="Lag attribution (hours)",
+                    width=12,
+                    height=6,
+                    stacked=True,
+                    left=[
+                        cloudwatch.MathExpression(
+                            expression=f"{mid}/3600",
+                            label=label,
+                            using_metrics={
+                                mid: self._custom_metric(
+                                    name, statistic="Average", period=Duration.hours(1)
+                                )
+                            },
+                        )
+                        for mid, name, label in (
+                            (
+                                "prod",
+                                "ProductionLag",
+                                "production (scan -> L2 product)",
+                            ),
+                            ("cmr", "CmrLag", "CMR (product -> published)"),
+                            (
+                                "virt",
+                                "VirtualizationLag",
+                                "virtualization (published -> store)",
+                            ),
+                        )
+                    ],
+                )
+            )
+            self._widgets.append(
+                # What CMR delivered, by why it was delivered. REDELIVERED
+                # is the overlap window's duplicate volume — a labeled band
+                # by design, so the no-op work stays visible.
+                cloudwatch.GraphWidget(
+                    title="CMR arrivals by class",
+                    width=12,
+                    height=6,
+                    stacked=True,
+                    left=[
+                        self._custom_metric(
+                            "GranulesSeen",
+                            statistic="Sum",
+                            period=Duration.hours(1),
+                            extra_dimensions={"Class": cls},
+                        )
+                        for cls in ("FRESH", "RETROACTIVE", "REVISED", "REDELIVERED")
                     ],
                 )
             )

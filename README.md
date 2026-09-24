@@ -671,7 +671,7 @@ verify run).
 The dashboard's backfill section (rendered when `BACKFILL_ENABLED`) shows
 Step Functions executions, the cumulative partitions-done/total graph, and worker errors —
 watch it during the initial fill. Afterward, the two numbers worth a
-daily glance are the *Store freshness* and *Pending ledger depth* tiles.
+daily glance are the *Store lag (scan -> store)* and *Pending ledger depth* tiles.
 
 A cross-account Grafana dashboard covering both collections is planned
 but not built; see

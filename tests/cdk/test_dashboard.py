@@ -15,15 +15,16 @@ from virtualizarr_processor.metrics import metric_dimensions
 
 REPO = Path(__file__).resolve().parents[2]
 
-# Sources whose emit_metric()/MetricName calls define the emitted names.
+# Sources whose emit_metric()/_emit()/MetricName calls define the emitted names.
 EMITTER_SOURCES = [
     REPO / "lambda/process_messages/handler.py",
     REPO / "lambda/backfill/backfill_handlers/partition.py",
     REPO / "lambda/backfill/backfill_handlers/reduce.py",
     REPO / "lambda/backfill/backfill_handlers/resort.py",
     REPO / "scripts/verify_store.py",
+    REPO / "lambda/cmr_poller/handler.py",
 ]
-EMIT_CALL = re.compile(r'emit_metric\(\s*"(\w+)"|"MetricName":\s*"(\w+)"')
+EMIT_CALL = re.compile(r'_?emit(?:_metric)?\(\s*"(\w+)"|"MetricName":\s*"(\w+)"')
 
 
 def _template(*, backfill: bool = False, forward: bool | None = None) -> Template:
@@ -220,7 +221,13 @@ def test_dashboard_dimensions_match_emitters(
     monkeypatch.setenv("TEMPO_COLLECTION", "hcho")
     monkeypatch.setenv("STAGE", "dev")
     expected = metric_dimensions()  # {"Collection": "hcho", "Stage": "dev"}
-    metrics = _dashboard_metrics(_template(backfill=True))
+    # Forward-ops widgets (cmr_poller's GranulesSeen/ProductionLag/CmrLag)
+    # only render when _forward_ops runs, which backfill=True skips; the
+    # default template omits the backfill widgets instead. Union both so
+    # every emitter is covered.
+    metrics = _dashboard_metrics(_template()) + _dashboard_metrics(
+        _template(backfill=True)
+    )
     assert metrics, "no TempoPipeline metrics found in the dashboard body"
     for definition in metrics:
         # ["Ns", "Name", dimName, dimValue, ..., {options}]
@@ -230,6 +237,7 @@ def test_dashboard_dimensions_match_emitters(
         pairs = definition[2:end]
         dims = dict(zip(pairs[::2], pairs[1::2]))
         dims.pop("Route", None)  # explicit extra, emitted per-call
+        dims.pop("Class", None)  # explicit extra, emitted per-call
         assert dims == expected, f"{definition[1]}: {dims} != {expected}"
 
 
@@ -243,10 +251,42 @@ def test_dashboard_queries_only_emitted_metric_names() -> None:
         for group in match.groups()
         if group
     }
+    # Union both templates: the forward-ops widgets and the backfill
+    # widgets are never both present in a single stack (see the dims test
+    # above), so both must be checked to see every emitted metric name.
     queried = {
-        definition[1] for definition in _dashboard_metrics(_template(backfill=True))
+        definition[1]
+        for definition in _dashboard_metrics(_template())
+        + _dashboard_metrics(_template(backfill=True))
     }
     assert queried and queried <= emitted, queried - emitted
+
+
+def test_lag_attribution_widget_stacks_the_three_components() -> None:
+    """Production + CMR + virtualization lag as stacked hours: attribution
+    of the store's total lag by inspection."""
+    widget = _widget(_template(), "Lag attribution (hours)")
+    assert widget["properties"]["stacked"] is True
+    expressions = [
+        m[0]["expression"]
+        for m in widget["properties"]["metrics"]
+        if isinstance(m[0], dict) and "expression" in m[0]
+    ]
+    assert len(expressions) == 3
+    assert all("/3600" in e for e in expressions)
+    flat = json.dumps(widget)
+    for name in ("ProductionLag", "CmrLag", "VirtualizationLag"):
+        assert name in flat
+
+
+def test_cmr_arrivals_widget_shows_every_class_including_redelivered() -> None:
+    """Redeliveries are a labeled band, not filtered out — the overlap
+    window's duplicate volume must stay visible on the dashboard."""
+    widget = _widget(_template(), "CMR arrivals by class")
+    assert widget["properties"]["stacked"] is True
+    flat = json.dumps(widget)
+    for cls in ("FRESH", "RETROACTIVE", "REVISED", "REDELIVERED"):
+        assert cls in flat
 
 
 def test_store_lag_tile_shows_raw_seconds_for_console_humanization() -> None:
