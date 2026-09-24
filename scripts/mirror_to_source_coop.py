@@ -27,8 +27,11 @@ Nothing is ever deleted from the destination.
 
 The source store comes from the processor's environment variables
 ($ICECHUNK_BUCKET, $S3_PREFIX/$ICECHUNK_PREFIX, $ICECHUNK_REGION).
-Destination credentials come from $SOURCE_COOP_ACCESS_KEY_ID and
-$SOURCE_COOP_SECRET_ACCESS_KEY, or the usual boto3 chain.
+Destination credentials come from $SOURCE_COOP_ACCESS_KEY_ID,
+$SOURCE_COOP_SECRET_ACCESS_KEY and optionally
+$SOURCE_COOP_SESSION_TOKEN. Source Coop issues its own keys; AWS
+credentials are not accepted there, so these are required rather than
+falling back to the ambient chain.
 
 Usage:
     uv run --env-file .env_no2 scripts/mirror_to_source_coop.py --dry-run
@@ -44,6 +47,8 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import boto3
+from botocore.config import Config
+from botocore.exceptions import ClientError
 from virtualizarr_processor.manifest import storage_prefix
 
 IMMUTABLE_PREFIXES = ("snapshots", "manifests", "transactions", "chunks")
@@ -54,6 +59,34 @@ DEST_ENDPOINT = "https://data.source.coop"
 DEST_REGION = "us-east-1"
 DEST_BUCKET = "pangeo"
 DEST_ROOT = "tempo-virtual-icechunk"
+
+
+def destination_client() -> Any:
+    """An S3 client for Source Coop, with its own credentials.
+
+    Required rather than optional: boto3 falls back to the ambient chain
+    for any key left as None, which would sign requests to a third party
+    with whatever AWS credentials the source read used, and fail as a bare
+    AccessDenied. Path-style addressing because the endpoint serves buckets
+    as a path segment (data.source.coop/pangeo/...), not as a subdomain.
+    """
+    key = os.environ.get("SOURCE_COOP_ACCESS_KEY_ID")
+    secret = os.environ.get("SOURCE_COOP_SECRET_ACCESS_KEY")
+    if not key or not secret:
+        raise SystemExit(
+            "set SOURCE_COOP_ACCESS_KEY_ID and SOURCE_COOP_SECRET_ACCESS_KEY "
+            f"to credentials for {DEST_ENDPOINT}; AWS credentials are not "
+            "accepted there"
+        )
+    return boto3.client(
+        "s3",
+        endpoint_url=DEST_ENDPOINT,
+        region_name=DEST_REGION,
+        aws_access_key_id=key,
+        aws_secret_access_key=secret,
+        aws_session_token=os.environ.get("SOURCE_COOP_SESSION_TOKEN"),
+        config=Config(s3={"addressing_style": "path"}),
+    )
 
 
 def relative_keys(client: Any, bucket: str, prefix: str) -> set[str]:
@@ -92,7 +125,15 @@ def mirror(
     todo: list[str] = []
     for area in IMMUTABLE_PREFIXES:
         here = relative_keys(src, src_bucket, f"{src_prefix}{area}/")
-        there = relative_keys(dst, dst_bucket, f"{dst_prefix}{area}/")
+        try:
+            there = relative_keys(dst, dst_bucket, f"{dst_prefix}{area}/")
+        except ClientError as error:
+            # Which side failed is not obvious from the traceback, and the
+            # destination credentials are scoped to one repository prefix.
+            raise SystemExit(
+                f"listing {dst_bucket}/{dst_prefix}{area}/ failed: {error}. "
+                "Check the credentials cover that prefix (--dest-prefix)."
+            ) from error
         missing = sorted(here - there)
         print(
             f"{area}: {len(here)} source, {len(there)} destination, "
@@ -167,13 +208,7 @@ def main() -> int:
     dst_prefix = (args.dest_prefix or f"{DEST_ROOT}/{src_prefix}").strip("/")
 
     src = boto3.client("s3", region_name=os.environ.get("ICECHUNK_REGION"))
-    dst = boto3.client(
-        "s3",
-        endpoint_url=DEST_ENDPOINT,
-        region_name=DEST_REGION,
-        aws_access_key_id=os.environ.get("SOURCE_COOP_ACCESS_KEY_ID"),
-        aws_secret_access_key=os.environ.get("SOURCE_COOP_SECRET_ACCESS_KEY"),
-    )
+    dst = destination_client()
     print(
         f"s3://{src_bucket}/{src_prefix}/ -> "
         f"{DEST_ENDPOINT}/{DEST_BUCKET}/{dst_prefix}/",

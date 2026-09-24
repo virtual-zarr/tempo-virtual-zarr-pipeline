@@ -57,6 +57,23 @@ def written_keys(client: Any) -> list[str]:
     return [obj["Key"][len(DST_PREFIX) :] for obj in listing.get("Contents", [])]
 
 
+def test_destination_credentials_are_required(monkeypatch: Any) -> None:
+    # Left to the ambient chain, boto3 would sign Source Coop requests with
+    # whatever AWS credentials the source read used and get AccessDenied.
+    monkeypatch.delenv("SOURCE_COOP_ACCESS_KEY_ID", raising=False)
+    monkeypatch.delenv("SOURCE_COOP_SECRET_ACCESS_KEY", raising=False)
+    with pytest.raises(SystemExit):
+        mirror_to_source_coop.destination_client()
+
+    monkeypatch.setenv("SOURCE_COOP_ACCESS_KEY_ID", "key")
+    monkeypatch.setenv("SOURCE_COOP_SECRET_ACCESS_KEY", "secret")
+    client = mirror_to_source_coop.destination_client()
+    # Path-style: the bucket is a path segment of data.source.coop, not a
+    # subdomain of it.
+    assert client.meta.config.s3["addressing_style"] == "path"
+    assert client.meta.endpoint_url == mirror_to_source_coop.DEST_ENDPOINT
+
+
 def test_publishes_whole_store_with_repo_info_last(s3: Any) -> None:
     order: list[str] = []
     s3.meta.events.register(
