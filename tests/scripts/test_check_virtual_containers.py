@@ -58,6 +58,20 @@ def break_persisted_container(path: pathlib.Path) -> None:
     icechunk.Repository.open(storage=storage, config=config).save_config()
 
 
+def test_region_falls_back_to_the_aws_variables(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for name in ("ICECHUNK_REGION", "AWS_REGION", "AWS_DEFAULT_REGION"):
+        monkeypatch.delenv(name, raising=False)
+    # Unset, icechunk would ask EC2's metadata service and fail off EC2.
+    with pytest.raises(SystemExit):
+        check_virtual_containers.resolve_region(None)
+
+    monkeypatch.setenv("AWS_REGION", "us-west-2")
+    assert check_virtual_containers.resolve_region(None) == "us-west-2"
+    assert check_virtual_containers.resolve_region("us-east-1") == "us-east-1"
+
+
 def test_uncovered_urls_reports_one_prefix_per_location() -> None:
     urls = [f"s3://asdc-prod-protected/TEMPO/x{i}.nc" for i in range(3)]
     covered = check_virtual_containers.uncovered_urls(

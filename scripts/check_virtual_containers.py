@@ -113,6 +113,25 @@ def read_one_chunk(repo: icechunk.Repository) -> str:
     return f"{name}{list(index)} = {value}"
 
 
+def resolve_region(explicit: str | None) -> str:
+    """The store's region, from the flag or the usual environment variables.
+
+    Left unset, icechunk asks EC2's instance metadata service for a default
+    and fails on anything that is not an EC2 instance, several frames deep
+    in an unrelated-looking dispatch error. The deployed environment sets
+    ICECHUNK_REGION; a laptop or CloudShell usually has AWS_REGION.
+    """
+    for value in (
+        explicit,
+        os.environ.get("ICECHUNK_REGION"),
+        os.environ.get("AWS_REGION"),
+        os.environ.get("AWS_DEFAULT_REGION"),
+    ):
+        if value:
+            return value
+    raise SystemExit("no region: pass --region, or set ICECHUNK_REGION or AWS_REGION")
+
+
 def open_storage(args: argparse.Namespace) -> icechunk.Storage:
     bucket = args.bucket or os.environ.get("ICECHUNK_BUCKET")
     prefix = args.prefix or storage_prefix()
@@ -125,11 +144,12 @@ def open_storage(args: argparse.Namespace) -> icechunk.Storage:
             "pass --bucket/--prefix, or set ICECHUNK_BUCKET and "
             "S3_PREFIX/ICECHUNK_PREFIX, or ICECHUNK_LOCAL_PATH"
         )
-    print(f"store:        s3://{bucket}/{prefix}", file=sys.stderr)
+    region = resolve_region(args.region)
+    print(f"store:        s3://{bucket}/{prefix} ({region})", file=sys.stderr)
     return icechunk.s3_storage(
         bucket=bucket,
         prefix=prefix,
-        region=args.region or os.environ.get("ICECHUNK_REGION"),
+        region=region,
         endpoint_url=args.endpoint_url,
         anonymous=args.anonymous or None,
         from_env=None if args.anonymous else True,
