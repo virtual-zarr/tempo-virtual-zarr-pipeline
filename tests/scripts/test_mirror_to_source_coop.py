@@ -57,6 +57,22 @@ def written_keys(client: Any) -> list[str]:
     return [obj["Key"][len(DST_PREFIX) :] for obj in listing.get("Contents", [])]
 
 
+def test_source_client_ignores_the_ambient_endpoint(monkeypatch: Any) -> None:
+    # AWS_ENDPOINT_URL is service-agnostic, so exporting it for the
+    # destination would otherwise send source reads there too.
+    monkeypatch.setenv("AWS_ENDPOINT_URL", "https://data.source.coop")
+    monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
+    monkeypatch.setenv("ICECHUNK_REGION", "us-west-2")
+
+    client = mirror_to_source_coop.source_client(None)
+    assert client.meta.endpoint_url == "https://s3.us-west-2.amazonaws.com"
+    assert client.meta.region_name == "us-west-2"
+
+    monkeypatch.delenv("ICECHUNK_REGION")
+    with pytest.raises(SystemExit):
+        mirror_to_source_coop.source_client(None)
+
+
 def test_destination_credentials_are_required(monkeypatch: Any) -> None:
     # Left to the ambient chain, boto3 would sign Source Coop requests with
     # whatever AWS credentials the source read used and get AccessDenied.

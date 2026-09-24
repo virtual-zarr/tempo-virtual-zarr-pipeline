@@ -61,6 +61,26 @@ DEST_BUCKET = "pangeo"
 DEST_ROOT = "tempo-virtual-icechunk"
 
 
+def source_client(region: str | None) -> Any:
+    """An S3 client for the source store, pinned to real AWS.
+
+    AWS_ENDPOINT_URL and AWS_DEFAULT_REGION are global and service-agnostic.
+    Exported so that a shell can reach the destination endpoint, they
+    redirect this client as well, quietly sending source reads to Source
+    Coop and signing them for the wrong region. Both are pinned here rather
+    than inherited.
+    """
+    resolved = region or os.environ.get("ICECHUNK_REGION")
+    if not resolved:
+        raise SystemExit(
+            "no source region: pass --source-region or set ICECHUNK_REGION "
+            "(AWS_DEFAULT_REGION is not used, it may be set for the destination)"
+        )
+    # botocore honors this from 1.29 on; botocore-stubs does not list it yet.
+    config = Config(ignore_configured_endpoint_urls=True)  # type: ignore[call-arg]
+    return boto3.client("s3", region_name=resolved, config=config)
+
+
 def destination_client() -> Any:
     """An S3 client for Source Coop, with its own credentials.
 
@@ -185,6 +205,9 @@ def main() -> int:
         "--dest-prefix",
         help=f"destination repository root (default: {DEST_ROOT}/<source prefix>)",
     )
+    parser.add_argument(
+        "--source-region", help="region of the source store (default: $ICECHUNK_REGION)"
+    )
     parser.add_argument("--workers", type=int, default=16)
     parser.add_argument(
         "--dry-run",
@@ -207,7 +230,7 @@ def main() -> int:
     # DEST_ROOT keeps collections apart without extra configuration.
     dst_prefix = (args.dest_prefix or f"{DEST_ROOT}/{src_prefix}").strip("/")
 
-    src = boto3.client("s3", region_name=os.environ.get("ICECHUNK_REGION"))
+    src = source_client(args.source_region)
     dst = destination_client()
     print(
         f"s3://{src_bucket}/{src_prefix}/ -> "
