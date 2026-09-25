@@ -1,46 +1,17 @@
 #!/usr/bin/env python3
-"""Copy a snapshot of the Icechunk store to Source Cooperative.
+"""Mirror the Icechunk store to Source Cooperative.
 
-Order matters:
+The repo file is the store's only mutable object, so the copy order is
+what makes this safe: read it first (pinning the snapshot to publish),
+copy whatever immutable files the destination is missing, then write the
+repo file last. A crashed run leaves the destination on its old repo
+file and the next run catches up. Nothing is ever deleted.
 
-1. GET ``<prefix>/repo``, the repo-info file. It is the store's only
-   mutable object and holds every branch and tag pointer, so reading it
-   fixes which snapshot this run publishes.
-2. Copy the keys the destination lacks under ``snapshots/``,
-   ``manifests/``, ``transactions/`` and ``chunks/``. Those are immutable
-   and uniquely named, so a missing key is the only difference possible
-   and re-running after a crash is safe.
-3. PUT the repo file read in step 1.
-
-Step 2 runs after step 1, so everything the published repo file references
-is in place before step 3 writes it. If a run dies partway the destination
-keeps its previous repo file and the next run catches up. Source commits
-made during a run are picked up by the next one.
-
-The destination is a separate account reached with its own credentials, so
-there is no single identity that can read the source and write the
-destination: objects are streamed through this process rather than copied
-server-side. That is affordable because the store holds metadata,
-coordinates and byte-range references (a few GB), not granule data, and
-because both ends are in us-west-2. Readers still need Earthdata Login to
-fetch the chunk bytes.
-
-Nothing is ever deleted from the destination.
-
-Auth is split by side. The source is read with your own AWS identity:
-the default credential chain, so ``aws sso login`` (plus AWS_PROFILE for
-a named profile) is all it takes. The destination is written with the
-keys Source Coop issued, from $SOURCE_COOP_ACCESS_KEY_ID,
-$SOURCE_COOP_SECRET_ACCESS_KEY and optionally
-$SOURCE_COOP_SESSION_TOKEN; AWS credentials grant nothing there, so
-those are required rather than falling back to the ambient chain. The
-source store location comes from the processor's environment variables
-($ICECHUNK_BUCKET, $S3_PREFIX/$ICECHUNK_PREFIX).
-
-The destination is Source Coop's direct-S3 address: the real bucket
-us-west-2.opendata.source.coop in us-west-2, with the account and
-repository as leading key segments (pangeo/tempo-virtual-icechunk/).
-Both ends are fixed; the DEST_* constants below are the only knobs.
+Source reads use your own AWS credentials (``aws sso login``).
+Destination writes use the keys Source Coop issued, from
+SOURCE_COOP_ACCESS_KEY_ID / SOURCE_COOP_SECRET_ACCESS_KEY (and
+SOURCE_COOP_SESSION_TOKEN if you have one). The store location comes
+from the processor env vars ICECHUNK_BUCKET and S3_PREFIX.
 
 Usage:
     uv run --env-file .env_no2 scripts/mirror_to_source_coop.py --dry-run
@@ -75,25 +46,16 @@ WORKERS = 16
 
 
 def source_client() -> Any:
-    """An S3 client that reads the source store with your own AWS identity.
-
-    The default credential chain, so ``aws sso login`` (plus AWS_PROFILE
-    for a named profile) is all it takes.
-    """
+    """Reads the source store with your own AWS credentials (aws sso login)."""
     return boto3.client("s3", region_name=REGION)
 
 
 def destination_client() -> Any:
-    """An S3 client for Source Coop, using only the $SOURCE_COOP_* env vars.
+    """Writes to Source Coop with the keys it issued (SOURCE_COOP_*).
 
-    The credentials are required rather than optional: boto3 falls back to
-    the ambient chain for any key left as None, which would sign these
-    requests with your AWS identity and fail as a bare AccessDenied.
-
-    Path-style addressing either way. The default bucket name contains dots,
-    so virtual-hosted addressing would not match its TLS certificate; and
-    the data.source.coop endpoint has no per-bucket subdomain to address at
-    all.
+    The keys are required up front: left to boto3's fallback, requests
+    would be signed with your AWS identity and fail as a bare AccessDenied.
+    Path-style addressing because the bucket name contains dots.
     """
     key = os.environ.get("SOURCE_COOP_ACCESS_KEY_ID")
     secret = os.environ.get("SOURCE_COOP_SECRET_ACCESS_KEY")
@@ -157,7 +119,7 @@ def mirror(
             # destination credentials are scoped to one repository prefix.
             raise SystemExit(
                 f"listing {dst_bucket}/{dst_prefix}{area}/ failed: {error}. "
-                "Check the credentials cover that prefix (--dest-prefix)."
+                "Check the SOURCE_COOP_* credentials cover that prefix."
             ) from error
         missing = sorted(here - there)
         print(
