@@ -57,20 +57,14 @@ def written_keys(client: Any) -> list[str]:
     return [obj["Key"][len(DST_PREFIX) :] for obj in listing.get("Contents", [])]
 
 
-def test_source_client_ignores_the_ambient_endpoint(monkeypatch: Any) -> None:
-    # AWS_ENDPOINT_URL is service-agnostic, so exporting it for the
-    # destination would otherwise send source reads there too.
-    monkeypatch.setenv("AWS_ENDPOINT_URL", "https://data.source.coop")
-    monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
+def test_source_region_comes_from_the_environment(monkeypatch: Any) -> None:
     monkeypatch.setenv("ICECHUNK_REGION", "us-west-2")
-
-    client = mirror_to_source_coop.source_client(None)
-    assert client.meta.endpoint_url == "https://s3.us-west-2.amazonaws.com"
+    client = mirror_to_source_coop.source_client()
     assert client.meta.region_name == "us-west-2"
 
     monkeypatch.delenv("ICECHUNK_REGION")
     with pytest.raises(SystemExit):
-        mirror_to_source_coop.source_client(None)
+        mirror_to_source_coop.source_client()
 
 
 def test_destination_credentials_are_required(monkeypatch: Any) -> None:
@@ -79,27 +73,16 @@ def test_destination_credentials_are_required(monkeypatch: Any) -> None:
     monkeypatch.delenv("SOURCE_COOP_ACCESS_KEY_ID", raising=False)
     monkeypatch.delenv("SOURCE_COOP_SECRET_ACCESS_KEY", raising=False)
     with pytest.raises(SystemExit):
-        mirror_to_source_coop.destination_client(
-            mirror_to_source_coop.DEST_REGION, mirror_to_source_coop.DEST_ENDPOINT
-        )
+        mirror_to_source_coop.destination_client()
 
     monkeypatch.setenv("SOURCE_COOP_ACCESS_KEY_ID", "key")
     monkeypatch.setenv("SOURCE_COOP_SECRET_ACCESS_KEY", "secret")
-    # An ambient endpoint must not capture this client either.
-    monkeypatch.setenv("AWS_ENDPOINT_URL", "https://wrong.example")
 
-    default = mirror_to_source_coop.destination_client(
-        mirror_to_source_coop.DEST_REGION, mirror_to_source_coop.DEST_ENDPOINT
-    )
-    # Path-style: the default bucket name has dots, so a virtual-hosted host
-    # would not match the certificate.
-    assert default.meta.config.s3["addressing_style"] == "path"
-    assert default.meta.endpoint_url == "https://s3.us-west-2.amazonaws.com"
-
-    endpoint = mirror_to_source_coop.destination_client(
-        "us-east-1", "https://data.source.coop"
-    )
-    assert endpoint.meta.endpoint_url == "https://data.source.coop"
+    client = mirror_to_source_coop.destination_client()
+    # Path-style: the bucket name has dots, so a virtual-hosted host would
+    # not match the certificate.
+    assert client.meta.config.s3["addressing_style"] == "path"
+    assert client.meta.endpoint_url == "https://s3.us-west-2.amazonaws.com"
 
 
 def test_publishes_whole_store_with_repo_info_last(s3: Any) -> None:

@@ -27,19 +27,20 @@ fetch the chunk bytes.
 
 Nothing is ever deleted from the destination.
 
-The source store comes from the processor's environment variables
-($ICECHUNK_BUCKET, $S3_PREFIX/$ICECHUNK_PREFIX, $ICECHUNK_REGION).
-Destination credentials come from $SOURCE_COOP_ACCESS_KEY_ID,
+Auth is split by side. The source is read with your own AWS identity:
+the default credential chain, so ``aws sso login`` (plus AWS_PROFILE for
+a named profile) is all it takes. The destination is written with the
+keys Source Coop issued, from $SOURCE_COOP_ACCESS_KEY_ID,
 $SOURCE_COOP_SECRET_ACCESS_KEY and optionally
-$SOURCE_COOP_SESSION_TOKEN. Source Coop issues its own keys; AWS
-credentials are not accepted there, so these are required rather than
-falling back to the ambient chain.
+$SOURCE_COOP_SESSION_TOKEN; AWS credentials grant nothing there, so
+those are required rather than falling back to the ambient chain. The
+source store location comes from the processor's environment variables
+($ICECHUNK_BUCKET, $S3_PREFIX/$ICECHUNK_PREFIX, $ICECHUNK_REGION).
 
-The destination defaults to Source Coop's direct-S3 address: the real
-bucket us-west-2.opendata.source.coop in us-west-2, with the account and
+The destination is Source Coop's direct-S3 address: the real bucket
+us-west-2.opendata.source.coop in us-west-2, with the account and
 repository as leading key segments (pangeo/tempo-virtual-icechunk/).
---dest-bucket, --dest-region and --dest-endpoint reach the same
-repository through the data.source.coop endpoint instead.
+Both ends are fixed; the DEST_* constants below are the only knobs.
 
 Usage:
     uv run --env-file .env_no2 scripts/mirror_to_source_coop.py --dry-run
@@ -65,40 +66,32 @@ CONFIG_KEY = "config.yaml"
 
 # Source Coop's direct-S3 address: a real bucket in us-west-2, with the
 # account and repository as the leading key segments. The data.source.coop
-# endpoint is the other way in; --dest-endpoint switches to it.
-DEST_ENDPOINT = None
+# endpoint is the other way in; set DEST_ENDPOINT to switch to it.
+DEST_ENDPOINT: str | None = None
 DEST_REGION = "us-west-2"
 DEST_BUCKET = "us-west-2.opendata.source.coop"
 DEST_ROOT = "pangeo/tempo-virtual-icechunk"
+WORKERS = 16
 
 
-def source_client(region: str | None) -> Any:
-    """An S3 client for the source store, pinned to real AWS.
+def source_client() -> Any:
+    """An S3 client that reads the source store with your own AWS identity.
 
-    AWS_ENDPOINT_URL and AWS_DEFAULT_REGION are global and service-agnostic.
-    Exported so that a shell can reach the destination endpoint, they
-    redirect this client as well, quietly sending source reads to Source
-    Coop and signing them for the wrong region. Both are pinned here rather
-    than inherited.
+    The default credential chain, so ``aws sso login`` (plus AWS_PROFILE
+    for a named profile) is all it takes.
     """
-    resolved = region or os.environ.get("ICECHUNK_REGION")
-    if not resolved:
-        raise SystemExit(
-            "no source region: pass --source-region or set ICECHUNK_REGION "
-            "(AWS_DEFAULT_REGION is not used, it may be set for the destination)"
-        )
-    # botocore honors this from 1.29 on; botocore-stubs does not list it yet.
-    config = Config(ignore_configured_endpoint_urls=True)  # type: ignore[call-arg]
-    return boto3.client("s3", region_name=resolved, config=config)
+    region = os.environ.get("ICECHUNK_REGION")
+    if not region:
+        raise SystemExit("set ICECHUNK_REGION to the source store's region")
+    return boto3.client("s3", region_name=region)
 
 
-def destination_client(region: str, endpoint: str | None) -> Any:
-    """An S3 client for Source Coop, with its own credentials.
+def destination_client() -> Any:
+    """An S3 client for Source Coop, using only the $SOURCE_COOP_* env vars.
 
     The credentials are required rather than optional: boto3 falls back to
     the ambient chain for any key left as None, which would sign these
-    requests with whatever AWS credentials the source read used and fail as
-    a bare AccessDenied.
+    requests with your AWS identity and fail as a bare AccessDenied.
 
     Path-style addressing either way. The default bucket name contains dots,
     so virtual-hosted addressing would not match its TLS certificate; and
@@ -115,18 +108,12 @@ def destination_client(region: str, endpoint: str | None) -> Any:
         )
     return boto3.client(
         "s3",
-        endpoint_url=endpoint,
-        region_name=region,
+        endpoint_url=DEST_ENDPOINT,
+        region_name=DEST_REGION,
         aws_access_key_id=key,
         aws_secret_access_key=secret,
         aws_session_token=os.environ.get("SOURCE_COOP_SESSION_TOKEN"),
-        # ignore_configured_endpoint_urls for the same reason as the source:
-        # without an explicit endpoint, AWS_ENDPOINT_URL would capture this
-        # client too.
-        config=Config(  # type: ignore[call-arg]
-            s3={"addressing_style": "path"},
-            ignore_configured_endpoint_urls=True,
-        ),
+        config=Config(s3={"addressing_style": "path"}),
     )
 
 
@@ -223,22 +210,6 @@ def mirror(
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
-        "--dest-prefix",
-        help=f"destination repository root (default: {DEST_ROOT}/<source prefix>)",
-    )
-    parser.add_argument("--dest-bucket", default=DEST_BUCKET)
-    parser.add_argument("--dest-region", default=DEST_REGION)
-    parser.add_argument(
-        "--dest-endpoint",
-        default=DEST_ENDPOINT,
-        help="S3-compatible endpoint, e.g. https://data.source.coop "
-        "(default: none, the bucket is real S3)",
-    )
-    parser.add_argument(
-        "--source-region", help="region of the source store (default: $ICECHUNK_REGION)"
-    )
-    parser.add_argument("--workers", type=int, default=16)
-    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="report what would be copied and exit without writing",
@@ -257,23 +228,20 @@ def main() -> int:
 
     # The source prefix is unique per collection, so nesting it under
     # DEST_ROOT keeps collections apart without extra configuration.
-    dst_prefix = (args.dest_prefix or f"{DEST_ROOT}/{src_prefix}").strip("/")
+    dst_prefix = f"{DEST_ROOT}/{src_prefix}".strip("/")
 
-    src = source_client(args.source_region)
-    dst = destination_client(args.dest_region, args.dest_endpoint)
-    where = args.dest_endpoint or f"s3://{args.dest_region}"
     print(
-        f"s3://{src_bucket}/{src_prefix}/ -> {where}/{args.dest_bucket}/{dst_prefix}/",
+        f"s3://{src_bucket}/{src_prefix}/ -> s3://{DEST_BUCKET}/{dst_prefix}/",
         file=sys.stderr,
     )
     mirror(
-        src,
-        dst,
+        source_client(),
+        destination_client(),
         src_bucket=src_bucket,
         src_prefix=f"{src_prefix.strip('/')}/",
-        dst_bucket=args.dest_bucket,
+        dst_bucket=DEST_BUCKET,
         dst_prefix=f"{dst_prefix}/",
-        workers=args.workers,
+        workers=WORKERS,
         dry_run=args.dry_run,
     )
     return 0
