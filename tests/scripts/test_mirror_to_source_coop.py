@@ -57,16 +57,6 @@ def written_keys(client: Any) -> list[str]:
     return [obj["Key"][len(DST_PREFIX) :] for obj in listing.get("Contents", [])]
 
 
-def test_source_region_comes_from_the_environment(monkeypatch: Any) -> None:
-    monkeypatch.setenv("ICECHUNK_REGION", "us-west-2")
-    client = mirror_to_source_coop.source_client()
-    assert client.meta.region_name == "us-west-2"
-
-    monkeypatch.delenv("ICECHUNK_REGION")
-    with pytest.raises(SystemExit):
-        mirror_to_source_coop.source_client()
-
-
 def test_destination_credentials_are_required(monkeypatch: Any) -> None:
     # Left to the ambient chain, boto3 would sign Source Coop requests with
     # whatever AWS credentials the source read used and get AccessDenied.

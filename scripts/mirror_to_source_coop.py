@@ -35,7 +35,7 @@ $SOURCE_COOP_SECRET_ACCESS_KEY and optionally
 $SOURCE_COOP_SESSION_TOKEN; AWS credentials grant nothing there, so
 those are required rather than falling back to the ambient chain. The
 source store location comes from the processor's environment variables
-($ICECHUNK_BUCKET, $S3_PREFIX/$ICECHUNK_PREFIX, $ICECHUNK_REGION).
+($ICECHUNK_BUCKET, $S3_PREFIX/$ICECHUNK_PREFIX).
 
 The destination is Source Coop's direct-S3 address: the real bucket
 us-west-2.opendata.source.coop in us-west-2, with the account and
@@ -68,9 +68,9 @@ CONFIG_KEY = "config.yaml"
 # account and repository as the leading key segments. The data.source.coop
 # endpoint is the other way in; set DEST_ENDPOINT to switch to it.
 DEST_ENDPOINT: str | None = None
-DEST_REGION = "us-west-2"
 DEST_BUCKET = "us-west-2.opendata.source.coop"
 DEST_ROOT = "pangeo/tempo-virtual-icechunk"
+REGION = "us-west-2"  # both the Icechunk store and Source Coop live here
 WORKERS = 16
 
 
@@ -80,10 +80,7 @@ def source_client() -> Any:
     The default credential chain, so ``aws sso login`` (plus AWS_PROFILE
     for a named profile) is all it takes.
     """
-    region = os.environ.get("ICECHUNK_REGION")
-    if not region:
-        raise SystemExit("set ICECHUNK_REGION to the source store's region")
-    return boto3.client("s3", region_name=region)
+    return boto3.client("s3", region_name=REGION)
 
 
 def destination_client() -> Any:
@@ -109,7 +106,7 @@ def destination_client() -> Any:
     return boto3.client(
         "s3",
         endpoint_url=DEST_ENDPOINT,
-        region_name=DEST_REGION,
+        region_name=REGION,
         aws_access_key_id=key,
         aws_secret_access_key=secret,
         aws_session_token=os.environ.get("SOURCE_COOP_SESSION_TOKEN"),
