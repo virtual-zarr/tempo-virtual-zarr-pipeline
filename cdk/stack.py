@@ -604,11 +604,18 @@ class VirtualizarrSqsStack(Stack):
                 targets=[targets.LambdaFunction(self.resort_lambda)],
             )
             # A failing re-sort otherwise just lets the pending ledger grow.
+            # Not metric_errors: a promote losing the CAS to a consumer commit
+            # is expected, and Lambda's async retries (2 by default) re-run
+            # against the new tip. AsyncEventsDropped counts only a run that
+            # failed every attempt.
             self._alarm(
                 "ResortErrorsAlarm",
-                self.resort_lambda.metric_errors(period=Duration.hours(1)),
-                "The scheduled re-sort job failed, so out-of-order granules "
-                "stay parked and the pending ledger grows with every poll. "
+                self.resort_lambda.metric(
+                    "AsyncEventsDropped", statistic="Sum", period=Duration.hours(1)
+                ),
+                "The scheduled re-sort job failed on every retry, so "
+                "out-of-order granules stay parked and the pending ledger "
+                "grows with every poll. "
                 "Check the re-sort Lambda's CloudWatch logs (the FunctionName "
                 "dimension below) around the alarm time.",
             )

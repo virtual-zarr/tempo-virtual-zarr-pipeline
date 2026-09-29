@@ -172,6 +172,19 @@ def test_alarm_notifications_are_readable_and_actionable() -> None:
         assert "logs" in description or "redrive" in description
 
 
+def test_resort_alarm_ignores_failures_the_async_retry_heals() -> None:
+    """A promote losing the CAS to a concurrent consumer commit is expected,
+    and Lambda's async retry re-runs against the new tip. Only an event
+    that failed every attempt is worth paging for."""
+    alarms = _template().find_resources("AWS::CloudWatch::Alarm")
+    resort = next(
+        a["Properties"]
+        for a in alarms.values()
+        if a["Properties"]["AlarmName"].endswith("-ResortErrorsAlarm")
+    )
+    assert resort["MetricName"] == "AsyncEventsDropped"
+
+
 def test_alarm_email_wires_an_sns_topic() -> None:
     _template().resource_count_is("AWS::SNS::Topic", 0)
     with_email = _template(ALARM_EMAIL="ops@example.com")
