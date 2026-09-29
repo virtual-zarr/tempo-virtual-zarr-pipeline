@@ -645,9 +645,15 @@ Five alarms page (via `ALARM_EMAIL`, when set):
 |---|---|---|
 | `DlqMessagesAlarm` | anything lands in the DLQ | granules rejected 20 times — a UR/time collision or a persistent parse failure; the dashboard's *Rejected granules* table shows which (by url for validation rejections, by SQS message id for granules that raised mid-processing) |
 | `ConsumerErrorsAlarm` | the SQS consumer throws | check the consumer's log group |
-| `PollerErrorsAlarm` | the CMR poller throws | CMR unreachable, or watermark state unreadable |
-| `ResortErrorsAlarm` | the re-sort job throws | the fold failed before promoting; the ledger keeps growing until fixed |
+| `PollerErrorsAlarm` | the CMR poller fails its run and both async retries | CMR unreachable, or watermark state unreadable |
+| `ResortErrorsAlarm` | the re-sort job fails its run and both async retries (a single failure that a retry heals, e.g. a lost promote CAS, does not page) | the fold failed before promoting; the ledger keeps growing until fixed |
 | `AxisEndLagAlarm` | the store's newest time slot is > 24 h old, **or the `AxisEndLag` metric goes missing, for 24 consecutive hours** | the top-line staleness check. Treating missing data as breaching is deliberate: a dead poller or a re-sort killed by its timeout emits no error metric at all — the freshness metric going quiet is the only signal. The 24-hour evaluation window exists because TEMPO is daylight-only: the emitters legitimately go quiet overnight, and a single quiet hour must not page. Only created when forward processing is enabled. A fresh deployment may hold ALARM for up to its first day: the alarm's evaluation window predates the first emission, and those missing hours count as breaching until the first committed batch or promoted re-sort. |
+
+The two scheduled-job alarms count `AsyncEventsDropped`, not `Errors`:
+EventBridge invokes them asynchronously and Lambda retries a failed run
+twice, so a single failure is usually healed a minute later. To see how
+often that happens, the *Poller* and *Re-sort failures* widgets plot both
+series; failed attempts minus failed-after-retries is the healed share.
 
 Throttles on the consumer are *expected* (its reserved concurrency is 1;
 SQS redelivers) and are displayed on the dashboard but never alarmed.
