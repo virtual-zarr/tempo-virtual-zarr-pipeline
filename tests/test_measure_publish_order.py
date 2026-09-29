@@ -103,7 +103,7 @@ def test_lag_is_measured_scan_to_publication_with_production_split() -> None:
     report = measure_lag([granule(180, 0, production_min=120)], window_start=BASE)
     assert report.fresh == 1
     assert report.median == timedelta(hours=3) == report.p90
-    assert report.median_production == timedelta(hours=2)
+    assert report.median_processing == timedelta(hours=2)
     assert report.median_delivery == timedelta(hours=1)
 
 
@@ -115,7 +115,7 @@ def test_lag_excludes_historical_arrivals_and_republications() -> None:
     assert report.fresh == 1
     assert report.median == timedelta(hours=3)
     # production split degrades to n/a when no fresh granule carries the field
-    assert report.median_production is None and report.median_delivery is None
+    assert report.median_processing is None and report.median_delivery is None
 
 
 def test_lag_report_empty_when_window_holds_no_fresh_scans() -> None:
