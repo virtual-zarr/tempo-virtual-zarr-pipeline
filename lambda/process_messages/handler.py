@@ -11,6 +11,7 @@ source, skipped without a parse or write) are all successful consumption.
 
 import json
 from collections import Counter
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 from aws_lambda_powertools import Logger, Tracer
@@ -105,6 +106,7 @@ def handler(event: Any, context: LambdaContext) -> PartialItemFailureResponse:
     repo = virtualizarr_processor.open_initialized_repo()
     session = virtualizarr_processor.initialize_session(repo=repo)
     counts: "Counter[ProcessOutcome]" = Counter()
+    published_fresh: list[str] = []
 
     @tracer.capture_method
     def record_handler(record: SQSRecord) -> None:
@@ -138,6 +140,14 @@ def handler(event: Any, context: LambdaContext) -> PartialItemFailureResponse:
             raise RuntimeError(f"granule rejected: {granule_url(message)}")
         if outcome is not None:
             counts[outcome] += 1
+            if outcome in (
+                ProcessOutcome.APPENDED,
+                ProcessOutcome.OVERWRITTEN,
+            ) and message.get("published"):
+                # Only fresh first publications carry the field (the poller
+                # omits it on redeliveries/retroactive/revised, whose "lag"
+                # would measure poll cadence or backlog, not the pipeline).
+                published_fresh.append(str(message["published"]))
 
     with batch_processor(records=records, handler=record_handler) as batch:
         batch.process()
@@ -172,6 +182,16 @@ def handler(event: Any, context: LambdaContext) -> PartialItemFailureResponse:
     for outcome, route in ROUTES.items():
         if counts[outcome]:
             emit_metric("GranulesRouted", counts[outcome], Route=route)
+    committed_at = datetime.now(timezone.utc)
+    for published in published_fresh:
+        try:
+            lag = (committed_at - datetime.fromisoformat(published)).total_seconds()
+        except (ValueError, TypeError):
+            logger.warning(
+                "Unparseable published timestamp", extra={"published": published}
+            )
+            continue
+        emit_metric("VirtualizationLag", lag, MetricUnit.Seconds)
     axis_end = virtualizarr_processor.axis_end
     if axis_end is not None:
         emit_metric("AxisEndLag", axis_end_lag(axis_end), MetricUnit.Seconds)
