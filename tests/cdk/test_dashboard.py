@@ -256,3 +256,13 @@ def test_store_lag_tile_shows_raw_seconds_for_console_humanization() -> None:
     widget = _widget(_template(), "Store lag (scan -> store)")
     flat = json.dumps(widget)
     assert "AxisEndLag" in flat and "/3600" not in flat
+
+
+@pytest.mark.parametrize("title", ["Re-sort failures", "Poller"])
+def test_job_widgets_show_how_often_retries_heal(title: str) -> None:
+    """The alarms page only on AsyncEventsDropped, so the dashboard must
+    still show every failed attempt: Errors minus dropped is the healed
+    share."""
+    metrics = _widget(_template(), title)["properties"]["metrics"]
+    names = {m[1] for m in metrics if isinstance(m, list) and len(m) > 1}
+    assert {"Errors", "AsyncEventsDropped"} <= names
