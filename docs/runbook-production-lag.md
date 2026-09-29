@@ -2,10 +2,11 @@
 
 Use this when the *Store freshness* tile / `AxisEndLag` shows hours of lag
 and you need to know whether the pipeline is slow or the upstream product
-is. Written 2026-09-16, when the ~3 h median production lag from the
-2026-08 smoke test surprised: that number is dominated by the upstream
-product, but nothing on the dashboard says so — this runbook is how to
-prove the split, and how to find the pipeline's share when it grows.
+is. Expect most of it to be upstream: a TEMPO scan takes about 3 h to be
+processed and catalogued in CMR before the pipeline can see it (measured
+2026-08 and 2026-09; Step 1 re-measures it in a minute), and nothing on
+the dashboard shows that split. This runbook is how to prove it, and how
+to find the pipeline's share when it grows.
 
 ## What the number actually measures
 
@@ -53,7 +54,8 @@ aws cloudwatch get-metric-statistics --namespace TempoPipeline \
   'sort_by(Datapoints,&Timestamp)[].[Timestamp,Minimum]' --output table
 ```
 
-Daily minima of ~3–4 h (≈ 11–15k seconds) are the healthy baseline. This
+The healthy baseline is Step 1's upstream median plus up to one poll
+cadence: daily minima of ~3–4 h (≈ 11–15k seconds) as of 2026-09. This
 runbook is about explaining that baseline and catching drift above it;
 total staleness > 24 h is `AxisEndLagAlarm`'s job, and a dead poller or
 re-sort has its own alarms.
@@ -157,7 +159,8 @@ cadence, and anything tighter pages on the product's own rhythm.
 
 ## Step 5 — keep the number honest
 
-Re-run Step 1 after upstream announcements (V04 reprocessing campaigns,
-SDC changes) and occasionally otherwise; if the median moves materially,
-update the ~3 h figure quoted in the README's smoke-test takeaways so the
-next operator isn't surprised in the other direction.
+Re-run Step 1 after upstream announcements (reprocessing campaigns, SDC
+changes) and occasionally otherwise. If the median moves materially,
+update the figures quoted above and in the README (the *Feeding the
+queue* note and the smoke-test takeaways) so the next operator starts
+from the right baseline.
