@@ -605,11 +605,18 @@ class VirtualizarrSqsStack(Stack):
                 targets=[targets.LambdaFunction(self.resort_lambda)],
             )
             # A failing re-sort otherwise just lets the pending ledger grow.
+            # Not metric_errors: a promote losing the CAS to a consumer commit
+            # is expected, and Lambda's async retries (2 by default) re-run
+            # against the new tip. AsyncEventsDropped counts only a run that
+            # failed every attempt.
             self._alarm(
                 "ResortErrorsAlarm",
-                self.resort_lambda.metric_errors(period=Duration.hours(1)),
-                "The scheduled re-sort job failed, so out-of-order granules "
-                "stay parked and the pending ledger grows with every poll. "
+                self.resort_lambda.metric(
+                    "AsyncEventsDropped", statistic="Sum", period=Duration.hours(1)
+                ),
+                "The scheduled re-sort job failed on every retry, so "
+                "out-of-order granules stay parked and the pending ledger "
+                "grows with every poll. "
                 "Check the re-sort Lambda's CloudWatch logs (the FunctionName "
                 "dimension below) around the alarm time.",
             )
@@ -637,6 +644,27 @@ class VirtualizarrSqsStack(Stack):
                             value=resort_timeout_minutes * 60_000,
                             label=f"Lambda timeout ({resort_timeout_minutes} min)",
                         )
+                    ],
+                )
+            )
+
+            # Errors counts every failed attempt; AsyncEventsDropped only the
+            # runs whose retries all failed (the alarm). The gap between the
+            # two lines is how often the async retry healed a run.
+            self._widgets.append(
+                cloudwatch.GraphWidget(
+                    title="Re-sort failures",
+                    width=12,
+                    height=6,
+                    left=[
+                        self.resort_lambda.metric_errors(
+                            statistic="Sum", label="Failed attempts (incl. healed)"
+                        ),
+                        self.resort_lambda.metric(
+                            "AsyncEventsDropped",
+                            statistic="Sum",
+                            label="Failed after retries",
+                        ),
                     ],
                 )
             )
@@ -693,10 +721,14 @@ class VirtualizarrSqsStack(Stack):
             # A failing poller silently stops feeding the queue.
             self._alarm(
                 "PollerErrorsAlarm",
-                self.cmr_poller_lambda.metric_errors(period=Duration.hours(1)),
-                "The scheduled CMR poller failed: nothing is feeding the "
-                "queue, so the store goes stale until it recovers. Check the "
-                "poller Lambda's CloudWatch logs (the FunctionName dimension "
+                # Same reason as the re-sort alarm: page only when every
+                # async retry failed; the Poller widget shows healed ones.
+                self.cmr_poller_lambda.metric(
+                    "AsyncEventsDropped", statistic="Sum", period=Duration.hours(1)
+                ),
+                "The scheduled CMR poller failed on every retry: nothing is "
+                "feeding the queue, so the store goes stale until it recovers. "
+                "Check the poller Lambda's CloudWatch logs (the FunctionName dimension "
                 "below). The poll watermark only advances on success, so the "
                 "next clean run re-covers the gap by itself.",
             )
@@ -707,7 +739,14 @@ class VirtualizarrSqsStack(Stack):
                     height=6,
                     left=[
                         self.cmr_poller_lambda.metric_invocations(statistic="Sum"),
-                        self.cmr_poller_lambda.metric_errors(statistic="Sum"),
+                        self.cmr_poller_lambda.metric_errors(
+                            statistic="Sum", label="Failed attempts (incl. healed)"
+                        ),
+                        self.cmr_poller_lambda.metric(
+                            "AsyncEventsDropped",
+                            statistic="Sum",
+                            label="Failed after retries",
+                        ),
                     ],
                 )
             )

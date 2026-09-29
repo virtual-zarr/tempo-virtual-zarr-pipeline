@@ -1,6 +1,7 @@
 """CDK assertions for the forward-processing operational pieces."""
 
 import aws_cdk as cdk
+import pytest
 from aws_cdk.assertions import Match, Template
 from settings import StackSettings
 from stack import VirtualizarrSqsStack
@@ -193,6 +194,21 @@ def test_alarm_notifications_are_readable_and_actionable() -> None:
         assert props["AlarmName"].startswith("virtualizarr-data-pipelines-")
         description = props["AlarmDescription"]
         assert "logs" in description or "redrive" in description
+
+
+@pytest.mark.parametrize("alarm", ["ResortErrorsAlarm", "PollerErrorsAlarm"])
+def test_job_alarms_ignore_failures_the_async_retry_heals(alarm: str) -> None:
+    """Scheduled jobs run via async invoke, which retries a failed run twice.
+    A re-sort promote losing the CAS to a consumer commit, or a transient
+    CMR error, heals on retry; only an event that failed every attempt is
+    worth paging for."""
+    alarms = _template().find_resources("AWS::CloudWatch::Alarm")
+    (props,) = [
+        a["Properties"]
+        for a in alarms.values()
+        if a["Properties"]["AlarmName"].endswith(f"-{alarm}")
+    ]
+    assert props["MetricName"] == "AsyncEventsDropped"
 
 
 def test_alarm_email_wires_an_sns_topic() -> None:
