@@ -1,6 +1,6 @@
 import json
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -22,9 +22,11 @@ def make_sqs_event(
     s3_keys: list[str] | None = None,
     bucket: str = "test-bucket",
     receive_count: str = "1",
+    bodies: list[dict] | None = None,
 ) -> dict:
     """An SQS event with poller (`{"url": ...}`) or S3-notification bodies."""
-    bodies = [{"url": url} for url in urls or []]
+    bodies = list(bodies or [])
+    bodies += [{"url": url} for url in urls or []]
     bodies += [
         {"Records": [{"s3": {"bucket": {"name": bucket}, "object": {"key": key}}}]}
         for key in s3_keys or []
@@ -421,3 +423,45 @@ def test_log_lines_carry_the_dashboard_query_outcome_fields(
     # The deliberate rejection re-raise must not also log an error line,
     # or every standard rejection would appear twice in the table.
     assert not any("granule rejected" in r.getMessage() for r in records)
+
+
+@patch("process_messages.handler.Processor")
+def test_handler_emits_virtualization_lag_for_committed_fresh_granules(
+    MockProcessor: MagicMock, monkeypatch: pytest.MonkeyPatch, capsys: Any
+) -> None:
+    """A committed granule whose message carries 'published' emits
+    VirtualizationLag = commit time - published. No emission for messages
+    without the field (redelivered/retroactive/revised, or pre-rollout)
+    nor for DEFERRED outcomes (parked granules are not in the store yet)."""
+    monkeypatch.setenv("TEMPO_COLLECTION", "hcho")
+    monkeypatch.setenv("STAGE", "dev")
+    mock_processor = MockProcessor.return_value
+    mock_processor.open_initialized_repo.return_value = MagicMock()
+    mock_session = MagicMock()
+    mock_processor.initialize_session.return_value = mock_session
+    # Records sort by url: a, b, c map to these outcomes in order.
+    mock_processor.process_file.side_effect = [
+        ProcessOutcome.APPENDED,
+        ProcessOutcome.APPENDED,
+        ProcessOutcome.DEFERRED,
+    ]
+    mock_processor.commit_processed_files.return_value = "snapshot-123"
+    mock_processor.axis_end = None
+    mock_session.store = _empty_store()
+    published = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+
+    handler(
+        make_sqs_event(
+            bodies=[
+                {"url": "s3://data/a.nc", "published": published},  # fresh, appended
+                {"url": "s3://data/b.nc"},  # no field: no emission
+                {"url": "s3://data/c.nc", "published": published},  # deferred: parked
+            ]
+        ),
+        MagicMock(),
+    )
+
+    blobs = emf_blobs(capsys.readouterr().out)
+    lags = [b["VirtualizationLag"][0] for b in blobs if "VirtualizationLag" in b]
+    assert len(lags) == 1
+    assert 3600 <= lags[0] <= 3900  # ~1 h, plus test runtime

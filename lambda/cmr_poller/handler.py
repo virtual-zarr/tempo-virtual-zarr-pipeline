@@ -18,9 +18,10 @@ import json
 import os
 import urllib.parse
 import urllib.request
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Optional
+from typing import TYPE_CHECKING, Any, Callable, NamedTuple, Optional
 
 if TYPE_CHECKING:
     from mypy_boto3_sqs.type_defs import SendMessageBatchRequestEntryTypeDef
@@ -36,6 +37,80 @@ DEFAULT_LOOKBACK = timedelta(days=8)
 
 # (concept_id, since_iso, search_after) -> (items, next_search_after)
 FetchPage = Callable[[str, str, Optional[str]], tuple[list[dict], Optional[str]]]
+
+# First publication of a scan older than this is a historical arrival
+# (RETROACTIVE), not a fresh scan: production lag is ~3.5 h (measured
+# by scripts/measure_publish_order.py), so 24 h is a generous margin.
+FRESH_SCAN_WINDOW = timedelta(hours=24)
+
+# Metric identity duplicated from virtualizarr_processor.metrics — the
+# poller image deliberately ships without that package (it would drag in
+# the whole processing stack). tests/test_cmr_poller.py pins the two.
+NAMESPACE = "TempoPipeline"
+DIMENSION_ENV = {"Collection": "TEMPO_COLLECTION", "Stage": "STAGE"}
+
+
+class Sighting(NamedTuple):
+    cls: str  # FRESH | RETROACTIVE | REVISED | REDELIVERED
+    published: datetime
+    scan_start: datetime | None
+    production: datetime | None
+
+
+def _iso(value: str) -> datetime:
+    parsed = datetime.fromisoformat(value)
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def sight(item: dict, watermark: datetime, now: datetime, baseline: int) -> Sighting:
+    """Classify one sighted granule against the previous poll's watermark.
+
+    Redeliveries are labeled, never dropped: the overlap window's
+    re-sightings are real queue traffic the dashboard must show.
+    """
+    meta = item["meta"]
+    published = _iso(meta["revision-date"])
+    if published <= watermark:
+        return Sighting("REDELIVERED", published, None, None)
+    if int(meta["revision-id"]) > baseline:
+        return Sighting("REVISED", published, None, None)
+    umm = item.get("umm", {})
+    scan_start = _iso(umm["TemporalExtent"]["RangeDateTime"]["BeginningDateTime"])
+    production_raw = umm.get("DataGranule", {}).get("ProductionDateTime")
+    production = _iso(production_raw) if production_raw else None
+    cls = "FRESH" if scan_start >= now - FRESH_SCAN_WINDOW else "RETROACTIVE"
+    return Sighting(cls, published, scan_start, production)
+
+
+def _emit(
+    name: str, value: float, unit: str = "Count", **extra_dimensions: str
+) -> None:
+    """Best-effort EMF emission: log and swallow, never fail the poll.
+
+    Mirrors virtualizarr_processor.metrics.emit_metric, which the poller
+    image cannot import.
+    """
+    try:
+        from aws_lambda_powertools.metrics import MetricUnit, single_metric
+
+        dimensions = {
+            key: value_
+            for key, value_ in (
+                *((name_, os.environ.get(env)) for name_, env in DIMENSION_ENV.items()),
+                *extra_dimensions.items(),
+            )
+            if value_
+        }
+        with single_metric(
+            name=name,
+            unit=MetricUnit(unit),
+            value=value,
+            namespace=NAMESPACE,
+            default_dimensions=dimensions,
+        ):
+            pass
+    except Exception:
+        logger.warning("Skipping %s emission", name, exc_info=True)
 
 
 def direct_s3_url(umm: dict[str, Any]) -> str | None:
@@ -135,8 +210,8 @@ def _write_bytes(uri: str, data: bytes) -> None:
         Path(uri).write_bytes(data)
 
 
-def enqueue(queue_url: str, urls: list[str]) -> int:
-    """Enqueue every url, or raise.
+def enqueue(queue_url: str, messages: list[dict]) -> int:
+    """Enqueue every message, or raise.
 
     ``send_message_batch`` is not all-or-nothing: entries can fail while
     the call succeeds. Failed entries are retried once; if any still fail,
@@ -148,11 +223,11 @@ def enqueue(queue_url: str, urls: list[str]) -> int:
 
     client = boto3.client("sqs")
     sent = 0
-    for start in range(0, len(urls), 10):
-        batch = urls[start : start + 10]
+    for start in range(0, len(messages), 10):
+        batch = messages[start : start + 10]
         entries: "list[SendMessageBatchRequestEntryTypeDef]" = [
-            {"Id": str(i), "MessageBody": json.dumps({"url": url})}
-            for i, url in enumerate(batch)
+            {"Id": str(i), "MessageBody": json.dumps(message)}
+            for i, message in enumerate(batch)
         ]
         for attempt in range(2):
             failed = client.send_message_batch(QueueUrl=queue_url, Entries=entries).get(
@@ -182,20 +257,35 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     since = watermark - OVERLAP
 
     items = search_granules(concept_id, since.isoformat())
-    urls = []
+    baseline = int(os.environ.get("REVISION_BASELINE", "1"))
+    counts: Counter[str] = Counter()
+    messages = []
     for item in items:
         url = direct_s3_url(item.get("umm", {}))
-        if url:
-            urls.append(url)
-        else:
+        if not url:
             logger.warning(
                 "Granule without a direct s3 .nc link",
                 extra={"meta": item.get("meta", {})},
             )
-    sent = enqueue(queue_url, urls)
+            continue
+        sighting = sight(item, watermark, started, baseline)
+        counts[sighting.cls] += 1
+        message = {"url": url}
+        if sighting.cls == "FRESH":
+            # The consumer turns this into VirtualizationLag at commit.
+            message["published"] = sighting.published.isoformat()
+            if sighting.production and sighting.scan_start:
+                production_lag = sighting.production - sighting.scan_start
+                cmr_lag = sighting.published - sighting.production
+                _emit("ProductionLag", production_lag.total_seconds(), "Seconds")
+                _emit("CmrLag", cmr_lag.total_seconds(), "Seconds")
+        messages.append(message)
+    sent = enqueue(queue_url, messages)
     # The watermark is the poll start time; the overlap window plus the
     # consumer's idempotent routing absorb any boundary imprecision.
     write_watermark(watermark_uri, started)
+    for cls, count in counts.items():
+        _emit("GranulesSeen", count, Class=cls)
     logger.info(
         "Poll complete",
         extra={"granules": len(items), "enqueued": sent, "since": since.isoformat()},
