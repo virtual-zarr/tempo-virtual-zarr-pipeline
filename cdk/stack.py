@@ -161,8 +161,8 @@ class VirtualizarrSqsStack(Stack):
         for title, metric in (
             (
                 # Total scan->store lag: includes ~3.5 h of upstream
-                # production+publication even when the pipeline is instant
-                # — the "Lag attribution" widget shows the per-stage averages.
+                # production+publication even when the pipeline is instant.
+                # The Lag attribution widget shows the split.
                 # Raw seconds on purpose: the metric's Seconds unit makes
                 # the console humanize the value ("4.2 hr"), while any /3600
                 # math keeps the Seconds unit on the divided number and
@@ -249,8 +249,8 @@ class VirtualizarrSqsStack(Stack):
             value = getattr(settings, key)
             if value:
                 self.processor_env[key] = value
-        # The same identity for Lambdas that emit metrics without the
-        # processor package (the poller).
+        # Lambdas that emit metrics without the processor package (the
+        # poller) need the same identity.
         self._metric_env = {
             key: self.processor_env[key]
             for key in METRIC_DIMENSION_ENV.values()
@@ -753,15 +753,13 @@ class VirtualizarrSqsStack(Stack):
                 )
             )
             self._widgets.append(
-                # Where the store's lag comes from: hourly average of each
-                # stage — upstream production (scan -> ProductionDateTime),
-                # CMR (-> revision-date), virtualization (-> store commit).
-                # Fresh first publications only; the poller gates the
-                # emission. The bands are averages over different granule
-                # sets (the poller emits at sighting, the consumer at
-                # commit), so the stack approximates total lag rather than
-                # equalling the Store lag tile. Raw seconds, as on that
-                # tile: the console humanizes them.
+                # Hourly average lag per stage for fresh first publications.
+                # Upstream production (scan -> ProductionDateTime), CMR
+                # (-> revision-date) and virtualization (-> store commit).
+                # The poller and consumer emit from different granule sets
+                # at different times, so the stack approximates total lag
+                # rather than matching the Store lag tile. Raw seconds, as
+                # on that tile, so the console humanizes them.
                 cloudwatch.GraphWidget(
                     title="Lag attribution",
                     width=12,

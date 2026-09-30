@@ -432,8 +432,9 @@ def test_handler_emits_virtualization_lag_for_committed_fresh_granules(
     """An APPENDED granule whose message carries 'published' emits
     VirtualizationLag = commit time - published. No emission for messages
     without the field (redelivered/retroactive, or pre-rollout), for
-    OVERWRITTEN (a republication: 'published' is the redelivery, not first
-    publication) nor for DEFERRED (parked granules are not in the store yet)."""
+    OVERWRITTEN, a republication whose 'published' is the redelivery rather
+    than first publication, nor for DEFERRED, since parked granules are not
+    in the store yet."""
     monkeypatch.setenv("TEMPO_COLLECTION", "hcho")
     monkeypatch.setenv("STAGE", "dev")
     mock_processor = MockProcessor.return_value

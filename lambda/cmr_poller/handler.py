@@ -64,14 +64,12 @@ def _iso(value: str) -> datetime:
 def sight(item: dict, watermark: datetime, now: datetime) -> Sighting:
     """Classify one sighted granule against the previous poll's watermark.
 
-    Only FRESH sightings feed the lag metrics. Everything is still
-    enqueued: the consumer's routing decides what a granule means for the
-    store (APPENDED, OVERWRITTEN, PENDING, ...) and reports it as
-    GranulesRouted, so the poller does not count arrivals itself.
-    Republications are not told apart here: CMR keeps only the latest
-    revision's date, so a republished fresh scan looks FRESH and its
-    "lag" would be the redelivery — the consumer emits VirtualizationLag
-    for APPENDED only, which excludes it.
+    Only FRESH sightings feed the lag metrics. Everything is enqueued; the
+    consumer's routing reports what each granule meant for the store as
+    GranulesRouted, so the poller keeps no counts of its own. A republished
+    fresh scan also looks FRESH here, since CMR keeps only the latest
+    revision's date. The consumer excludes it by emitting VirtualizationLag
+    for APPENDED only.
     """
     published = _iso(item["meta"]["revision-date"])
     if published <= watermark:

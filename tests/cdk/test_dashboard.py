@@ -255,9 +255,9 @@ def test_dashboard_queries_only_emitted_metric_names() -> None:
 
 
 def test_lag_attribution_widget_stacks_hourly_averages_in_raw_seconds() -> None:
-    """Production + CMR + virtualization lag stacked as hourly averages, in
-    raw seconds so the console humanizes them (a /3600 expression would
-    keep the Seconds unit and caption hours as seconds)."""
+    """Production, CMR and virtualization lag stacked as hourly averages in
+    raw seconds, so the console humanizes them. A /3600 expression would
+    keep the Seconds unit and caption hours as seconds."""
     widget = _widget(_template(), "Lag attribution")
     assert widget["properties"]["stacked"] is True
     metrics = widget["properties"]["metrics"]

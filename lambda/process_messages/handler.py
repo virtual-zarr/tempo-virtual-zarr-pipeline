@@ -139,11 +139,11 @@ def handler(event: Any, context: LambdaContext) -> PartialItemFailureResponse:
         if outcome is not None:
             counts[outcome] += 1
             if outcome is ProcessOutcome.APPENDED and message.get("published"):
-                # Only fresh sightings carry the field (the poller omits it on
-                # redeliveries and retroactive arrivals, whose "lag" would
-                # measure poll cadence or backlog). APPENDED only: an
-                # OVERWRITTEN fresh scan is a republication, and CMR's
-                # revision-date is then the redelivery, not first publication.
+                # Only fresh sightings carry the field. The poller omits it on
+                # redeliveries and retroactive arrivals, whose lag would
+                # measure poll cadence or backlog. OVERWRITTEN is excluded
+                # too, since a republished scan's revision-date is the
+                # redelivery rather than its first publication.
                 published_fresh.append(str(message["published"]))
 
     with batch_processor(records=records, handler=record_handler) as batch:
