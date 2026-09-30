@@ -15,15 +15,18 @@ from virtualizarr_processor.metrics import metric_dimensions
 
 REPO = Path(__file__).resolve().parents[2]
 
-# Sources whose emit_metric()/MetricName calls define the emitted names.
+# Sources whose emit_metric()/_emit()/MetricName calls define the emitted names.
 EMITTER_SOURCES = [
     REPO / "lambda/process_messages/handler.py",
     REPO / "lambda/backfill/backfill_handlers/partition.py",
     REPO / "lambda/backfill/backfill_handlers/reduce.py",
     REPO / "lambda/backfill/backfill_handlers/resort.py",
     REPO / "scripts/verify_store.py",
+    REPO / "lambda/cmr_poller/handler.py",
 ]
-EMIT_CALL = re.compile(r'emit_metric\(\s*"(\w+)"|"MetricName":\s*"(\w+)"')
+EMIT_CALL = re.compile(
+    r'(?:^|[^\w.])(?:emit_metric|_emit)\(\s*"(\w+)"|"MetricName":\s*"(\w+)"'
+)
 
 
 def _template(*, backfill: bool = False, forward: bool | None = None) -> Template:
@@ -220,7 +223,8 @@ def test_dashboard_dimensions_match_emitters(
     monkeypatch.setenv("TEMPO_COLLECTION", "hcho")
     monkeypatch.setenv("STAGE", "dev")
     expected = metric_dimensions()  # {"Collection": "hcho", "Stage": "dev"}
-    metrics = _dashboard_metrics(_template(backfill=True))
+    # Backfill and forward widgets both present, so every emitter is covered.
+    metrics = _dashboard_metrics(_template(backfill=True, forward=True))
     assert metrics, "no TempoPipeline metrics found in the dashboard body"
     for definition in metrics:
         # ["Ns", "Name", dimName, dimValue, ..., {options}]
@@ -244,9 +248,26 @@ def test_dashboard_queries_only_emitted_metric_names() -> None:
         if group
     }
     queried = {
-        definition[1] for definition in _dashboard_metrics(_template(backfill=True))
+        definition[1]
+        for definition in _dashboard_metrics(_template(backfill=True, forward=True))
     }
     assert queried and queried <= emitted, queried - emitted
+
+
+def test_lag_attribution_widget_stacks_hourly_averages_in_raw_seconds() -> None:
+    """Production, CMR and virtualization lag stacked as hourly averages in
+    raw seconds, so the console humanizes them. A /3600 expression would
+    keep the Seconds unit and caption hours as seconds."""
+    widget = _widget(_template(), "Lag attribution")
+    assert widget["properties"]["stacked"] is True
+    metrics = widget["properties"]["metrics"]
+    assert [m[1] for m in metrics] == ["ProductionLag", "CmrLag", "VirtualizationLag"]
+    for definition in metrics:
+        options = definition[-1]
+        # CDK omits the statistic when it is CloudWatch's default, Average.
+        assert options.get("stat", "Average") == "Average"
+        assert options["period"] == 3600
+    assert "expression" not in json.dumps(widget)
 
 
 def test_store_lag_tile_shows_raw_seconds_for_console_humanization() -> None:

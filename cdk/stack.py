@@ -162,6 +162,7 @@ class VirtualizarrSqsStack(Stack):
             (
                 # Total scan->store lag: includes ~3.5 h of upstream
                 # production+publication even when the pipeline is instant.
+                # The Lag attribution widget shows the split.
                 # Raw seconds on purpose: the metric's Seconds unit makes
                 # the console humanize the value ("4.2 hr"), while any /3600
                 # math keeps the Seconds unit on the divided number and
@@ -248,6 +249,13 @@ class VirtualizarrSqsStack(Stack):
             value = getattr(settings, key)
             if value:
                 self.processor_env[key] = value
+        # Lambdas that emit metrics without the processor package (the
+        # poller) need the same identity.
+        self._metric_env = {
+            key: self.processor_env[key]
+            for key in METRIC_DIMENSION_ENV.values()
+            if key in self.processor_env
+        }
         if settings.VIRTUAL_CHUNK_PREFIX:
             self.processor_env["VIRTUAL_CHUNK_PREFIX"] = settings.VIRTUAL_CHUNK_PREFIX
         if storage_prefix:
@@ -678,6 +686,9 @@ class VirtualizarrSqsStack(Stack):
             poller_env = {
                 "QUEUE_URL": self.queue.queue_url,
                 "POLL_WATERMARK_URI": self.poll_watermark_uri,
+                # Metric dimension identity for the poller's own EMF
+                # emission (ProductionLag, CmrLag).
+                **self._metric_env,
             }
             if settings.POLL_START_ISO:
                 poller_env["POLL_START_ISO"] = settings.POLL_START_ISO
@@ -744,6 +755,37 @@ class VirtualizarrSqsStack(Stack):
                             statistic="Sum",
                             label="Failed after retries",
                         ),
+                    ],
+                )
+            )
+            self._widgets.append(
+                # Hourly average lag per stage for fresh first publications.
+                # Upstream production (scan -> ProductionDateTime), CMR
+                # (-> revision-date) and virtualization (-> store commit).
+                # The poller and consumer emit from different granule sets
+                # at different times, so the stack approximates total lag
+                # rather than matching the Store lag tile. Raw seconds, as
+                # on that tile, so the console humanizes them.
+                cloudwatch.GraphWidget(
+                    title="Lag attribution",
+                    width=12,
+                    height=6,
+                    stacked=True,
+                    left=[
+                        self._custom_metric(
+                            name,
+                            statistic="Average",
+                            period=Duration.hours(1),
+                            label=label,
+                        )
+                        for name, label in (
+                            ("ProductionLag", "production (scan -> L3 product)"),
+                            ("CmrLag", "CMR (product -> published)"),
+                            (
+                                "VirtualizationLag",
+                                "virtualization (published -> store)",
+                            ),
+                        )
                     ],
                 )
             )
@@ -974,6 +1016,7 @@ class VirtualizarrSqsStack(Stack):
         statistic: str = "Maximum",
         period: Duration | None = None,
         extra_dimensions: dict[str, str] | None = None,
+        label: str | None = None,
     ) -> cloudwatch.Metric:
         """A custom metric the pipeline's handlers emit as CloudWatch EMF.
 
@@ -989,6 +1032,7 @@ class VirtualizarrSqsStack(Stack):
             dimensions_map={**self._metric_dimensions, **(extra_dimensions or {})},
             statistic=statistic,
             period=period or Duration.minutes(5),
+            label=label,
         )
 
     def _dashboard(self, settings: StackSettings) -> None:
