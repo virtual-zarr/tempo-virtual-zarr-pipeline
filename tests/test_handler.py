@@ -459,10 +459,12 @@ def test_handler_all_unchanged_batch_skips_commit_but_keeps_freshness(
 def test_handler_emits_virtualization_lag_for_committed_fresh_granules(
     MockProcessor: MagicMock, monkeypatch: pytest.MonkeyPatch, capsys: Any
 ) -> None:
-    """A committed granule whose message carries 'published' emits
+    """An APPENDED granule whose message carries 'published' emits
     VirtualizationLag = commit time - published. No emission for messages
-    without the field (redelivered/retroactive/revised, or pre-rollout)
-    nor for DEFERRED outcomes (parked granules are not in the store yet)."""
+    without the field (redelivered/retroactive, or pre-rollout), for
+    OVERWRITTEN, a republication whose 'published' is the redelivery rather
+    than first publication, nor for DEFERRED, since parked granules are not
+    in the store yet."""
     monkeypatch.setenv("TEMPO_COLLECTION", "hcho")
     monkeypatch.setenv("STAGE", "dev")
     mock_processor = MockProcessor.return_value
@@ -472,7 +474,7 @@ def test_handler_emits_virtualization_lag_for_committed_fresh_granules(
     # Records sort by url: a, b, c map to these outcomes in order.
     mock_processor.process_file.side_effect = [
         ProcessOutcome.APPENDED,
-        ProcessOutcome.APPENDED,
+        ProcessOutcome.OVERWRITTEN,
         ProcessOutcome.DEFERRED,
     ]
     mock_processor.commit_processed_files.return_value = "snapshot-123"
@@ -484,7 +486,7 @@ def test_handler_emits_virtualization_lag_for_committed_fresh_granules(
         make_sqs_event(
             bodies=[
                 {"url": "s3://data/a.nc", "published": published},  # fresh, appended
-                {"url": "s3://data/b.nc"},  # no field: no emission
+                {"url": "s3://data/b.nc", "published": published},  # republished
                 {"url": "s3://data/c.nc", "published": published},  # deferred: parked
             ]
         ),

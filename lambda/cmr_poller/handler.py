@@ -18,7 +18,6 @@ import json
 import os
 import urllib.parse
 import urllib.request
-from collections import Counter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, NamedTuple, Optional
@@ -50,8 +49,8 @@ NAMESPACE = "TempoPipeline"
 DIMENSION_ENV = {"Collection": "TEMPO_COLLECTION", "Stage": "STAGE"}
 
 
-class Sighting(NamedTuple):
-    cls: str  # FRESH | RETROACTIVE | REVISED | REDELIVERED
+class Arrival(NamedTuple):
+    cls: str  # FRESH | RETROACTIVE | REDELIVERED
     published: datetime
     scan_start: datetime | None
     production: datetime | None
@@ -62,29 +61,28 @@ def _iso(value: str) -> datetime:
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
-def sight(item: dict, watermark: datetime, now: datetime, baseline: int) -> Sighting:
-    """Classify one sighted granule against the previous poll's watermark.
+def classify_arrival(item: dict, watermark: datetime, now: datetime) -> Arrival:
+    """Classify one granule the poll returned against the previous poll's watermark.
 
-    Redeliveries are labeled, never dropped: the overlap window's
-    re-sightings are real queue traffic the dashboard must show.
+    Only FRESH arrivals feed the lag metrics. Everything is enqueued; the
+    consumer's routing reports what each granule meant for the store as
+    GranulesRouted, so the poller keeps no counts of its own. A republished
+    fresh scan also looks FRESH here, since CMR keeps only the latest
+    revision's date. The consumer excludes it by emitting VirtualizationLag
+    for APPENDED only.
     """
-    meta = item["meta"]
-    published = _iso(meta["revision-date"])
+    published = _iso(item["meta"]["revision-date"])
     if published <= watermark:
-        return Sighting("REDELIVERED", published, None, None)
-    if int(meta["revision-id"]) > baseline:
-        return Sighting("REVISED", published, None, None)
+        return Arrival("REDELIVERED", published, None, None)
     umm = item.get("umm", {})
     scan_start = _iso(umm["TemporalExtent"]["RangeDateTime"]["BeginningDateTime"])
     production_raw = umm.get("DataGranule", {}).get("ProductionDateTime")
     production = _iso(production_raw) if production_raw else None
     cls = "FRESH" if scan_start >= now - FRESH_SCAN_WINDOW else "RETROACTIVE"
-    return Sighting(cls, published, scan_start, production)
+    return Arrival(cls, published, scan_start, production)
 
 
-def _emit(
-    name: str, value: float, unit: str = "Count", **extra_dimensions: str
-) -> None:
+def _emit(name: str, value: float, unit: str = "Count") -> None:
     """Best-effort EMF emission: log and swallow, never fail the poll.
 
     Mirrors virtualizarr_processor.metrics.emit_metric, which the poller
@@ -96,8 +94,7 @@ def _emit(
         dimensions = {
             key: value_
             for key, value_ in (
-                *((name_, os.environ.get(env)) for name_, env in DIMENSION_ENV.items()),
-                *extra_dimensions.items(),
+                (k, os.environ.get(env)) for k, env in DIMENSION_ENV.items()
             )
             if value_
         }
@@ -257,8 +254,6 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     since = watermark - OVERLAP
 
     items = search_granules(concept_id, since.isoformat())
-    baseline = int(os.environ.get("REVISION_BASELINE", "1"))
-    counts: Counter[str] = Counter()
     messages = []
     for item in items:
         url = direct_s3_url(item.get("umm", {}))
@@ -268,15 +263,14 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                 extra={"meta": item.get("meta", {})},
             )
             continue
-        sighting = sight(item, watermark, started, baseline)
-        counts[sighting.cls] += 1
+        arrival = classify_arrival(item, watermark, started)
         message = {"url": url}
-        if sighting.cls == "FRESH":
+        if arrival.cls == "FRESH":
             # The consumer turns this into VirtualizationLag at commit.
-            message["published"] = sighting.published.isoformat()
-            if sighting.production and sighting.scan_start:
-                production_lag = sighting.production - sighting.scan_start
-                cmr_lag = sighting.published - sighting.production
+            message["published"] = arrival.published.isoformat()
+            if arrival.production and arrival.scan_start:
+                production_lag = arrival.production - arrival.scan_start
+                cmr_lag = arrival.published - arrival.production
                 _emit("ProductionLag", production_lag.total_seconds(), "Seconds")
                 _emit("CmrLag", cmr_lag.total_seconds(), "Seconds")
         messages.append(message)
@@ -284,8 +278,6 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     # The watermark is the poll start time; the overlap window plus the
     # consumer's idempotent routing absorb any boundary imprecision.
     write_watermark(watermark_uri, started)
-    for cls, count in counts.items():
-        _emit("GranulesSeen", count, Class=cls)
     logger.info(
         "Poll complete",
         extra={"granules": len(items), "enqueued": sent, "since": since.isoformat()},

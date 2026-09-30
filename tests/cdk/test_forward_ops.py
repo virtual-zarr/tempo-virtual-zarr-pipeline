@@ -71,6 +71,27 @@ def test_forward_state_env_reaches_lambdas() -> None:
     )
 
 
+def test_poller_env_carries_metric_identity() -> None:
+    """The poller emits ProductionLag/CmrLag itself, so it needs the
+    {Collection, Stage} dimension env."""
+    _template().has_resource_properties(
+        "AWS::Lambda::Function",
+        Match.object_like(
+            {
+                "Environment": {
+                    "Variables": Match.object_like(
+                        {
+                            "CONCEPT_ID": Match.any_value(),
+                            "TEMPO_COLLECTION": "hcho",
+                            "STAGE": "dev",
+                        }
+                    )
+                }
+            }
+        ),
+    )
+
+
 def test_resort_lambda_is_single_writer() -> None:
     """Two concurrent resort runs race to reset/promote the shared "resort"
     branch (review finding C1); reserved concurrency 1 rules that out at

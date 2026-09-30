@@ -1,12 +1,13 @@
 # Runbook: attribute store freshness lag (who owns the hours?)
 
-Use this when the *Store freshness* tile / `AxisEndLag` shows hours of lag
-and you need to know whether the pipeline is slow or the upstream product
-is. Expect most of it to be upstream: a TEMPO scan takes about 3 h to be
-processed and catalogued in CMR before the pipeline can see it (measured
-2026-08 and 2026-09; Step 1 re-measures it in a minute), and nothing on
-the dashboard shows that split. This runbook is how to prove it, and how
-to find the pipeline's share when it grows.
+Use this when the *Store lag (scan -> store)* tile / `AxisEndLag` shows
+hours of lag and you need to know whether the pipeline is slow or the
+upstream product is. Expect most of it to be upstream: a TEMPO scan takes
+about 3 h to be processed and catalogued in CMR before the pipeline can
+see it (measured 2026-08 and 2026-09; Step 1 re-measures it in a minute).
+The dashboard's *Lag attribution* widget shows that split as hourly
+averages (production, CMR, virtualization); this runbook is how to verify
+it from the source data, and how to find the pipeline's share when it grows.
 
 ## What the number actually measures
 
