@@ -28,11 +28,11 @@ from virtualizarr_processor.inventory import BackfillInventory, GranuleEntry
 # The manifest's storage representation inside the store itself: two
 # vlen-string arrays on the append dimension, plus two root attributes.
 MANIFEST_ARRAYS: tuple[str, str] = ("granule_ur", "granule_url")
-# A third bookkeeping column, kept out of MANIFEST_ARRAYS: that tuple is
-# indexed positionally and feeds BackfillInventory reconstruction, which
-# stamps are not part of (inventories don't carry them). Each slot holds
+# A third bookkeeping column, kept out of MANIFEST_ARRAYS because that
+# tuple is indexed positionally and feeds BackfillInventory
+# reconstruction, which has no stamps. Each slot holds
 # the exact ``last_updated_at`` stamp its references were written with
-# (see :func:`stamp_value`), "" = unknown. Stamps are opaque strings
+# (see :func:`stamp_value`), or "" when unknown. Stamps are opaque strings
 # compared for equality only, so a future switch to ETag stamps is a
 # value change, not a schema change.
 STAMP_ARRAY = "granule_stamp"
@@ -56,17 +56,17 @@ def axis_end_lag(axis_end: float) -> float:
 
 
 def stamp_value(stamp: datetime) -> str:
-    """The storage form of a ``last_updated_at`` stamp: ISO-8601 UTC."""
+    """The storage form of a ``last_updated_at`` stamp, ISO-8601 UTC."""
     return stamp.astimezone(timezone.utc).isoformat()
 
 
 class GranuleStamps:
     """The per-slot ``last_updated_at`` stamps, stored next to the manifest.
 
-    A store predating the array reads as ``None``: every stamp unknown,
-    so the consumer's unchanged-redelivery fast path disables itself and
-    behavior is exactly the pre-stamp pipeline's. Unknown ("") stamps
-    self-heal: the slot's next redelivery takes the slow path once and
+    A store predating the array reads as ``None``, every stamp unknown, so
+    the consumer's unchanged-redelivery fast path disables itself and
+    behaves exactly like the pre-stamp pipeline. Unknown ("") stamps
+    self-heal when the slot's next redelivery takes the slow path once and
     records its stamp.
     """
 
@@ -203,8 +203,8 @@ class PendingLedger:
     @staticmethod
     def write(store: Store, entries: Iterable[GranuleEntry]) -> None:
         group = zarr.open_group(store, mode="a")
-        # mode="json": the optional stamp is a datetime, and zarr attrs
-        # are JSON.
+        # The optional stamp is a datetime and zarr attrs are JSON, hence
+        # mode="json".
         group.attrs[PENDING_LEDGER_ATTRIBUTE] = [
             e.model_dump(mode="json") for e in entries
         ]

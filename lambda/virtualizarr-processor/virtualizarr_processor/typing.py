@@ -27,7 +27,7 @@ class ProcessOutcome(enum.Enum):
     """
 
     APPENDED = "appended"  # new scan appended at the axis end
-    OVERWRITTEN = "overwritten"  # source changed: slot refreshed in place
-    UNCHANGED = "unchanged"  # redelivery of an unchanged source: skipped
+    OVERWRITTEN = "overwritten"  # source changed, slot refreshed in place
+    UNCHANGED = "unchanged"  # redelivery of an unchanged source, skipped
     DEFERRED = "deferred"  # out of order: recorded in the pending ledger
     REJECTED = "rejected"  # validation failure — SQS retry, then DLQ

@@ -273,10 +273,10 @@ class Processor:
         # promote lands data and state in one atomic reset.
         StoreManifest.write(session.store, inventory)
         PendingLedger.write(session.store, ())
-        # All-"": the inventory carries no stamps and the fork/reduce
-        # plumbing shouldn't grow a side channel for them. Unknown stamps
-        # self-heal through the poller's overlap window: one slow-path
-        # overwrite per granule records its stamp.
+        # Every stamp starts as "". The inventory carries no stamps and the
+        # fork/reduce plumbing shouldn't grow a side channel for them.
+        # Unknown stamps self-heal through the poller's overlap window, one
+        # slow-path overwrite per granule.
         GranuleStamps.initialize(
             session.store,
             size=len(inventory.granules),
@@ -741,19 +741,19 @@ class Processor:
         """True when this delivery's source object still carries the exact
         stamp its slot (or pending-ledger entry) was written with.
 
-        The stamp is the same change signal the read path lives by: an
+        The stamp is the same change signal the read path lives by. An
         equal stamp means the slot's existing references read correctly
         and rewriting would reproduce them, so validation was already
         done on these bytes and can be skipped. One HEAD request, no
-        parse. A store without the stamp array reads as all-unknown and
-        disables this path entirely.
+        parse. A store without the stamp array reads as all unknown and
+        disables this path.
         """
         stamps = GranuleStamps.read(cast(icechunk.IcechunkStore, store))
         if stamps is None:
             return False
         candidate = source_last_modified(file_key) + timedelta(seconds=1)
         ur = _granule_ur(file_key)
-        # Batch-local state first, mirroring _batch_ur_at: a UR this batch
+        # Batch-local state first, as in _batch_ur_at, since a UR this batch
         # already wrote is not yet in the committed arrays.
         for entry in (*self._appended, *self._replaced.values()):
             if entry.granule_ur == ur:
@@ -793,7 +793,7 @@ class Processor:
                 return ProcessOutcome.UNCHANGED
         except Exception:
             # A HEAD failure lands here and falls through to the parse,
-            # whose first step is the same HEAD — behavior as today.
+            # whose first step is the same HEAD, as before.
             logger.warning(
                 "process_file: unchanged fast path failed for %s; parsing",
                 file_key,
@@ -923,9 +923,9 @@ class Processor:
                 "instead of committing partial writes"
             )
         if not (self._appended or self._replaced or self._deferred):
-            # An all-UNCHANGED batch makes no session change and *should*
-            # commit nothing: the no-op snapshot churn (GC, mirror copies,
-            # time-travel history) is half the point of the fast path.
+            # An all-UNCHANGED batch changes nothing in the session and
+            # should commit nothing. Avoiding no-op snapshots (GC, mirror
+            # copies, time-travel history) is half the point of the fast path.
             logger.info(
                 "commit_processed_files: batch made no store changes; "
                 "skipping commit at %s",
