@@ -1,8 +1,8 @@
 """Tests for the Source Cooperative snapshot publisher.
 
-Both buckets live in one moto backend; the endpoint difference is boto3
-configuration, not behaviour worth mocking. The ordering is what these
-check: every immutable file must land before the repo file that names it.
+Both buckets live in one moto backend; the endpoint difference is only
+client configuration. The main check is ordering: every immutable file
+lands before the repo file that names it.
 """
 
 from typing import Any
@@ -42,10 +42,10 @@ def run(client: Any, **kwargs: Any) -> int:
     return mirror_to_source_coop.mirror(
         client,
         client,
-        src_bucket=SRC_BUCKET,
-        src_prefix=SRC_PREFIX,
-        dst_bucket=DST_BUCKET,
-        dst_prefix=DST_PREFIX,
+        source_bucket=SRC_BUCKET,
+        source_prefix=SRC_PREFIX,
+        destination_bucket=DST_BUCKET,
+        destination_prefix=DST_PREFIX,
         workers=4,
         **kwargs,
     )
@@ -58,8 +58,7 @@ def written_keys(client: Any) -> list[str]:
 
 
 def test_destination_credentials_are_required(monkeypatch: Any) -> None:
-    # Left to the ambient chain, boto3 would sign Source Coop requests with
-    # whatever AWS credentials the source read used and get AccessDenied.
+    # Without them boto3 would sign with the source's AWS credentials.
     monkeypatch.delenv("SOURCE_COOP_ACCESS_KEY_ID", raising=False)
     monkeypatch.delenv("SOURCE_COOP_SECRET_ACCESS_KEY", raising=False)
     with pytest.raises(SystemExit):
@@ -69,8 +68,7 @@ def test_destination_credentials_are_required(monkeypatch: Any) -> None:
     monkeypatch.setenv("SOURCE_COOP_SECRET_ACCESS_KEY", "secret")
 
     client = mirror_to_source_coop.destination_client()
-    # Path-style: the bucket name has dots, so a virtual-hosted host would
-    # not match the certificate.
+    # Path-style, since the bucket name has dots.
     assert client.meta.config.s3["addressing_style"] == "path"
     assert client.meta.endpoint_url == "https://s3.us-west-2.amazonaws.com"
 
@@ -89,8 +87,7 @@ def test_publishes_whole_store_with_repo_info_last(s3: Any) -> None:
             s3.get_object(Bucket=DST_BUCKET, Key=DST_PREFIX + key)["Body"].read()
             == STORE[key]
         )
-    # A reader that sees the published repo file can resolve every file it
-    # names, because they all landed first.
+    # Every file the repo file names landed before it.
     assert order[-1] == DST_PREFIX + "repo"
 
 

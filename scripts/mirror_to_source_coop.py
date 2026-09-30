@@ -1,19 +1,17 @@
 #!/usr/bin/env python3
 """Mirror the Icechunk store to Source Cooperative.
 
-The repo file is the store's only mutable object, so the copy order is
-what makes this safe: read it first (pinning the snapshot to publish),
-copy whatever immutable files the destination is missing, then write the
-repo file last. A crashed run leaves the destination on its old repo
-file and the next run catches up. Nothing is ever deleted.
+Reads the repo file first (that pins the snapshot), copies the immutable
+files the destination lacks, then writes the repo file last, so a reader
+never sees a tip that names files still in flight. A crashed run leaves
+the old tip in place and the next run catches up. Nothing is deleted.
 
-Source reads use your own AWS credentials (``aws sso login``).
-Destination writes use the keys Source Coop issued, from
-SOURCE_COOP_ACCESS_KEY_ID / SOURCE_COOP_SECRET_ACCESS_KEY (and
-SOURCE_COOP_SESSION_TOKEN if you have one). The store location comes
-from the processor env vars ICECHUNK_BUCKET and S3_PREFIX.
+Source reads use your AWS credentials. Destination writes use the keys
+Source Coop issued: SOURCE_COOP_ACCESS_KEY_ID, SOURCE_COOP_SECRET_ACCESS_KEY
+and optionally SOURCE_COOP_SESSION_TOKEN. The store location comes from
+ICECHUNK_BUCKET and S3_PREFIX.
 
-Usage (the keys live in .env.local, so pass both; add --dry-run to only report):
+Usage (add --dry-run to only report):
     uv run --env-file .env_no2 --env-file .env.local scripts/mirror_to_source_coop.py
 """
 
@@ -34,27 +32,26 @@ IMMUTABLE_PREFIXES = ("snapshots", "manifests", "transactions", "chunks")
 REPO_INFO_KEY = "repo"  # icechunk-format's REPO_INFO_FILE_PATH
 CONFIG_KEY = "config.yaml"
 
-# Source Coop's direct S3 address is a real bucket in us-west-2, with the
-# account and repository as the leading key segments. The data.source.coop
-# endpoint is the other way in; set DEST_ENDPOINT to switch to it.
+# Source Coop's direct S3 bucket. data.source.coop is the other endpoint;
+# set DEST_ENDPOINT to use it.
 DEST_ENDPOINT: str | None = None
 DEST_BUCKET = "us-west-2.opendata.source.coop"
 DEST_ROOT = "pangeo/tempo-virtual-icechunk"
-REGION = "us-west-2"  # both the Icechunk store and Source Coop live here
+REGION = "us-west-2"  # the store and Source Coop both live source_keys
 WORKERS = 16
 
 
 def source_client() -> Any:
-    """Reads the source store with your own AWS credentials (aws sso login)."""
+    """The source store, read with your own AWS credentials."""
     return boto3.client("s3", region_name=REGION)
 
 
 def destination_client() -> Any:
-    """Writes to Source Coop with the keys it issued (SOURCE_COOP_*).
+    """Source Coop, written with the keys it issued.
 
-    The keys are required up front: left to boto3's fallback, requests
-    would be signed with your AWS identity and fail as a bare AccessDenied.
-    Path-style addressing because the bucket name contains dots.
+    Required up front, since boto3 would otherwise sign with your AWS
+    identity and get a bare AccessDenied. Path-style because the bucket
+    name has dots.
     """
     key = os.environ.get("SOURCE_COOP_ACCESS_KEY_ID")
     secret = os.environ.get("SOURCE_COOP_SECRET_ACCESS_KEY")
@@ -62,7 +59,7 @@ def destination_client() -> Any:
         raise SystemExit(
             "set SOURCE_COOP_ACCESS_KEY_ID and SOURCE_COOP_SECRET_ACCESS_KEY "
             "to the credentials Source Coop issued for the repository; your "
-            "own AWS credentials grant nothing there"
+            "own AWS credentials grant nothing destination_keys"
         )
     return boto3.client(
         "s3",
@@ -76,7 +73,7 @@ def destination_client() -> Any:
 
 
 def relative_keys(client: Any, bucket: str, prefix: str) -> set[str]:
-    """Every key under ``prefix`` (which must end in ``/``), relative to it."""
+    """Keys under ``prefix`` (ending in ``/``), relative to it."""
     keys: set[str] = set()
     for page in client.get_paginator("list_objects_v2").paginate(
         Bucket=bucket, Prefix=prefix
@@ -86,43 +83,43 @@ def relative_keys(client: Any, bucket: str, prefix: str) -> set[str]:
 
 
 def mirror(
-    src: Any,
-    dst: Any,
+    source: Any,
+    destination: Any,
     *,
-    src_bucket: str,
-    src_prefix: str,
-    dst_bucket: str,
-    dst_prefix: str,
+    source_bucket: str,
+    source_prefix: str,
+    destination_bucket: str,
+    destination_prefix: str,
     workers: int = 16,
     dry_run: bool = False,
     log: Any = sys.stderr,
 ) -> int:
-    """Copy one snapshot and return how many objects were written.
+    """Copy one snapshot; return how many objects were written.
 
-    ``src_prefix`` and ``dst_prefix`` are repository roots ending in ``/``.
+    The prefixes are repository roots ending in ``/``.
     """
-    pinned = src.get_object(Bucket=src_bucket, Key=src_prefix + REPO_INFO_KEY)[
+    pinned = source.get_object(Bucket=source_bucket, Key=source_prefix + REPO_INFO_KEY)[
         "Body"
     ].read()
-    print(f"pinned {src_prefix}{REPO_INFO_KEY} ({len(pinned)} bytes)", file=log)
+    print(f"pinned {source_prefix}{REPO_INFO_KEY} ({len(pinned)} bytes)", file=log)
 
-    # Nothing is deleted, so files the source GC expires linger here as
-    # orphans. Add a delete pass after the repo PUT when the count matters.
+    # Nothing is deleted; files the source GC expires linger as orphans.
     todo: list[str] = []
     for area in IMMUTABLE_PREFIXES:
-        here = relative_keys(src, src_bucket, f"{src_prefix}{area}/")
+        source_keys = relative_keys(source, source_bucket, f"{source_prefix}{area}/")
         try:
-            there = relative_keys(dst, dst_bucket, f"{dst_prefix}{area}/")
+            destination_keys = relative_keys(
+                destination, destination_bucket, f"{destination_prefix}{area}/"
+            )
         except ClientError as error:
-            # Which side failed is not obvious from the traceback, and the
-            # destination credentials are scoped to one repository prefix.
+            # Say which side failed; the destination keys cover one prefix.
             raise SystemExit(
-                f"listing {dst_bucket}/{dst_prefix}{area}/ failed: {error}. "
-                "Check the SOURCE_COOP_* credentials cover that prefix."
+                f"listing {destination_bucket}/{destination_prefix}{area}/ failed: "
+                f"{error}. Check the SOURCE_COOP_* credentials cover that prefix."
             ) from error
-        missing = sorted(here - there)
+        missing = sorted(source_keys - destination_keys)
         print(
-            f"{area}: {len(here)} source, {len(there)} destination, "
+            f"{area}: {len(source_keys)} source, {len(destination_keys)} destination, "
             f"{len(missing)} to copy",
             file=log,
         )
@@ -133,32 +130,36 @@ def mirror(
         return 0
 
     def copy(key: str) -> None:
-        body = src.get_object(Bucket=src_bucket, Key=src_prefix + key)["Body"]
-        dst.upload_fileobj(body, dst_bucket, dst_prefix + key)
+        body = source.get_object(Bucket=source_bucket, Key=source_prefix + key)["Body"]
+        destination.upload_fileobj(body, destination_bucket, destination_prefix + key)
 
     if todo:
         with ThreadPoolExecutor(max_workers=workers) as pool:
             # list() so a failed copy raises before the repo file is written.
             list(pool.map(copy, todo))
 
-    # Mutable and tiny, so refresh it rather than diffing. A store without
-    # one is fine; readers fall back to the default repository config.
+    # Small and mutable, so always refresh it. Optional; readers default
+    # without it.
     try:
-        config = src.get_object(Bucket=src_bucket, Key=src_prefix + CONFIG_KEY)[
-            "Body"
-        ].read()
-    except src.exceptions.NoSuchKey:
+        config = source.get_object(
+            Bucket=source_bucket, Key=source_prefix + CONFIG_KEY
+        )["Body"].read()
+    except source.exceptions.NoSuchKey:
         config = None
     if config is not None:
-        dst.put_object(Bucket=dst_bucket, Key=dst_prefix + CONFIG_KEY, Body=config)
+        destination.put_object(
+            Bucket=destination_bucket, Key=destination_prefix + CONFIG_KEY, Body=config
+        )
 
-    dst.put_object(Bucket=dst_bucket, Key=dst_prefix + REPO_INFO_KEY, Body=pinned)
-    written = dst.get_object(Bucket=dst_bucket, Key=dst_prefix + REPO_INFO_KEY)[
-        "Body"
-    ].read()
+    destination.put_object(
+        Bucket=destination_bucket, Key=destination_prefix + REPO_INFO_KEY, Body=pinned
+    )
+    written = destination.get_object(
+        Bucket=destination_bucket, Key=destination_prefix + REPO_INFO_KEY
+    )["Body"].read()
     if written != pinned:
         raise RuntimeError(
-            f"published {dst_prefix}{REPO_INFO_KEY} reads back as "
+            f"published {destination_prefix}{REPO_INFO_KEY} reads back as "
             f"{len(written)} bytes, expected {len(pinned)}"
         )
     print(f"published {len(todo)} new objects + repo tip", file=log)
@@ -174,9 +175,9 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    src_bucket = os.environ.get("ICECHUNK_BUCKET")
-    src_prefix = storage_prefix()
-    if not src_bucket or not src_prefix:
+    source_bucket = os.environ.get("ICECHUNK_BUCKET")
+    source_prefix = storage_prefix()
+    if not source_bucket or not source_prefix:
         print(
             "ICECHUNK_BUCKET and S3_PREFIX/ICECHUNK_PREFIX must be set "
             "(local-filesystem stores have nothing to publish)",
@@ -184,21 +185,20 @@ def main() -> int:
         )
         return 2
 
-    # The source prefix is unique per collection, so nesting it under
-    # DEST_ROOT keeps collections apart without extra configuration.
-    dst_prefix = f"{DEST_ROOT}/{src_prefix}".strip("/")
+    # Nest the per-collection source prefix under DEST_ROOT.
+    destination_prefix = f"{DEST_ROOT}/{source_prefix}".strip("/")
 
     print(
-        f"s3://{src_bucket}/{src_prefix}/ -> s3://{DEST_BUCKET}/{dst_prefix}/",
+        f"s3://{source_bucket}/{source_prefix}/ -> s3://{DEST_BUCKET}/{destination_prefix}/",
         file=sys.stderr,
     )
     mirror(
         source_client(),
         destination_client(),
-        src_bucket=src_bucket,
-        src_prefix=f"{src_prefix.strip('/')}/",
-        dst_bucket=DEST_BUCKET,
-        dst_prefix=f"{dst_prefix}/",
+        source_bucket=source_bucket,
+        source_prefix=f"{source_prefix.strip('/')}/",
+        destination_bucket=DEST_BUCKET,
+        destination_prefix=f"{destination_prefix}/",
         workers=WORKERS,
         dry_run=args.dry_run,
     )
