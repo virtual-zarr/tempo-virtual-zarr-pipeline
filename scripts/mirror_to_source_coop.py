@@ -39,11 +39,18 @@ DEST_BUCKET = "us-west-2.opendata.source.coop"
 DEST_ROOT = "pangeo/tempo-virtual-icechunk"
 REGION = "us-west-2"  # the store and Source Coop both live source_keys
 WORKERS = 16
+# Ignore any AWS_ENDPOINT_URL in the environment, which would redirect both
+# sides. botocore honors this from 1.29 on; the stubs do not list it yet.
+NO_ENDPOINT_OVERRIDE = {"ignore_configured_endpoint_urls": True}
 
 
 def source_client() -> Any:
     """The source store, read with your own AWS credentials."""
-    return boto3.client("s3", region_name=REGION)
+    return boto3.client(
+        "s3",
+        region_name=REGION,
+        config=Config(**NO_ENDPOINT_OVERRIDE),
+    )
 
 
 def destination_client() -> Any:
@@ -68,7 +75,7 @@ def destination_client() -> Any:
         aws_access_key_id=key,
         aws_secret_access_key=secret,
         aws_session_token=os.environ.get("SOURCE_COOP_SESSION_TOKEN"),
-        config=Config(s3={"addressing_style": "path"}),
+        config=Config(s3={"addressing_style": "path"}, **NO_ENDPOINT_OVERRIDE),
     )
 
 

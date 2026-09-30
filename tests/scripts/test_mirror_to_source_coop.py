@@ -57,6 +57,18 @@ def written_keys(client: Any) -> list[str]:
     return [obj["Key"][len(DST_PREFIX) :] for obj in listing.get("Contents", [])]
 
 
+def test_clients_ignore_a_configured_endpoint(monkeypatch: Any) -> None:
+    monkeypatch.setenv("AWS_ENDPOINT_URL", "http://localhost:9000")
+    monkeypatch.setenv("SOURCE_COOP_ACCESS_KEY_ID", "key")
+    monkeypatch.setenv("SOURCE_COOP_SECRET_ACCESS_KEY", "secret")
+
+    for client in (
+        mirror_to_source_coop.source_client(),
+        mirror_to_source_coop.destination_client(),
+    ):
+        assert client.meta.endpoint_url == "https://s3.us-west-2.amazonaws.com"
+
+
 def test_destination_credentials_are_required(monkeypatch: Any) -> None:
     # Without them boto3 would sign with the source's AWS credentials.
     monkeypatch.delenv("SOURCE_COOP_ACCESS_KEY_ID", raising=False)
