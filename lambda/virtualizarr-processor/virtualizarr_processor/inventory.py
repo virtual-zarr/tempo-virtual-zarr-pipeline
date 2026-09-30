@@ -17,6 +17,7 @@ parse time on both the build and the consume side.
 from __future__ import annotations
 
 from collections import Counter
+from datetime import datetime
 from typing import Literal
 
 import numpy as np
@@ -31,6 +32,11 @@ class GranuleEntry(BaseModel, frozen=True):
     url: str
     granule_ur: str
     time: float  # exact float64 /time[0], seconds since the TEMPO epoch
+    # The last_updated_at stamp the granule's references were (or will be)
+    # written with. Carried by forward-processing batch state and pending
+    # ledger entries so an unchanged redelivery can be skipped without a
+    # parse; inventories built from CMR don't have it.
+    stamp: datetime | None = None
 
     @field_validator("url")
     @classmethod

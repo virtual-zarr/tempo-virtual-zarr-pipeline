@@ -57,6 +57,7 @@ from virtualizarr_processor.granule import make_registry
 from virtualizarr_processor.inventory import BackfillInventory
 from virtualizarr_processor.manifest import (
     MANIFEST_ARRAYS,
+    STAMP_ARRAY,
     TEMPO_EPOCH,
     PendingLedger,
     StoreManifest,
@@ -195,7 +196,8 @@ def verify_store(
         int(i)
         for i in rng.choice(axis.size, size=min(samples, axis.size), replace=False)
     )
-    skip = COORDINATES + MANIFEST_ARRAYS
+    # Stamps are pipeline bookkeeping, not granule data to verify.
+    skip = COORDINATES + MANIFEST_ARRAYS + (STAMP_ARRAY,)
     variables = [name for name in group.array_keys() if name not in skip]
 
     problems: list[str] = []

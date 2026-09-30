@@ -28,7 +28,7 @@ from pydantic_zarr.v3 import GroupSpec
 
 from virtualizarr_processor.collection import CollectionConfig
 from virtualizarr_processor.granule import open_flat_granule
-from virtualizarr_processor.manifest import MANIFEST_ARRAYS
+from virtualizarr_processor.manifest import MANIFEST_ARRAYS, STAMP_ARRAY
 from virtualizarr_processor.store_template import (
     WRITE_ARTIFACT_ATTRIBUTES,
     AnyGroupSpec,
@@ -61,9 +61,9 @@ def build_template(
     session = repo.writable_session("main")
     reference.vz.to_icechunk(session.store, validate_containers=False)
 
-    # The store's own manifest: one granule UR and source URL per axis slot,
-    # captured into the template like every other array.
-    for name in MANIFEST_ARRAYS:
+    # The store's own manifest: one granule UR, source URL, and reference
+    # stamp per axis slot, captured into the template like every other array.
+    for name in (*MANIFEST_ARRAYS, STAMP_ARRAY):
         zarr.create_array(
             session.store,
             name=name,

@@ -183,10 +183,18 @@ bucket; see the note below.) The SQS consumer routes each granule:
 
 | Situation | Action |
 |---|---|
+| granule UR owns a slot (or ledger entry) and the source object is unchanged | skip: no parse, no write (`UNCHANGED`) |
 | time is after the axis end | append |
-| time occupies a slot, same granule UR | overwrite the slot in place (republication or redelivery) |
+| time occupies a slot, same granule UR | overwrite the slot in place (genuine republication) |
 | time occupies a slot, different granule UR | reject to the DLQ |
 | time is out of order | record in the pending ledger, consume the message |
+
+"Unchanged" is decided by one HEAD request: each slot records the exact
+`last_updated_at` stamp its references were written with (the
+`granule_stamp` array), and an equal stamp means the existing references
+still read correctly — the same change signal the read path lives by. A
+batch of only unchanged redeliveries commits nothing, so redeliveries in
+the poller's overlap window stop producing no-op snapshots.
 
 Out-of-order arrivals are routine, not an edge case: in a recent 14-day
 window ~43% of adjacent publications were out of scan-time order — mostly
@@ -486,7 +494,7 @@ file, all under
 | Message url | Why | Expected consumer outcome |
 |---|---|---|
 | `TEMPO_HCHO_L3_V04_20260824T154044Z_S007.nc` | first scan after the newest slot (`S006`) | `APPENDED` — appended to the axis |
-| `TEMPO_HCHO_L3_V04_20260824T144044Z_S006.nc` | newest slot itself, same UR | `OVERWRITTEN` — slot refreshed in place, store shape unchanged |
+| `TEMPO_HCHO_L3_V04_20260824T144044Z_S006.nc` (send twice) | newest slot itself, same UR | first `OVERWRITTEN` — the slot's stamp was unknown, refreshed in place and stamped; second `UNCHANGED` — equal stamp, consumed without a parse, write, or commit |
 | `TEMPO_HCHO_L3_V04_20260824T110012Z_S001.nc` | before the oldest slot (`S002`) | `DEFERRED` — pending ledger; the re-sort job folds it in later |
 
 Send appends oldest-first (`S007` before `S008`): an append lands only past
@@ -659,7 +667,7 @@ resource names):
 | Metric | Emitted by | How to read it |
 |---|---|---|
 | `AxisEndLag` (seconds) | consumer after each commit; re-sort after each promote | store freshness; production lag is normally a few hours — mostly upstream (scan → CMR publication), see [runbook-production-lag](./docs/runbook-production-lag.md) for the attribution |
-| `GranulesRouted` (dimension `Route`) | consumer, per committed batch | `APPENDED` = growth, `OVERWRITTEN` = republications, `PENDING` = out-of-order arrivals headed for the re-sort (routinely a large share), `REJECTED` = collisions headed for the DLQ (counted on first delivery only; redeliveries are not re-counted) |
+| `GranulesRouted` (dimension `Route`) | consumer, per consumed batch | `APPENDED` = growth, `UNCHANGED` = redeliveries of unchanged sources skipped without a write (the steady band; its absence with a flowing queue is the anomaly), `OVERWRITTEN` = genuine republications (rare), `PENDING` = out-of-order arrivals headed for the re-sort (routinely a large share), `REJECTED` = collisions headed for the DLQ (counted on first delivery only; redeliveries are not re-counted) |
 | `PendingLedgerDepth` | consumer and re-sort | nonzero is healthy; trending up across days means the re-sort is not keeping pace |
 | `FoldedGranules` | re-sort (0 when it ran with an empty ledger) | pinned at `RESORT_MAX_FOLD` every run means falling behind |
 | `PromoteFailures` | re-sort, when its promote raises | occasional ones are the single-writer design working (a concurrent commit won the CAS); sustained ones mean writers are fighting — or S3 trouble, the counter does not distinguish |

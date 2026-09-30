@@ -544,3 +544,177 @@ def test_open_backfill_repo_authorizes_container_only_for_readers(
     s3_auth = captured["authorize_virtual_chunk_access"]
     assert set(s3_auth) == {"s3://asdc-prod-protected/"}
     assert isinstance(s3_auth["s3://asdc-prod-protected/"], icechunk.Credentials.S3)
+
+
+# --- Unchanged-redelivery fast path (overwrite-on-change) ---
+
+
+def stamps_on_main(processor: Processor) -> list[str]:
+    from virtualizarr_processor.manifest import GranuleStamps
+
+    repo = processor.open_backfill_repo()
+    stamps = GranuleStamps.read(repo.readonly_session("main").store)
+    assert stamps is not None
+    return stamps
+
+
+def test_forward_unchanged_redelivery_is_skipped(tiny: TinyCollection) -> None:
+    """First redelivery self-heals the backfill's unknown stamp (slow path,
+    OVERWRITTEN); the second finds an equal stamp and is consumed without a
+    parse, a write, or a commit — the snapshot id must not move."""
+    processor = backfilled(tiny)
+    assert stamps_on_main(processor) == [""] * len(tiny.times)
+
+    assert forward(processor, [tiny.urls[1]]) == [ProcessOutcome.OVERWRITTEN]
+    stamps = stamps_on_main(processor)
+    assert stamps[1] and [s for i, s in enumerate(stamps) if i != 1] == [""] * (
+        len(tiny.times) - 1
+    )
+
+    repo = processor.open_backfill_repo()
+    tip_before = repo.lookup_branch("main")
+    assert forward(processor, [tiny.urls[1]]) == [ProcessOutcome.UNCHANGED]
+    assert repo.lookup_branch("main") == tip_before  # no no-op snapshot
+    # Freshness stays observable on commitless invocations.
+    assert processor.axis_end == tiny.times[-1]
+
+
+def test_forward_changed_source_takes_slow_path_and_restamps(
+    tiny: TinyCollection,
+) -> None:
+    """A redelivery whose source object moved (different mtime => different
+    stamp) falls through to today's overwrite branch and records the new
+    stamp."""
+    import os
+
+    processor = backfilled(tiny)
+    assert forward(processor, [tiny.urls[1]]) == [ProcessOutcome.OVERWRITTEN]
+    first_stamp = stamps_on_main(processor)[1]
+
+    path = tiny.granule_paths[1]
+    stat = path.stat()
+    os.utime(path, (stat.st_atime, stat.st_mtime + 10))
+    assert forward(processor, [tiny.urls[1]]) == [ProcessOutcome.OVERWRITTEN]
+    second_stamp = stamps_on_main(processor)[1]
+    assert second_stamp and second_stamp != first_stamp
+
+
+def test_forward_missing_stamp_array_disables_fast_path(
+    tiny: TinyCollection, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A store predating the granule_stamp array behaves byte-for-byte as
+    before the fast path existed: every redelivery overwrites."""
+    from virtualizarr_processor.manifest import GranuleStamps
+
+    processor = backfilled(tiny)
+    assert forward(processor, [tiny.urls[1]]) == [ProcessOutcome.OVERWRITTEN]
+
+    monkeypatch.setattr(GranuleStamps, "read", staticmethod(lambda store: None))
+    assert forward(processor, [tiny.urls[1]]) == [ProcessOutcome.OVERWRITTEN]
+
+
+def test_forward_ledger_redelivery_unchanged_skips_ledger_rewrite(
+    tiny: TinyCollection,
+) -> None:
+    """A deferred granule's redelivery with an equal stamp is UNCHANGED (no
+    parse, no ledger rewrite, no commit); with a moved stamp it re-defers
+    and the entry's stamp is replaced."""
+    import os
+
+    from virtualizarr_processor.manifest import PendingLedger
+
+    processor = backfilled(tiny)
+    historical = write_tempo_granule(
+        tiny.granule_paths[0].parent / "historical.nc",
+        time_value=tiny.times[0] + 1800.0,
+    )
+    assert forward(processor, [f"file://{historical}"]) == [ProcessOutcome.DEFERRED]
+    repo = processor.open_backfill_repo()
+    (entry,) = PendingLedger.read(repo.readonly_session("main").store)
+    assert entry.stamp is not None
+
+    tip_before = repo.lookup_branch("main")
+    assert forward(processor, [f"file://{historical}"]) == [ProcessOutcome.UNCHANGED]
+    assert repo.lookup_branch("main") == tip_before
+
+    stat = historical.stat()
+    os.utime(historical, (stat.st_atime, stat.st_mtime + 10))
+    assert forward(processor, [f"file://{historical}"]) == [ProcessOutcome.DEFERRED]
+    (replaced,) = PendingLedger.read(repo.readonly_session("main").store)
+    assert replaced.stamp is not None and replaced.stamp != entry.stamp
+
+
+def test_forward_mixed_batch_commits_and_stamps_the_append(
+    tiny: TinyCollection,
+) -> None:
+    """UNCHANGED alongside a real write must not suppress the commit, and
+    the appended slot's stamp is recorded with it."""
+    processor = backfilled(tiny)
+    assert forward(processor, [tiny.urls[1]]) == [ProcessOutcome.OVERWRITTEN]
+    new = write_tempo_granule(
+        tiny.granule_paths[0].parent / "granule_new.nc",
+        time_value=tiny.times[-1] + 3600.0,
+    )
+    assert forward(processor, [tiny.urls[1], f"file://{new}"]) == [
+        ProcessOutcome.UNCHANGED,
+        ProcessOutcome.APPENDED,
+    ]
+    stamps = stamps_on_main(processor)
+    assert len(stamps) == len(tiny.times) + 1
+    assert stamps[-1]  # the append recorded its stamp
+    repo = processor.open_backfill_repo()
+    group = zarr.open_group(repo.readonly_session("main").store, mode="r")
+    assert np.asarray(group["time"][:]).size == len(tiny.times) + 1
+
+
+def test_forward_same_ur_twice_in_one_batch_resolves_against_batch_stamp(
+    tiny: TinyCollection,
+) -> None:
+    """A UR redelivered twice within one batch: the first write records the
+    batch-local stamp, the second occurrence must check it (not the
+    committed array) and skip."""
+    processor = backfilled(tiny)
+    assert forward(processor, [tiny.urls[1], tiny.urls[1]]) == [
+        ProcessOutcome.OVERWRITTEN,  # backfill stamp unknown: self-heal
+        ProcessOutcome.UNCHANGED,  # equal batch-local stamp
+    ]
+
+
+def test_resort_fold_carries_stamps(tiny: TinyCollection) -> None:
+    """Relocated slots keep their recorded stamp; the inserted slot takes
+    its ledger entry's stamp."""
+    from virtualizarr_processor.manifest import (
+        GranuleStamps,
+        PendingLedger,
+        StoreManifest,
+        stamp_value,
+    )
+    from virtualizarr_processor.resort import merge_pending
+
+    processor = backfilled(tiny)
+    # Record a stamp on slot 1, then defer an out-of-order granule.
+    assert forward(processor, [tiny.urls[1]]) == [ProcessOutcome.OVERWRITTEN]
+    historical = write_tempo_granule(
+        tiny.granule_paths[0].parent / "historical.nc",
+        time_value=tiny.times[0] + 1800.0,
+    )
+    assert forward(processor, [f"file://{historical}"]) == [ProcessOutcome.DEFERRED]
+
+    repo = processor.open_backfill_repo()
+    tip = repo.lookup_branch("main")
+    pinned = repo.readonly_session(snapshot_id=tip).store
+    slot1_stamp = GranuleStamps.read(pinned)
+    assert slot1_stamp is not None
+    manifest = StoreManifest.read(pinned)
+    assert manifest is not None
+    pending = PendingLedger.read(pinned)
+    merged = merge_pending(manifest, pending)
+
+    processor.initialize_resort_store(repo, merged, from_tip=tip)
+    resorted = GranuleStamps.read(repo.readonly_session("resort").store)
+    assert resorted is not None
+    inserted_index = [e.granule_ur for e in merged.granules].index("historical")
+    relocated_index = [e.granule_ur for e in merged.granules].index("granule_1")
+    assert resorted[relocated_index] == slot1_stamp[1]  # kept through the fold
+    assert pending[0].stamp is not None
+    assert resorted[inserted_index] == stamp_value(pending[0].stamp)
