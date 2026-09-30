@@ -247,8 +247,8 @@ def main() -> int:
         color="#0b0b0b",
     )
 
-    # side="right": a granule committed exactly at the frame time counts,
-    # so the final frame holds the complete story.
+    # side="right" so a granule committed exactly at the frame time counts
+    # and the final frame holds the complete story.
     counts_upto = {
         kind: np.searchsorted(c[:, 1], frame_times, side="right")
         if len(c)

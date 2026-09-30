@@ -200,7 +200,7 @@ def main() -> int:
     fig.get_layout_engine().set(rect=(0, 0.08, 1, 0.92))
     fig.text(0.02, 0.005, caption, fontsize=8.5, color="#52514e", va="bottom")
 
-    # Timeline: each committed scan becomes a tick on the day's UTC hour axis.
+    # Each committed scan becomes a tick on the timeline's UTC hour axis.
     hours = (day_times - day_times[0].astype("datetime64[D]")) / np.timedelta64(1, "h")
     ax_tl.set_xlim(0, 24)
     ax_tl.set_ylim(0, 1)
