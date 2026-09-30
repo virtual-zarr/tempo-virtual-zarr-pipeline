@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
-"""Mirror the Icechunk store to Source Cooperative.
+"""Publish the tip of the Icechunk store: a Source Cooperative mirror and a zip.
 
-Reads the repo file first (that pins the snapshot), copies the immutable
-files the destination lacks, then writes the repo file last, so a reader
-never sees a tip that names files still in flight. A crashed run leaves
-the old tip in place and the next run catches up. Nothing is deleted.
+Downloads the store, prunes a local copy to the tip of ``main`` with
+Icechunk's own expire and garbage-collect (so the source keeps its rollback
+window and the pipeline keeps committing), zips the pruned copy, then
+uploads it to Source Coop with ``repo`` last, so a reader never sees a tip
+that names files still in flight. Nothing is deleted from either bucket;
+objects earlier runs published linger as orphans.
 
 Source reads use your AWS credentials. Destination writes use the keys
 Source Coop issued: SOURCE_COOP_ACCESS_KEY_ID, SOURCE_COOP_SECRET_ACCESS_KEY
 and optionally SOURCE_COOP_SESSION_TOKEN. The store location comes from
 ICECHUNK_BUCKET and S3_PREFIX.
 
-Usage (add --dry-run to only report):
+Usage (--dry-run only reports; --no-upload stops after the zip):
     uv run --env-file .env_no2 --env-file .env.local scripts/mirror_to_source_coop.py
 """
 
@@ -19,25 +21,28 @@ from __future__ import annotations
 
 import argparse
 import os
+import shutil
 import sys
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 import boto3
+import icechunk
 from botocore.config import Config
 from botocore.exceptions import ClientError
 from virtualizarr_processor.manifest import storage_prefix
 
-IMMUTABLE_PREFIXES = ("snapshots", "manifests", "transactions", "chunks")
 REPO_INFO_KEY = "repo"  # icechunk-format's REPO_INFO_FILE_PATH
-CONFIG_KEY = "config.yaml"
+BACKUPS = "overwritten/"  # repo-file backups: inspection only, stale once pruned
 
 # Source Coop's direct S3 bucket. data.source.coop is the other endpoint;
 # set DEST_ENDPOINT to use it.
 DEST_ENDPOINT: str | None = None
 DEST_BUCKET = "us-west-2.opendata.source.coop"
 DEST_ROOT = "pangeo/tempo-virtual-icechunk"
-REGION = "us-west-2"  # the store and Source Coop both live source_keys
+REGION = "us-west-2"  # the store and Source Coop both live here
 WORKERS = 16
 # Ignore any AWS_ENDPOINT_URL in the environment, which would redirect both
 # sides. botocore honors this from 1.29 on; the stubs do not list it yet.
@@ -66,7 +71,7 @@ def destination_client() -> Any:
         raise SystemExit(
             "set SOURCE_COOP_ACCESS_KEY_ID and SOURCE_COOP_SECRET_ACCESS_KEY "
             "to the credentials Source Coop issued for the repository; your "
-            "own AWS credentials grant nothing destination_keys"
+            "own AWS credentials grant nothing there"
         )
     return boto3.client(
         "s3",
@@ -79,17 +84,110 @@ def destination_client() -> Any:
     )
 
 
-def relative_keys(client: Any, bucket: str, prefix: str) -> set[str]:
-    """Keys under ``prefix`` (ending in ``/``), relative to it."""
-    keys: set[str] = set()
+def object_sizes(client: Any, bucket: str, prefix: str) -> dict[str, int]:
+    """Objects under ``prefix`` (ending in ``/``): relative key -> size."""
+    sizes: dict[str, int] = {}
     for page in client.get_paginator("list_objects_v2").paginate(
         Bucket=bucket, Prefix=prefix
     ):
-        keys |= {obj["Key"][len(prefix) :] for obj in page.get("Contents", [])}
-    return keys
+        sizes |= {
+            obj["Key"][len(prefix) :]: obj["Size"] for obj in page.get("Contents", [])
+        }
+    return sizes
 
 
-def mirror(
+def file_sizes(directory: Path) -> dict[str, int]:
+    """Files under ``directory``: relative posix path -> size."""
+    return {
+        path.relative_to(directory).as_posix(): path.stat().st_size
+        for path in directory.rglob("*")
+        if path.is_file()
+    }
+
+
+def download(
+    source: Any, bucket: str, prefix: str, directory: Path, *, workers: int, log: Any
+) -> int:
+    """Fetch what ``directory`` lacks; return how many objects were fetched.
+
+    ``repo`` comes first: it pins a snapshot whose files already exist, so a
+    commit landing mid-download can't leave the copy naming files it never
+    fetched. Sizes stand in for checksums; boto3 renames completed downloads
+    into place, so a partial file never matches.
+    """
+    directory.mkdir(parents=True, exist_ok=True)
+    source.download_file(bucket, prefix + REPO_INFO_KEY, str(directory / REPO_INFO_KEY))
+    have = file_sizes(directory)
+    todo = [
+        key
+        for key, size in object_sizes(source, bucket, prefix).items()
+        if key != REPO_INFO_KEY
+        and not key.startswith(BACKUPS)
+        and have.get(key) != size
+    ]
+
+    def fetch(key: str) -> None:
+        path = directory / key
+        path.parent.mkdir(parents=True, exist_ok=True)
+        source.download_file(bucket, prefix + key, str(path))
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        list(pool.map(fetch, todo))
+    print(f"downloaded {len(todo)} objects to {directory}", file=log)
+    return len(todo)
+
+
+def prune(directory: Path, *, log: Any) -> str:
+    """Cut the local copy down to the tip of ``main``; return the tip's id."""
+    repo = icechunk.Repository.open(icechunk.local_filesystem_storage(str(directory)))
+    now = datetime.now(timezone.utc)
+    repo.expire_snapshots(
+        older_than=now, delete_expired_branches=True, delete_expired_tags=True
+    )
+    summary = repo.garbage_collect(delete_object_older_than=now)
+    shutil.rmtree(directory / BACKUPS, ignore_errors=True)
+    tip = repo.lookup_branch("main")
+    print(f"pruned to main @ {tip}: {summary}", file=log)
+    return tip
+
+
+def upload(
+    destination: Any,
+    directory: Path,
+    bucket: str,
+    prefix: str,
+    *,
+    workers: int,
+    log: Any,
+) -> int:
+    """Send what the destination lacks, ``repo`` last; return how many were sent."""
+    try:
+        have = object_sizes(destination, bucket, prefix)
+    except ClientError as error:
+        raise SystemExit(
+            f"listing {bucket}/{prefix} failed: {error}. "
+            "Check the SOURCE_COOP_* credentials cover that prefix."
+        ) from error
+    todo = sorted(
+        key
+        for key, size in file_sizes(directory).items()
+        if key != REPO_INFO_KEY and have.get(key) != size
+    )
+
+    def put(key: str) -> None:
+        destination.upload_file(str(directory / key), bucket, prefix + key)
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        # list() so a failed upload raises before the repo file is written.
+        list(pool.map(put, todo))
+    put(REPO_INFO_KEY)
+    print(
+        f"published {len(todo)} objects + repo tip to s3://{bucket}/{prefix}", file=log
+    )
+    return len(todo) + 1
+
+
+def publish(
     source: Any,
     destination: Any,
     *,
@@ -97,80 +195,44 @@ def mirror(
     source_prefix: str,
     destination_bucket: str,
     destination_prefix: str,
-    workers: int = 16,
+    directory: Path,
+    workers: int = WORKERS,
     dry_run: bool = False,
+    upload_copy: bool = True,
     log: Any = sys.stderr,
-) -> int:
-    """Copy one snapshot; return how many objects were written.
+) -> Path | None:
+    """Download, prune, zip, upload; return the zip's path (None on a dry run).
 
-    The prefixes are repository roots ending in ``/``.
+    The prefixes are repository roots ending in ``/``. ``directory`` keeps
+    the full download so reruns fetch only what's new; the pruned copy lives
+    beside it with a ``-tip`` suffix and is rebuilt every run.
     """
-    pinned = source.get_object(Bucket=source_bucket, Key=source_prefix + REPO_INFO_KEY)[
-        "Body"
-    ].read()
-    print(f"pinned {source_prefix}{REPO_INFO_KEY} ({len(pinned)} bytes)", file=log)
-
-    # Nothing is deleted; files the source GC expires linger as orphans.
-    todo: list[str] = []
-    for area in IMMUTABLE_PREFIXES:
-        source_keys = relative_keys(source, source_bucket, f"{source_prefix}{area}/")
-        try:
-            destination_keys = relative_keys(
-                destination, destination_bucket, f"{destination_prefix}{area}/"
-            )
-        except ClientError as error:
-            # Say which side failed; the destination keys cover one prefix.
-            raise SystemExit(
-                f"listing {destination_bucket}/{destination_prefix}{area}/ failed: "
-                f"{error}. Check the SOURCE_COOP_* credentials cover that prefix."
-            ) from error
-        missing = sorted(source_keys - destination_keys)
+    if dry_run:
+        sizes = object_sizes(source, source_bucket, source_prefix)
         print(
-            f"{area}: {len(source_keys)} source, {len(destination_keys)} destination, "
-            f"{len(missing)} to copy",
+            f"dry run: {len(sizes)} objects, {sum(sizes.values()) / 1e9:.2f} GB at "
+            f"s3://{source_bucket}/{source_prefix}; would download to {directory}",
             file=log,
         )
-        todo += [f"{area}/{key}" for key in missing]
+        return None
 
-    if dry_run:
-        print(f"dry run: would copy {len(todo)} objects", file=log)
-        return 0
-
-    def copy(key: str) -> None:
-        body = source.get_object(Bucket=source_bucket, Key=source_prefix + key)["Body"]
-        destination.upload_fileobj(body, destination_bucket, destination_prefix + key)
-
-    if todo:
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            # list() so a failed copy raises before the repo file is written.
-            list(pool.map(copy, todo))
-
-    # Small and mutable, so always refresh it. Optional; readers default
-    # without it.
-    try:
-        config = source.get_object(
-            Bucket=source_bucket, Key=source_prefix + CONFIG_KEY
-        )["Body"].read()
-    except source.exceptions.NoSuchKey:
-        config = None
-    if config is not None:
-        destination.put_object(
-            Bucket=destination_bucket, Key=destination_prefix + CONFIG_KEY, Body=config
+    download(source, source_bucket, source_prefix, directory, workers=workers, log=log)
+    tip_dir = directory.with_name(directory.name + "-tip")
+    shutil.rmtree(tip_dir, ignore_errors=True)
+    shutil.copytree(directory, tip_dir)
+    prune(tip_dir, log=log)
+    archive = Path(shutil.make_archive(str(tip_dir), "zip", root_dir=tip_dir))
+    print(f"zipped {archive} ({archive.stat().st_size / 1e6:.1f} MB)", file=log)
+    if upload_copy:
+        upload(
+            destination,
+            tip_dir,
+            destination_bucket,
+            destination_prefix,
+            workers=workers,
+            log=log,
         )
-
-    destination.put_object(
-        Bucket=destination_bucket, Key=destination_prefix + REPO_INFO_KEY, Body=pinned
-    )
-    written = destination.get_object(
-        Bucket=destination_bucket, Key=destination_prefix + REPO_INFO_KEY
-    )["Body"].read()
-    if written != pinned:
-        raise RuntimeError(
-            f"published {destination_prefix}{REPO_INFO_KEY} reads back as "
-            f"{len(written)} bytes, expected {len(pinned)}"
-        )
-    print(f"published {len(todo)} new objects + repo tip", file=log)
-    return len(todo)
+    return archive
 
 
 def main() -> int:
@@ -178,7 +240,17 @@ def main() -> int:
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="report what would be copied and exit without writing",
+        help="report the source's size and exit without downloading",
+    )
+    parser.add_argument(
+        "--no-upload",
+        action="store_true",
+        help="stop after writing the zip; needs no Source Coop credentials",
+    )
+    parser.add_argument(
+        "--dir",
+        type=Path,
+        help="where the full download lives (default: stores/<S3_PREFIX>)",
     )
     args = parser.parse_args()
 
@@ -191,23 +263,26 @@ def main() -> int:
             file=sys.stderr,
         )
         return 2
+    source_prefix = source_prefix.strip("/")
 
     # Nest the per-collection source prefix under DEST_ROOT.
-    destination_prefix = f"{DEST_ROOT}/{source_prefix}".strip("/")
+    destination_prefix = f"{DEST_ROOT}/{source_prefix}"
+    upload_copy = not (args.dry_run or args.no_upload)
 
     print(
         f"s3://{source_bucket}/{source_prefix}/ -> s3://{DEST_BUCKET}/{destination_prefix}/",
         file=sys.stderr,
     )
-    mirror(
+    publish(
         source_client(),
-        destination_client(),
+        destination_client() if upload_copy else None,
         source_bucket=source_bucket,
-        source_prefix=f"{source_prefix.strip('/')}/",
+        source_prefix=f"{source_prefix}/",
         destination_bucket=DEST_BUCKET,
         destination_prefix=f"{destination_prefix}/",
-        workers=WORKERS,
+        directory=args.dir or Path("stores") / source_prefix,
         dry_run=args.dry_run,
+        upload_copy=upload_copy,
     )
     return 0
 
