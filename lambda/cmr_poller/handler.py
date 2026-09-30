@@ -49,7 +49,7 @@ NAMESPACE = "TempoPipeline"
 DIMENSION_ENV = {"Collection": "TEMPO_COLLECTION", "Stage": "STAGE"}
 
 
-class Sighting(NamedTuple):
+class Arrival(NamedTuple):
     cls: str  # FRESH | RETROACTIVE | REDELIVERED
     published: datetime
     scan_start: datetime | None
@@ -61,10 +61,10 @@ def _iso(value: str) -> datetime:
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
-def sight(item: dict, watermark: datetime, now: datetime) -> Sighting:
-    """Classify one sighted granule against the previous poll's watermark.
+def classify_arrival(item: dict, watermark: datetime, now: datetime) -> Arrival:
+    """Classify one granule the poll returned against the previous poll's watermark.
 
-    Only FRESH sightings feed the lag metrics. Everything is enqueued; the
+    Only FRESH arrivals feed the lag metrics. Everything is enqueued; the
     consumer's routing reports what each granule meant for the store as
     GranulesRouted, so the poller keeps no counts of its own. A republished
     fresh scan also looks FRESH here, since CMR keeps only the latest
@@ -73,13 +73,13 @@ def sight(item: dict, watermark: datetime, now: datetime) -> Sighting:
     """
     published = _iso(item["meta"]["revision-date"])
     if published <= watermark:
-        return Sighting("REDELIVERED", published, None, None)
+        return Arrival("REDELIVERED", published, None, None)
     umm = item.get("umm", {})
     scan_start = _iso(umm["TemporalExtent"]["RangeDateTime"]["BeginningDateTime"])
     production_raw = umm.get("DataGranule", {}).get("ProductionDateTime")
     production = _iso(production_raw) if production_raw else None
     cls = "FRESH" if scan_start >= now - FRESH_SCAN_WINDOW else "RETROACTIVE"
-    return Sighting(cls, published, scan_start, production)
+    return Arrival(cls, published, scan_start, production)
 
 
 def _emit(name: str, value: float, unit: str = "Count") -> None:
@@ -263,14 +263,14 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                 extra={"meta": item.get("meta", {})},
             )
             continue
-        sighting = sight(item, watermark, started)
+        arrival = classify_arrival(item, watermark, started)
         message = {"url": url}
-        if sighting.cls == "FRESH":
+        if arrival.cls == "FRESH":
             # The consumer turns this into VirtualizationLag at commit.
-            message["published"] = sighting.published.isoformat()
-            if sighting.production and sighting.scan_start:
-                production_lag = sighting.production - sighting.scan_start
-                cmr_lag = sighting.published - sighting.production
+            message["published"] = arrival.published.isoformat()
+            if arrival.production and arrival.scan_start:
+                production_lag = arrival.production - arrival.scan_start
+                cmr_lag = arrival.published - arrival.production
                 _emit("ProductionLag", production_lag.total_seconds(), "Seconds")
                 _emit("CmrLag", cmr_lag.total_seconds(), "Seconds")
         messages.append(message)

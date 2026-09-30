@@ -50,20 +50,22 @@ NOW = datetime(2026, 9, 17, 16, 0, tzinfo=timezone.utc)
 WATERMARK = datetime(2026, 9, 17, 15, 0, tzinfo=timezone.utc)
 
 
-def test_sight_classifies_the_three_arrival_classes() -> None:
+def test_classify_arrival_three_classes() -> None:
     # Only re-seen because of the overlap window: at/below the exact watermark.
     redelivered = _cmr_item(revision_date="2026-09-17T14:59:00Z")
-    assert poller.sight(redelivered, WATERMARK, NOW).cls == "REDELIVERED"
+    assert poller.classify_arrival(redelivered, WATERMARK, NOW).cls == "REDELIVERED"
     # Publication of a recent scan; the revision id plays no part.
-    assert poller.sight(_cmr_item(), WATERMARK, NOW).cls == "FRESH"
-    assert poller.sight(_cmr_item(revision_id=4), WATERMARK, NOW).cls == "FRESH"
+    assert poller.classify_arrival(_cmr_item(), WATERMARK, NOW).cls == "FRESH"
+    assert (
+        poller.classify_arrival(_cmr_item(revision_id=4), WATERMARK, NOW).cls == "FRESH"
+    )
     # Publication of an old scan (historical arrival).
     retro = _cmr_item(scan_start="2026-08-01T12:00:00Z")
-    assert poller.sight(retro, WATERMARK, NOW).cls == "RETROACTIVE"
+    assert poller.classify_arrival(retro, WATERMARK, NOW).cls == "RETROACTIVE"
 
 
-def test_sight_tolerates_missing_production_datetime() -> None:
-    s = poller.sight(_cmr_item(production=None), WATERMARK, NOW)
+def test_classify_arrival_tolerates_missing_production_datetime() -> None:
+    s = poller.classify_arrival(_cmr_item(production=None), WATERMARK, NOW)
     assert s.cls == "FRESH" and s.production is None
 
 

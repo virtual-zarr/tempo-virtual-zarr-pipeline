@@ -141,7 +141,7 @@ def handler(event: Any, context: LambdaContext) -> PartialItemFailureResponse:
         if outcome is not None:
             counts[outcome] += 1
             if outcome is ProcessOutcome.APPENDED and message.get("published"):
-                # Only fresh sightings carry the field. The poller omits it on
+                # Only fresh arrivals carry the field. The poller omits it on
                 # redeliveries and retroactive arrivals, whose lag would
                 # measure poll cadence or backlog. OVERWRITTEN is excluded
                 # too, since a republished scan's revision-date is the
