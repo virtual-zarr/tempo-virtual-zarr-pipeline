@@ -35,7 +35,7 @@ IMMUTABLE_PREFIXES = ("snapshots", "manifests", "transactions", "chunks")
 REPO_INFO_KEY = "repo"  # icechunk-format's REPO_INFO_FILE_PATH
 CONFIG_KEY = "config.yaml"
 
-# Source Coop's direct-S3 address: a real bucket in us-west-2, with the
+# Source Coop's direct S3 address is a real bucket in us-west-2, with the
 # account and repository as the leading key segments. The data.source.coop
 # endpoint is the other way in; set DEST_ENDPOINT to switch to it.
 DEST_ENDPOINT: str | None = None
@@ -107,8 +107,8 @@ def mirror(
     ].read()
     print(f"pinned {src_prefix}{REPO_INFO_KEY} ({len(pinned)} bytes)", file=log)
 
-    # ponytail: no deletes, so files the source GC expires linger here as
-    # orphans; add a delete pass after the repo PUT when the count matters.
+    # Nothing is deleted, so files the source GC expires linger here as
+    # orphans. Add a delete pass after the repo PUT when the count matters.
     todo: list[str] = []
     for area in IMMUTABLE_PREFIXES:
         here = relative_keys(src, src_bucket, f"{src_prefix}{area}/")
