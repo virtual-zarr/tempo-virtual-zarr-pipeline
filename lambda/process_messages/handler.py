@@ -138,13 +138,12 @@ def handler(event: Any, context: LambdaContext) -> PartialItemFailureResponse:
             raise RuntimeError(f"granule rejected: {granule_url(message)}")
         if outcome is not None:
             counts[outcome] += 1
-            if outcome in (
-                ProcessOutcome.APPENDED,
-                ProcessOutcome.OVERWRITTEN,
-            ) and message.get("published"):
-                # Only fresh first publications carry the field (the poller
-                # omits it on redeliveries/retroactive/revised, whose "lag"
-                # would measure poll cadence or backlog, not the pipeline).
+            if outcome is ProcessOutcome.APPENDED and message.get("published"):
+                # Only fresh sightings carry the field (the poller omits it on
+                # redeliveries and retroactive arrivals, whose "lag" would
+                # measure poll cadence or backlog). APPENDED only: an
+                # OVERWRITTEN fresh scan is a republication, and CMR's
+                # revision-date is then the redelivery, not first publication.
                 published_fresh.append(str(message["published"]))
 
     with batch_processor(records=records, handler=record_handler) as batch:

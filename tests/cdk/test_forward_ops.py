@@ -71,11 +71,10 @@ def test_forward_state_env_reaches_lambdas() -> None:
     )
 
 
-def test_poller_env_carries_metric_identity_and_revision_baseline() -> None:
-    """The poller emits GranulesSeen/ProductionLag/CmrLag itself, so it
-    needs the {Collection, Stage} dimension env and the collection's
-    ingest-baseline revision id."""
-    _template(REVISION_BASELINE=2).has_resource_properties(
+def test_poller_env_carries_metric_identity() -> None:
+    """The poller emits ProductionLag/CmrLag itself, so it needs the
+    {Collection, Stage} dimension env."""
+    _template().has_resource_properties(
         "AWS::Lambda::Function",
         Match.object_like(
             {
@@ -83,7 +82,6 @@ def test_poller_env_carries_metric_identity_and_revision_baseline() -> None:
                     "Variables": Match.object_like(
                         {
                             "CONCEPT_ID": Match.any_value(),
-                            "REVISION_BASELINE": "2",
                             "TEMPO_COLLECTION": "hcho",
                             "STAGE": "dev",
                         }

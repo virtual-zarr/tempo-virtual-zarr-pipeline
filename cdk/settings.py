@@ -69,10 +69,6 @@ class StackSettings(BaseSettings):
     # First poll's starting point when no watermark exists yet (typically the
     # backfill inventory's build time). Unset falls back to a fixed lookback.
     POLL_START_ISO: str | None = None
-    # The collection's ingest-baseline revision id: a sighted granule with
-    # revision-id above this is REVISED. E.g. hcho was wholly re-ingested
-    # at revision 2. Measure with scripts/measure_publish_order.py.
-    REVISION_BASELINE: int = 1
     # Scheduled forward-processing jobs; deployed only when the forward queue is
     # enabled. None disables the individual schedule.
     RESORT_SCHEDULE_HOURS: int | None = 24

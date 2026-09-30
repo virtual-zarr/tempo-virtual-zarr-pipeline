@@ -24,7 +24,9 @@ EMITTER_SOURCES = [
     REPO / "scripts/verify_store.py",
     REPO / "lambda/cmr_poller/handler.py",
 ]
-EMIT_CALL = re.compile(r'_?emit(?:_metric)?\(\s*"(\w+)"|"MetricName":\s*"(\w+)"')
+EMIT_CALL = re.compile(
+    r'(?:^|[^\w.])(?:emit_metric|_emit)\(\s*"(\w+)"|"MetricName":\s*"(\w+)"'
+)
 
 
 def _template(*, backfill: bool = False, forward: bool | None = None) -> Template:
@@ -221,13 +223,8 @@ def test_dashboard_dimensions_match_emitters(
     monkeypatch.setenv("TEMPO_COLLECTION", "hcho")
     monkeypatch.setenv("STAGE", "dev")
     expected = metric_dimensions()  # {"Collection": "hcho", "Stage": "dev"}
-    # Forward-ops widgets (cmr_poller's GranulesSeen/ProductionLag/CmrLag)
-    # only render when _forward_ops runs, which backfill=True skips; the
-    # default template omits the backfill widgets instead. Union both so
-    # every emitter is covered.
-    metrics = _dashboard_metrics(_template()) + _dashboard_metrics(
-        _template(backfill=True)
-    )
+    # Backfill and forward widgets both present, so every emitter is covered.
+    metrics = _dashboard_metrics(_template(backfill=True, forward=True))
     assert metrics, "no TempoPipeline metrics found in the dashboard body"
     for definition in metrics:
         # ["Ns", "Name", dimName, dimValue, ..., {options}]
@@ -237,7 +234,6 @@ def test_dashboard_dimensions_match_emitters(
         pairs = definition[2:end]
         dims = dict(zip(pairs[::2], pairs[1::2]))
         dims.pop("Route", None)  # explicit extra, emitted per-call
-        dims.pop("Class", None)  # explicit extra, emitted per-call
         assert dims == expected, f"{definition[1]}: {dims} != {expected}"
 
 
@@ -251,42 +247,27 @@ def test_dashboard_queries_only_emitted_metric_names() -> None:
         for group in match.groups()
         if group
     }
-    # Union both templates: the forward-ops widgets and the backfill
-    # widgets are never both present in a single stack (see the dims test
-    # above), so both must be checked to see every emitted metric name.
     queried = {
         definition[1]
-        for definition in _dashboard_metrics(_template())
-        + _dashboard_metrics(_template(backfill=True))
+        for definition in _dashboard_metrics(_template(backfill=True, forward=True))
     }
     assert queried and queried <= emitted, queried - emitted
 
 
-def test_lag_attribution_widget_stacks_the_three_components() -> None:
-    """Production + CMR + virtualization lag as stacked hours: attribution
-    of the store's total lag by inspection."""
-    widget = _widget(_template(), "Lag attribution (hours)")
+def test_lag_attribution_widget_stacks_hourly_averages_in_raw_seconds() -> None:
+    """Production + CMR + virtualization lag stacked as hourly averages, in
+    raw seconds so the console humanizes them (a /3600 expression would
+    keep the Seconds unit and caption hours as seconds)."""
+    widget = _widget(_template(), "Lag attribution")
     assert widget["properties"]["stacked"] is True
-    expressions = [
-        m[0]["expression"]
-        for m in widget["properties"]["metrics"]
-        if isinstance(m[0], dict) and "expression" in m[0]
-    ]
-    assert len(expressions) == 3
-    assert all("/3600" in e for e in expressions)
-    flat = json.dumps(widget)
-    for name in ("ProductionLag", "CmrLag", "VirtualizationLag"):
-        assert name in flat
-
-
-def test_cmr_arrivals_widget_shows_every_class_including_redelivered() -> None:
-    """Redeliveries are a labeled band, not filtered out — the overlap
-    window's duplicate volume must stay visible on the dashboard."""
-    widget = _widget(_template(), "CMR arrivals by class")
-    assert widget["properties"]["stacked"] is True
-    flat = json.dumps(widget)
-    for cls in ("FRESH", "RETROACTIVE", "REVISED", "REDELIVERED"):
-        assert cls in flat
+    metrics = widget["properties"]["metrics"]
+    assert [m[1] for m in metrics] == ["ProductionLag", "CmrLag", "VirtualizationLag"]
+    for definition in metrics:
+        options = definition[-1]
+        # CDK omits the statistic when it is CloudWatch's default, Average.
+        assert options.get("stat", "Average") == "Average"
+        assert options["period"] == 3600
+    assert "expression" not in json.dumps(widget)
 
 
 def test_store_lag_tile_shows_raw_seconds_for_console_humanization() -> None:

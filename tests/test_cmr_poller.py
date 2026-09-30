@@ -50,21 +50,20 @@ NOW = datetime(2026, 9, 17, 16, 0, tzinfo=timezone.utc)
 WATERMARK = datetime(2026, 9, 17, 15, 0, tzinfo=timezone.utc)
 
 
-def test_sight_classifies_the_four_arrival_classes() -> None:
+def test_sight_classifies_the_three_arrival_classes() -> None:
     # Only re-seen because of the overlap window: at/below the exact watermark.
     redelivered = _cmr_item(revision_date="2026-09-17T14:59:00Z")
-    assert poller.sight(redelivered, WATERMARK, NOW, 2).cls == "REDELIVERED"
-    # Revised beyond the collection's ingest baseline.
-    assert poller.sight(_cmr_item(revision_id=3), WATERMARK, NOW, 2).cls == "REVISED"
-    # First publication of a recent scan.
-    assert poller.sight(_cmr_item(), WATERMARK, NOW, 2).cls == "FRESH"
-    # First publication of an old scan (historical arrival).
+    assert poller.sight(redelivered, WATERMARK, NOW).cls == "REDELIVERED"
+    # Publication of a recent scan; the revision id plays no part.
+    assert poller.sight(_cmr_item(), WATERMARK, NOW).cls == "FRESH"
+    assert poller.sight(_cmr_item(revision_id=4), WATERMARK, NOW).cls == "FRESH"
+    # Publication of an old scan (historical arrival).
     retro = _cmr_item(scan_start="2026-08-01T12:00:00Z")
-    assert poller.sight(retro, WATERMARK, NOW, 2).cls == "RETROACTIVE"
+    assert poller.sight(retro, WATERMARK, NOW).cls == "RETROACTIVE"
 
 
 def test_sight_tolerates_missing_production_datetime() -> None:
-    s = poller.sight(_cmr_item(production=None), WATERMARK, NOW, 2)
+    s = poller.sight(_cmr_item(production=None), WATERMARK, NOW)
     assert s.cls == "FRESH" and s.production is None
 
 
@@ -85,21 +84,21 @@ def test_emit_writes_an_emf_blob_with_the_expected_dimensions(
     monkeypatch.setenv("TEMPO_COLLECTION", "hcho")
     monkeypatch.setenv("STAGE", "dev")
 
-    poller._emit("GranulesSeen", 3, Class="FRESH")
+    poller._emit("CmrLag", 1800.0, "Seconds")
 
     blobs = emf_blobs(capsys.readouterr().out)
-    (blob,) = [b for b in blobs if "GranulesSeen" in b]
+    (blob,) = [b for b in blobs if "CmrLag" in b]
     (spec,) = blob["_aws"]["CloudWatchMetrics"]
     assert spec["Namespace"] == poller.NAMESPACE
-    assert sorted(spec["Dimensions"][0]) == ["Class", "Collection", "Stage"]
-    assert emf_value(blobs, "GranulesSeen", Class="FRESH") == 3
+    assert sorted(spec["Dimensions"][0]) == ["Collection", "Stage"]
+    assert emf_value(blobs, "CmrLag") == 1800.0
 
 
-def test_handler_emits_class_counts_and_fresh_lags_and_tags_published(
+def test_handler_emits_fresh_lags_and_tags_published(
     sqs_queue: str, monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
 ) -> None:
-    """One poll over a mixed page: counts per class, lags for FRESH only,
-    `published` only on FRESH messages.
+    """One poll over a mixed page: lags for FRESH only, `published` only on
+    FRESH messages, everything enqueued.
 
     Timestamps are relative to `datetime.now(timezone.utc)`: handler()
     classifies FRESH against real now(), so fixed dates would go stale.
@@ -122,11 +121,6 @@ def test_handler_emits_class_counts_and_fresh_lags_and_tags_published(
             revision_date=(watermark - timedelta(minutes=1)).isoformat(),
         ),
         _cmr_item(
-            name="revised.nc",
-            revision_id=3,
-            revision_date=(watermark + timedelta(minutes=30)).isoformat(),
-        ),
-        _cmr_item(
             name="retro.nc",
             revision_date=(watermark + timedelta(minutes=30)).isoformat(),
             scan_start=(now - timedelta(days=40)).isoformat(),
@@ -134,8 +128,8 @@ def test_handler_emits_class_counts_and_fresh_lags_and_tags_published(
     ]
     emitted: list[tuple] = []
 
-    def record(name: str, value: float, unit: str = "Count", **dims: str) -> None:
-        emitted.append((name, value, dims))
+    def record(name: str, value: float, unit: str = "Count") -> None:
+        emitted.append((name, value))
 
     monkeypatch.setattr(poller, "_emit", record)
     # Pre-write the watermark file so the exact-watermark comparison runs.
@@ -144,16 +138,12 @@ def test_handler_emits_class_counts_and_fresh_lags_and_tags_published(
     monkeypatch.setenv("CONCEPT_ID", "C1")
     monkeypatch.setenv("QUEUE_URL", sqs_queue)
     monkeypatch.setenv("POLL_WATERMARK_URI", watermark_uri)
-    monkeypatch.setenv("REVISION_BASELINE", "2")
     monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
     monkeypatch.setattr(poller, "search_granules", lambda concept_id, since_iso: items)
 
     poller.handler({}, MagicMock())
 
-    counts = {d["Class"]: v for n, v, d in emitted if n == "GranulesSeen"}
-    assert counts == {"FRESH": 1, "REDELIVERED": 1, "REVISED": 1, "RETROACTIVE": 1}
-    lags = {n: v for n, v, _ in emitted if n in ("ProductionLag", "CmrLag")}
-    assert lags == {"ProductionLag": 3 * 3600.0, "CmrLag": 1800.0}
+    assert dict(emitted) == {"ProductionLag": 3 * 3600.0, "CmrLag": 1800.0}
     bodies = [
         json.loads(m["Body"])
         for m in boto3.client("sqs", region_name="us-east-1").receive_message(
@@ -161,6 +151,7 @@ def test_handler_emits_class_counts_and_fresh_lags_and_tags_published(
         )["Messages"]
     ]
     published = {b["url"]: b.get("published") for b in bodies}
+    assert len(published) == 3  # redelivered and retroactive are enqueued too
     fresh_url = next(u for u in published if "fresh" in u)
     assert published[fresh_url] == published_at.isoformat()
     assert sum(p is not None for p in published.values()) == 1

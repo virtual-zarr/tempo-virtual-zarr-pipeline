@@ -660,6 +660,8 @@ resource names):
 |---|---|---|
 | `AxisEndLag` (seconds) | consumer after each commit; re-sort after each promote | store freshness; production lag is normally a few hours — mostly upstream (scan → CMR publication), see [runbook-production-lag](./docs/runbook-production-lag.md) for the attribution |
 | `GranulesRouted` (dimension `Route`) | consumer, per committed batch | `APPENDED` = growth, `OVERWRITTEN` = republications, `PENDING` = out-of-order arrivals headed for the re-sort (routinely a large share), `REJECTED` = collisions headed for the DLQ (counted on first delivery only; redeliveries are not re-counted) |
+| `ProductionLag` / `CmrLag` (seconds) | poller, per fresh sighting (scan within 24 h, first seen this poll) | upstream share of the lag: scan start -> `ProductionDateTime`, and `ProductionDateTime` -> CMR `revision-date`; stacked with `VirtualizationLag` on the *Lag attribution* widget |
+| `VirtualizationLag` (seconds) | consumer, per `APPENDED` granule whose message carries the poller's `published` | the pipeline's share: CMR publication -> store commit; healthy is under `POLL_SCHEDULE_MINUTES` plus a few minutes |
 | `PendingLedgerDepth` | consumer and re-sort | nonzero is healthy; trending up across days means the re-sort is not keeping pace |
 | `FoldedGranules` | re-sort (0 when it ran with an empty ledger) | pinned at `RESORT_MAX_FOLD` every run means falling behind |
 | `PromoteFailures` | re-sort, when its promote raises | occasional ones are the single-writer design working (a concurrent commit won the CAS); sustained ones mean writers are fighting — or S3 trouble, the counter does not distinguish |
@@ -677,7 +679,8 @@ verify run).
 The dashboard's backfill section (rendered when `BACKFILL_ENABLED`) shows
 Step Functions executions, the cumulative partitions-done/total graph, and worker errors —
 watch it during the initial fill. Afterward, the two numbers worth a
-daily glance are the *Store lag (scan -> store)* and *Pending ledger depth* tiles.
+daily glance are the *Store lag (scan -> store)* and *Pending ledger depth* tiles;
+the *Lag attribution* widget next to them says how much of the lag is upstream.
 
 A cross-account Grafana dashboard covering both collections is planned
 but not built; see

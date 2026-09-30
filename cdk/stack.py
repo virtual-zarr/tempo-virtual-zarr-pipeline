@@ -162,7 +162,7 @@ class VirtualizarrSqsStack(Stack):
             (
                 # Total scan->store lag: includes ~3.5 h of upstream
                 # production+publication even when the pipeline is instant
-                # — the "Lag attribution (hours)" widget splits it.
+                # — the "Lag attribution" widget shows the per-stage averages.
                 # Raw seconds on purpose: the metric's Seconds unit makes
                 # the console humanize the value ("4.2 hr"), while any /3600
                 # math keeps the Seconds unit on the divided number and
@@ -249,6 +249,13 @@ class VirtualizarrSqsStack(Stack):
             value = getattr(settings, key)
             if value:
                 self.processor_env[key] = value
+        # The same identity for Lambdas that emit metrics without the
+        # processor package (the poller).
+        self._metric_env = {
+            key: self.processor_env[key]
+            for key in METRIC_DIMENSION_ENV.values()
+            if key in self.processor_env
+        }
         if settings.VIRTUAL_CHUNK_PREFIX:
             self.processor_env["VIRTUAL_CHUNK_PREFIX"] = settings.VIRTUAL_CHUNK_PREFIX
         if storage_prefix:
@@ -673,14 +680,9 @@ class VirtualizarrSqsStack(Stack):
             poller_env = {
                 "QUEUE_URL": self.queue.queue_url,
                 "POLL_WATERMARK_URI": self.poll_watermark_uri,
-                "REVISION_BASELINE": str(settings.REVISION_BASELINE),
                 # Metric dimension identity for the poller's own EMF
-                # emission (GranulesSeen, ProductionLag, CmrLag).
-                **{
-                    key: self.processor_env[key]
-                    for key in METRIC_DIMENSION_ENV.values()
-                    if key in self.processor_env
-                },
+                # emission (ProductionLag, CmrLag).
+                **self._metric_env,
             }
             if settings.POLL_START_ISO:
                 poller_env["POLL_START_ISO"] = settings.POLL_START_ISO
@@ -751,60 +753,35 @@ class VirtualizarrSqsStack(Stack):
                 )
             )
             self._widgets.append(
-                # The store's total lag decomposed: upstream production
-                # (scan -> ProductionDateTime), CMR (-> revision-date), and
-                # virtualization (-> store commit). Stacked, so the top of
-                # the stack tracks total scan->store lag and the widest
-                # band names the culprit. Fresh first publications only —
-                # the poller gates the lag emission.
+                # Where the store's lag comes from: hourly average of each
+                # stage — upstream production (scan -> ProductionDateTime),
+                # CMR (-> revision-date), virtualization (-> store commit).
+                # Fresh first publications only; the poller gates the
+                # emission. The bands are averages over different granule
+                # sets (the poller emits at sighting, the consumer at
+                # commit), so the stack approximates total lag rather than
+                # equalling the Store lag tile. Raw seconds, as on that
+                # tile: the console humanizes them.
                 cloudwatch.GraphWidget(
-                    title="Lag attribution (hours)",
-                    width=12,
-                    height=6,
-                    stacked=True,
-                    left=[
-                        cloudwatch.MathExpression(
-                            expression=f"{mid}/3600",
-                            label=label,
-                            using_metrics={
-                                mid: self._custom_metric(
-                                    name, statistic="Average", period=Duration.hours(1)
-                                )
-                            },
-                        )
-                        for mid, name, label in (
-                            (
-                                "prod",
-                                "ProductionLag",
-                                "production (scan -> L2 product)",
-                            ),
-                            ("cmr", "CmrLag", "CMR (product -> published)"),
-                            (
-                                "virt",
-                                "VirtualizationLag",
-                                "virtualization (published -> store)",
-                            ),
-                        )
-                    ],
-                )
-            )
-            self._widgets.append(
-                # What CMR delivered, by why it was delivered. REDELIVERED
-                # is the overlap window's duplicate volume — a labeled band
-                # by design, so the no-op work stays visible.
-                cloudwatch.GraphWidget(
-                    title="CMR arrivals by class",
+                    title="Lag attribution",
                     width=12,
                     height=6,
                     stacked=True,
                     left=[
                         self._custom_metric(
-                            "GranulesSeen",
-                            statistic="Sum",
+                            name,
+                            statistic="Average",
                             period=Duration.hours(1),
-                            extra_dimensions={"Class": cls},
+                            label=label,
                         )
-                        for cls in ("FRESH", "RETROACTIVE", "REVISED", "REDELIVERED")
+                        for name, label in (
+                            ("ProductionLag", "production (scan -> L3 product)"),
+                            ("CmrLag", "CMR (product -> published)"),
+                            (
+                                "VirtualizationLag",
+                                "virtualization (published -> store)",
+                            ),
+                        )
                     ],
                 )
             )
@@ -1035,6 +1012,7 @@ class VirtualizarrSqsStack(Stack):
         statistic: str = "Maximum",
         period: Duration | None = None,
         extra_dimensions: dict[str, str] | None = None,
+        label: str | None = None,
     ) -> cloudwatch.Metric:
         """A custom metric the pipeline's handlers emit as CloudWatch EMF.
 
@@ -1050,6 +1028,7 @@ class VirtualizarrSqsStack(Stack):
             dimensions_map={**self._metric_dimensions, **(extra_dimensions or {})},
             statistic=statistic,
             period=period or Duration.minutes(5),
+            label=label,
         )
 
     def _dashboard(self, settings: StackSettings) -> None:
