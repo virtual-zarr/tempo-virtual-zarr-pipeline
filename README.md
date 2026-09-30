@@ -262,6 +262,32 @@ Earthdata material the workers use (or ambient AWS access to the source
 bucket). The pipeline's own writers never hold chunk-read access. Any
 mismatch or read failure exits non-zero.
 
+### Publishing to Source Cooperative
+
+`scripts/mirror_to_source_coop.py` copies a collection's store to the
+public Source Cooperative repository
+(`s3://us-west-2.opendata.source.coop/pangeo/tempo-virtual-icechunk/<S3_PREFIX>/`).
+It reads the `repo` file first, which pins the snapshot to publish, copies
+the immutable files the destination lacks, then writes `repo` last, so a
+reader never sees a tip that names files still in flight. A crashed run
+leaves the old tip in place and the next run catches up. Nothing is deleted.
+
+```bash
+uv run --env-file .env_no2 --env-file .env.local scripts/mirror_to_source_coop.py --dry-run
+uv run --env-file .env_no2 --env-file .env.local scripts/mirror_to_source_coop.py
+```
+
+Source reads use your own AWS credentials. Destination writes use the keys
+Source Coop issued for the repository, `SOURCE_COOP_ACCESS_KEY_ID` and
+`SOURCE_COOP_SECRET_ACCESS_KEY` in `.env.local` (see the sample); the
+pre-commit hook rejects them in a tracked env file. Runs are manual, one
+per collection, so the public copy is only as fresh as the last run.
+
+The copy publishes the store's metadata and native arrays, not the granule
+bytes: the virtual chunks still point at `asdc-prod-protected`, so readers
+of the public copy need Earthdata credentials and in-region compute exactly
+as readers of the private store do.
+
 ### Recovery
 
 There's less to recover than you might expect:

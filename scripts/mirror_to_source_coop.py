@@ -13,9 +13,8 @@ SOURCE_COOP_ACCESS_KEY_ID / SOURCE_COOP_SECRET_ACCESS_KEY (and
 SOURCE_COOP_SESSION_TOKEN if you have one). The store location comes
 from the processor env vars ICECHUNK_BUCKET and S3_PREFIX.
 
-Usage:
-    uv run --env-file .env_no2 scripts/mirror_to_source_coop.py --dry-run
-    uv run --env-file .env_no2 scripts/mirror_to_source_coop.py
+Usage (the keys live in .env.local, so pass both; add --dry-run to only report):
+    uv run --env-file .env_no2 --env-file .env.local scripts/mirror_to_source_coop.py
 """
 
 from __future__ import annotations
