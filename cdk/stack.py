@@ -338,7 +338,13 @@ class VirtualizarrSqsStack(Stack):
                         period=Duration.minutes(30),
                         extra_dimensions={"Route": route},
                     )
-                    for route in ("APPENDED", "OVERWRITTEN", "REJECTED", "PENDING")
+                    for route in (
+                        "APPENDED",
+                        "OVERWRITTEN",
+                        "UNCHANGED",
+                        "REJECTED",
+                        "PENDING",
+                    )
                 ],
             )
         )
