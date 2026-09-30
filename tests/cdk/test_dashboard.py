@@ -258,6 +258,16 @@ def test_store_lag_tile_shows_raw_seconds_for_console_humanization() -> None:
     assert "AxisEndLag" in flat and "/3600" not in flat
 
 
+def test_granule_routing_widget_charts_every_route_including_unchanged() -> None:
+    """UNCHANGED is the fast path's steady band; its absence (with the
+    queue flowing) rather than presence indicates a problem, so it must
+    be charted alongside the write routes."""
+    widget = _widget(_template(), "Granule routing")
+    flat = json.dumps(widget)
+    for route in ("APPENDED", "OVERWRITTEN", "UNCHANGED", "REJECTED", "PENDING"):
+        assert route in flat
+
+
 @pytest.mark.parametrize("title", ["Re-sort failures", "Poller"])
 def test_job_widgets_show_how_often_retries_heal(title: str) -> None:
     """The alarms page only on AsyncEventsDropped, so the dashboard must
