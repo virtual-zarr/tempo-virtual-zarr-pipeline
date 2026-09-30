@@ -5,7 +5,8 @@ subscription is ever wired up, from S3 object-created notifications. Each
 batch is pre-sorted by filename timestamp so adjacent scans arriving
 together append in order. A REJECTED granule fails its record (SQS retry,
 then DLQ); DEFERRED (out-of-order, recorded in the pending ledger),
-APPENDED, and OVERWRITTEN are all successful consumption.
+APPENDED, OVERWRITTEN, and UNCHANGED (a redelivery of an unchanged
+source, skipped without a parse or write) are all successful consumption.
 """
 
 import json
@@ -39,6 +40,7 @@ batch_processor = BatchProcessor(event_type=EventType.SQS)
 ROUTES = {
     ProcessOutcome.APPENDED: "APPENDED",
     ProcessOutcome.OVERWRITTEN: "OVERWRITTEN",
+    ProcessOutcome.UNCHANGED: "UNCHANGED",
     ProcessOutcome.DEFERRED: "PENDING",
 }
 
@@ -151,8 +153,13 @@ def handler(event: Any, context: LambdaContext) -> PartialItemFailureResponse:
         batch.process()
     # Now attempt the commit (also updates the store manifest):
     try:
+        parent_snapshot = session.snapshot_id
         snapshot_id = virtualizarr_processor.commit_processed_files(session=session)
-        logger.info(f"Committed to {snapshot_id}")
+        if snapshot_id == parent_snapshot:
+            # An all-UNCHANGED batch: consumed without a commit, on purpose.
+            logger.info(f"No store changes; snapshot stays {snapshot_id}")
+        else:
+            logger.info(f"Committed to {snapshot_id}")
     except Exception:
         # The pending-ledger write lives in this same session, so a failed
         # commit persists nothing for DEFERRED records either; all records,
