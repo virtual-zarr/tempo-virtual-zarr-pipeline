@@ -35,8 +35,6 @@ dev = [
   "boto3>=1.34.0",
   "h5py",
   "moto>=5.0.0",
-  "tqdm>=4.70.1",
-  "types-tqdm>=4.70.0.20260906",
 ]
 
 
@@ -57,7 +55,7 @@ line-ending = "auto"
 
 [tool.mypy]
 python_version = "3.12"
-mypy_path = ["cdk", "lambda/backfill", "lambda/virtualizarr-processor", "scripts"]
+mypy_path = ["cdk", "lambda/backfill", "lambda/virtualizarr-processor"]
 warn_return_any = true
 warn_unused_configs = true
 

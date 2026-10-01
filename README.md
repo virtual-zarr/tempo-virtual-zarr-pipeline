@@ -264,39 +264,19 @@ mismatch or read failure exits non-zero.
 
 ### Publishing to Source Cooperative
 
-`scripts/mirror_to_source_coop.py` publishes the tip of a collection's
-`main` branch as the public Source Cooperative repository
-(`s3://us-west-2.opendata.source.coop/pangeo/tempo-virtual-icechunk/<prefix>/`,
-where `<prefix>` is `S3_PREFIX/ICECHUNK_PREFIX`, e.g. `tempo/no2/v04`) and
-leaves a zip of the same files beside the download. The zip is not
-published anywhere.
-
-It downloads what the tip needs to `stores/<prefix>/` (gitignored): the tip
-and root snapshots and their manifests, which skips the historical snapshots
-and manifests that make up most of the store, plus all of `transactions/`
-and `chunks/`, which are small here (every transaction log is a few KB and
-only the bookkeeping arrays have native chunks). It then prunes that
-directory in place with Icechunk's own `expire_snapshots` and
-`garbage_collect`, so it holds exactly the files the tip references and
-names only `main`; the source keeps its `GC_EXPIRY_DAYS` rollback window
-and the pipeline keeps committing throughout. The pruned directory is zipped
-to `stores/<prefix>.zip` and uploaded with `repo` last, so a reader never
-sees a tip that names files still in flight. Only Icechunk's own files are
-zipped or uploaded; a stray `.DS_Store` or the `overwritten/` backups are
-not. A crashed run leaves the old tip in place. Nothing is deleted from
-either bucket, so files earlier runs published linger as orphans.
-
-The four stages (`download`, `prune`, `zip_store`, `upload`) are listed one
-per line at the bottom of `main()`, and each reads what the one before left
-in the directory, so comment out the ones you don't need: `upload` for a
-zip-only run, everything after `download` for a `--limit N` trial, or the
-stages that finished when rerunning after a crash. The script never deletes
-anything local: `download` refuses a non-empty directory and `zip_store` an
-existing zip, so a full run needs a fresh `stores/<prefix>/` (or an empty
-`--dir`).
+`scripts/mirror_to_source_coop.py` copies a collection's store to the public
+Source Cooperative repository: every object under
+`s3://$ICECHUNK_BUCKET/<prefix>/` to
+`s3://us-west-2.opendata.source.coop/pangeo/tempo-virtual-icechunk/<prefix>/`,
+plus a zip of the same files beside it as `<prefix>.zip`, where `<prefix>` is
+`S3_PREFIX/ICECHUNK_PREFIX`, e.g. `tempo/no2/v04`. It downloads the store to
+`stores/<prefix>/` (gitignored), zips it to `stores/<prefix>.zip`, and
+uploads both. Nothing is compared, ordered or deleted: a rerun copies
+everything again, and a crash mid-upload leaves a partial copy until the
+next run. Run it from compute in us-west-2, where both buckets live;
+[the runbook](docs/runbook-mirror-to-source-coop.md) walks through it.
 
 ```bash
-uv run --env-file .env_no2 scripts/mirror_to_source_coop.py --dry-run                         # tip size only
 uv run --env-file .env_no2 --env-file .env.local scripts/mirror_to_source_coop.py
 ```
 
@@ -306,27 +286,11 @@ Source Coop issued for the repository, `SOURCE_COOP_ACCESS_KEY_ID` and
 pre-commit hook rejects them in a tracked env file. Runs are manual, one
 per collection, so the public copy is only as fresh as the last run.
 
-The zip, if you hand it to someone, unpacks to a directory that opens with
-`icechunk.local_filesystem_storage`. Both copies carry only the tip, so
-`ancestry()` on them is the tip and the root.
-
-`scripts/verify_mirror_zip.py <zip>` checks a zip against the store it came
-from: every entry must exist in the store with the same bytes (`--quick`
-compares sizes only), the zip's `main` must be the store's `main` or an
-ancestor of it (the store having moved on is reported), and at that
-snapshot the Zarr metadata of every node and the set of virtual chunk
-locations must match. It needs only your AWS credentials, exits 1 on any
-difference, and takes about as long as the mirror's download, since it
-reads the tip's files again.
-
-```bash
-uv run --env-file .env_no2 scripts/verify_mirror_zip.py stores/tempo/no2/v04.zip
-```
-
-The copy publishes the store's metadata and native arrays, not the granule
-bytes: the virtual chunks still point at `asdc-prod-protected`, so readers
-of the public copy need Earthdata credentials and in-region compute exactly
-as readers of the private store do.
+The zip unpacks to a directory that opens with
+`icechunk.local_filesystem_storage`. The copy publishes the store's metadata
+and native arrays, not the granule bytes: the virtual chunks still point at
+`asdc-prod-protected`, so readers of the public copy need Earthdata
+credentials and in-region compute exactly as readers of the private store do.
 
 ### Recovery
 
