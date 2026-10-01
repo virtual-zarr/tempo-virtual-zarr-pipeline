@@ -267,9 +267,11 @@ mismatch or read failure exits non-zero.
 `scripts/mirror_to_source_coop.py` publishes the tip of a collection's
 `main` branch twice over: as the public Source Cooperative repository
 (`s3://us-west-2.opendata.source.coop/pangeo/tempo-virtual-icechunk/<S3_PREFIX>/`)
-and as a zip of the same files. It downloads the store to
-`stores/<S3_PREFIX>/` (gitignored; reruns fetch only what is new), copies
-that to `stores/<S3_PREFIX>-tip/` and prunes the copy with Icechunk's own
+and as a zip of the same files. It downloads only what the tip needs (its
+snapshot, manifests and native chunks, not the history that makes up most
+of the store) to `stores/<S3_PREFIX>/` (gitignored; reruns fetch only what
+is new), hard-links that into `stores/<S3_PREFIX>-tip/` and prunes the
+copy with Icechunk's own
 `expire_snapshots` and `garbage_collect`, so the copy holds exactly the
 files the tip references and names only `main`. The source keeps its
 `GC_EXPIRY_DAYS` rollback window and the pipeline keeps committing
@@ -280,7 +282,7 @@ deleted from either bucket, so files earlier runs published linger as
 orphans.
 
 ```bash
-uv run --env-file .env_no2 --env-file .env.local scripts/mirror_to_source_coop.py --dry-run   # size only
+uv run --env-file .env_no2 --env-file .env.local scripts/mirror_to_source_coop.py --dry-run   # tip size only
 uv run --env-file .env_no2 scripts/mirror_to_source_coop.py --no-upload                       # zip only
 uv run --env-file .env_no2 --env-file .env.local scripts/mirror_to_source_coop.py
 ```

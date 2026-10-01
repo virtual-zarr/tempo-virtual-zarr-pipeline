@@ -155,3 +155,42 @@ def test_dry_run_and_no_upload_write_nothing(s3: Any, tmp_path: Path) -> None:
     archive = run(s3, tmp_path / "copy", upload_copy=False)
     assert archive is not None and archive.exists()
     assert mirror_to_source_coop.object_sizes(s3, DST_BUCKET, DST_PREFIX) == {}
+
+
+def test_downloads_only_what_the_tip_needs(s3: Any, tip: str, tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    repo = icechunk.Repository.open(icechunk.local_filesystem_storage(str(source)))
+    tip_manifests = {f"manifests/{m.id}" for m in repo.list_manifest_files(tip)}
+    cache = tmp_path / "copy"
+    (cache / "manifests").mkdir(parents=True)
+    (cache / "manifests" / "STALE").write_bytes(b"from an earlier tip")
+
+    run(s3, cache, upload_copy=False)
+
+    cached = mirror_to_source_coop.file_sizes(cache)
+    assert {k for k in cached if k.startswith("manifests/")} == tip_manifests
+    # Only the tip and root snapshots, not the history or the stale branch's.
+    assert {k for k in cached if k.startswith("snapshots/")} == {
+        f"snapshots/{tip}",
+        f"snapshots/{list(repo.ancestry(branch='main'))[-1].id}",
+    }
+    # The prune works on hard links; the cache must come through unchanged.
+    for key in cached:
+        if key != "repo":
+            assert (cache / key).read_bytes() == (source / key).read_bytes(), key
+
+
+def test_dry_run_reports_the_tip(s3: Any, tmp_path: Path) -> None:
+    lines: list[str] = []
+
+    class Log:
+        def write(self, text: str) -> None:
+            lines.append(text)
+
+        def flush(self) -> None:
+            pass
+
+    run(s3, tmp_path / "copy", dry_run=True, log=Log())
+    report = "".join(lines)
+    assert "the tip of main needs" in report
+    assert not (tmp_path / "copy").exists()
