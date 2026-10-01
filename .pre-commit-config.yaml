@@ -34,7 +34,7 @@ repos:
         # reduced several checks to no-ops.
         entry: >-
           uv run mypy lambda cdk
-          scripts/verify_store.py
+          scripts/verify_store.py scripts/mirror_to_source_coop.py
         language: system
         pass_filenames: false
         types_or: [python, toml]

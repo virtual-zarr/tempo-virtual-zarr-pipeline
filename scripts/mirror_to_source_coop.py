@@ -1,19 +1,25 @@
 #!/usr/bin/env python3
-"""Publish the tip of the Icechunk store: a Source Cooperative mirror and a zip.
+"""Publish the tip of the Icechunk store to Source Cooperative, and zip it locally.
 
-Downloads only what the tip of ``main`` needs (its snapshot, manifests
-and native chunks; the source's history is most of its size), prunes a
-local copy to that tip with Icechunk's own expire and garbage-collect (so
-the source keeps its rollback window and the pipeline keeps committing),
-zips the pruned copy, then uploads it to Source Coop with ``repo`` last, so
-a reader never sees a tip that names files still in flight. Nothing is
-deleted from either bucket; objects earlier runs published linger as
-orphans.
+Downloads what the tip of ``main`` needs into a fresh directory (its
+snapshot, manifests, every transaction log and every native chunk; the
+historical snapshots and manifests are most of the source's size), prunes
+that directory to the tip with Icechunk's own expire and garbage-collect
+(the source keeps its rollback window and the pipeline keeps committing),
+zips it, then uploads it to Source Coop with ``repo`` last, so a reader
+never sees a tip that names files still in flight. Only Icechunk's own
+files are zipped or uploaded. Nothing is deleted from either bucket;
+objects earlier runs published linger as orphans.
+
+The zip stays local; it is not published anywhere.
+
+The directory must be empty or absent and its ``.zip`` sibling absent: the
+script refuses to touch anything else. Each run downloads the tip afresh.
 
 Source reads use your AWS credentials. Destination writes use the keys
 Source Coop issued: SOURCE_COOP_ACCESS_KEY_ID, SOURCE_COOP_SECRET_ACCESS_KEY
 and optionally SOURCE_COOP_SESSION_TOKEN. The store location comes from
-ICECHUNK_BUCKET and S3_PREFIX.
+ICECHUNK_BUCKET and S3_PREFIX/ICECHUNK_PREFIX.
 
 Progress bars go to stderr. Off a terminal (CI, redirected output) they
 redraw every 30 seconds instead of continuously.
@@ -27,7 +33,6 @@ from __future__ import annotations
 
 import argparse
 import os
-import shutil
 import sys
 import tempfile
 import threading
@@ -42,13 +47,18 @@ from typing import Any
 
 import boto3
 import icechunk
+from boto3.s3.transfer import S3Transfer, TransferConfig
 from botocore.config import Config
 from botocore.exceptions import ClientError
 from tqdm import tqdm
 from virtualizarr_processor.manifest import storage_prefix
 
-REPO_INFO_KEY = "repo"  # icechunk-format's REPO_INFO_FILE_PATH
-BACKUPS = "overwritten/"  # repo-file backups: inspection only, stale once pruned
+# Icechunk's on-disk layout (icechunk-format's *_FILE_PATH constants). The
+# directories are flat. ``overwritten/`` holds repo-file backups and is not
+# part of the store.
+REPO_INFO_KEY = "repo"
+STORE_FILES = (REPO_INFO_KEY, "config.yaml")
+STORE_DIRS = ("chunks", "manifests", "snapshots", "transactions")
 
 # Source Coop's direct S3 bucket. data.source.coop is the other endpoint;
 # set DEST_ENDPOINT to use it.
@@ -59,7 +69,13 @@ REGION = "us-west-2"  # the store and Source Coop both live here
 WORKERS = 16
 # Ignore any AWS_ENDPOINT_URL in the environment, which would redirect both
 # sides. botocore honors this from 1.29 on; the stubs do not list it yet.
-NO_ENDPOINT_OVERRIDE = {"ignore_configured_endpoint_urls": True}
+NO_ENDPOINT_OVERRIDE = Config(ignore_configured_endpoint_urls=True)  # type: ignore[call-arg]
+
+# "Everything but the tips and the root" for expire and garbage-collect.
+# Wall-clock ``now`` would leave a snapshot unexpired when the committing
+# Lambda's clock ran ahead of ours, and the prune would then need snapshot
+# files that were never downloaded.
+FAR_FUTURE = datetime(9999, 1, 1, tzinfo=timezone.utc)
 
 # Seconds between progress redraws, on and off a terminal.
 TTY_INTERVAL = 0.1
@@ -76,10 +92,10 @@ def is_tty(log: Any) -> bool:
 
 
 def human_bytes(n: float) -> str:
-    return tqdm.format_sizeof(n, suffix="B", divisor=1000)
+    return str(tqdm.format_sizeof(n, suffix="B", divisor=1000))
 
 
-class TransferBar(tqdm):
+class TransferBar(tqdm):  # type: ignore[type-arg]
     """A byte-counting tqdm bar with a files-done count in its postfix.
 
     ``add_bytes`` has the signature boto3 expects of a transfer ``Callback``
@@ -144,11 +160,7 @@ def stage(number: int, total: int, name: str, log: Any) -> Iterator[None]:
 
 def source_client() -> Any:
     """The source store, read with your own AWS credentials."""
-    return boto3.client(
-        "s3",
-        region_name=REGION,
-        config=Config(**NO_ENDPOINT_OVERRIDE),
-    )
+    return boto3.client("s3", region_name=REGION, config=NO_ENDPOINT_OVERRIDE)
 
 
 def destination_client() -> Any:
@@ -173,8 +185,15 @@ def destination_client() -> Any:
         aws_access_key_id=key,
         aws_secret_access_key=secret,
         aws_session_token=os.environ.get("SOURCE_COOP_SESSION_TOKEN"),
-        config=Config(s3={"addressing_style": "path"}, **NO_ENDPOINT_OVERRIDE),
+        config=NO_ENDPOINT_OVERRIDE.merge(Config(s3={"addressing_style": "path"})),
     )
+
+
+def transfer(client: Any, workers: int) -> S3Transfer:
+    """One transfer manager per client; ``download_file``/``upload_file`` on
+    the client itself build and tear one down per object."""
+    config = TransferConfig(max_concurrency=workers)
+    return S3Transfer(client, config)  # type: ignore[arg-type]  # stub says botocore Config
 
 
 def object_sizes(
@@ -203,12 +222,21 @@ def object_sizes(
     return sizes
 
 
-def file_sizes(directory: Path) -> dict[str, int]:
-    """Files under ``directory``: relative posix path -> size."""
+def store_files(directory: Path) -> dict[str, int]:
+    """Icechunk's own files under ``directory``: relative key -> size.
+
+    Anything else (``.DS_Store``, ``overwritten/`` backups, s3transfer
+    temporaries, stray files) is left out, so it is never zipped or
+    uploaded.
+    """
+    paths = [directory / name for name in STORE_FILES]
+    for name in STORE_DIRS:
+        if (directory / name).is_dir():
+            paths += (directory / name).iterdir()
     return {
         path.relative_to(directory).as_posix(): path.stat().st_size
-        for path in directory.rglob("*")
-        if path.is_file()
+        for path in paths
+        if path.is_file() and not path.name.startswith(".")
     }
 
 
@@ -228,27 +256,28 @@ def tip_objects(
 ) -> dict[str, int]:
     """What the tip of ``main`` needs, besides ``repo``: relative key -> size.
 
-    Reads the ``repo`` file already in ``directory``, and fetches the
-    snapshots and transaction logs it needs there. The prune keeps two
-    snapshots: the tip and the root, which Icechunk never expires. Each
-    brings its transaction log and manifests. No public API names a
-    snapshot's native chunks, so all of ``chunks/`` comes along and the
-    prune drops the rest; it is small, since the data arrays are virtual
-    and only the bookkeeping arrays are native.
+    Reads the ``repo`` file already in ``directory`` and fetches the tip and
+    root snapshots there (the prune keeps both; Icechunk never expires the
+    root), since listing a snapshot's manifests needs the file. Everything
+    under ``transactions/`` and ``chunks/`` comes along and the prune drops
+    what the tip doesn't reference: the expired ancestors' transaction logs
+    stay referenced from the tip (``pruned_ancestor_tx_logs``), and no
+    public API names a snapshot's native chunks. Both are small here; the
+    data arrays are virtual and only the bookkeeping arrays are native.
     """
     repo = icechunk.Repository.open(icechunk.local_filesystem_storage(str(directory)))
     history = list(repo.ancestry(branch="main"))  # reads only the repo file
     sizes: dict[str, int] = {}
     for snapshot in {history[0].id, history[-1].id}:
-        for kind in ("snapshots", "transactions"):
-            key = f"{kind}/{snapshot}"
-            if not (directory / key).exists():
-                fetch(source, bucket, prefix, directory, key)
-            sizes[key] = (directory / key).stat().st_size
+        key = f"snapshots/{snapshot}"
+        fetch(source, bucket, prefix, directory, key)
+        sizes[key] = (directory / key).stat().st_size
         for manifest in repo.list_manifest_files(snapshot):
             sizes[f"manifests/{manifest.id}"] = manifest.size_bytes
-    chunks = object_sizes(source, bucket, prefix + "chunks/", log=log)
-    return sizes | {f"chunks/{key}": size for key, size in chunks.items()}
+    for kind in ("transactions", "chunks"):
+        listed = object_sizes(source, bucket, f"{prefix}{kind}/", log=log)
+        sizes |= {f"{kind}/{key}": size for key, size in listed.items()}
+    return sizes
 
 
 def download(
@@ -261,32 +290,27 @@ def download(
     log: Any,
     limit: int | None = None,
 ) -> int:
-    """Bring ``directory`` to what the tip needs; return how many objects were fetched.
+    """Fetch what the tip needs into ``directory``; return how many objects.
 
     ``repo`` comes first: it pins a snapshot whose files already exist, so a
     commit landing mid-download can't leave the copy naming files it never
-    fetched. Sizes stand in for checksums; boto3 renames completed downloads
-    into place, so a partial file never matches. Files an earlier tip
-    needed and this one doesn't are deleted, so the cache tracks the tip
-    instead of accumulating the store's history.
+    fetched. boto3 renames completed downloads into place, so a crash
+    leaves no partial file under a store key.
     """
     directory.mkdir(parents=True, exist_ok=True)
     fetch(source, bucket, prefix, directory, REPO_INFO_KEY)
     remote = tip_objects(source, bucket, prefix, directory, log=log)
-    have = file_sizes(directory)
-    for key in have.keys() - remote.keys() - {REPO_INFO_KEY}:
-        (directory / key).unlink()
-    todo = {key: size for key, size in remote.items() if have.get(key) != size}
+    todo = {k: size for k, size in remote.items() if not (directory / k).exists()}
     if limit is not None:
-        print(f"trial: fetching {limit:,} of {len(todo):,} missing objects", file=log)
+        print(f"trial: fetching {limit:,} of {len(todo):,} objects", file=log)
         todo = dict(list(todo.items())[:limit])
     print(
-        f"{len(todo):,} objects to fetch ({human_bytes(sum(todo.values()))}); "
-        f"{len(remote) - len(todo):,} already present",
+        f"{len(todo):,} objects to fetch ({human_bytes(sum(todo.values()))})",
         file=log,
         flush=True,
     )
 
+    manager = transfer(source, workers)
     with TransferBar(
         "download",
         total_bytes=sum(todo.values()),
@@ -297,8 +321,8 @@ def download(
         def get(key: str) -> None:
             path = directory / key
             path.parent.mkdir(parents=True, exist_ok=True)
-            source.download_file(
-                bucket, prefix + key, str(path), Callback=bar.add_bytes
+            manager.download_file(
+                bucket, prefix + key, str(path), callback=bar.add_bytes
             )
             bar.file_done()
 
@@ -308,64 +332,38 @@ def download(
     return len(todo)
 
 
-def link_tree(source: Path, destination: Path) -> None:
-    """Hard-link ``source``'s files into ``destination``, which must not exist.
-
-    The prune only deletes files and writes ``repo`` anew, so links can't
-    change the cache; ``repo`` is copied anyway, being the one file it
-    rewrites. Falls back to copying where links fail (another filesystem).
-    """
-
-    def link(src: str, dst: str) -> None:
-        if Path(src).name == REPO_INFO_KEY:
-            shutil.copy2(src, dst)
-            return
-        try:
-            os.link(src, dst)
-        except OSError:
-            shutil.copy2(src, dst)
-
-    shutil.copytree(source, destination, copy_function=link)
-
-
 def prune(directory: Path, *, log: Any) -> str:
-    """Cut the local copy down to the tip of ``main``; return the tip's id.
+    """Cut the copy down to the tip of ``main`` in place; return the tip's id.
 
     Icechunk exposes no progress hooks here, so this step reports only
     its duration (via the enclosing stage).
     """
     repo = icechunk.Repository.open(icechunk.local_filesystem_storage(str(directory)))
-    now = datetime.now(timezone.utc)
     print("expiring snapshots...", file=log, flush=True)
     repo.expire_snapshots(
-        older_than=now, delete_expired_branches=True, delete_expired_tags=True
+        older_than=FAR_FUTURE, delete_expired_branches=True, delete_expired_tags=True
     )
     print("garbage-collecting...", file=log, flush=True)
-    summary = repo.garbage_collect(delete_object_older_than=now)
-    shutil.rmtree(directory / BACKUPS, ignore_errors=True)
+    summary = repo.garbage_collect(delete_object_older_than=FAR_FUTURE)
     tip = repo.lookup_branch("main")
     print(f"pruned to main @ {tip}: {summary}", file=log)
     return tip
 
 
-def zip_directory(directory: Path, *, log: Any) -> Path:
-    """Zip ``directory`` to a sibling ``<name>.zip``; return its path.
+def zip_store(directory: Path, archive: Path, *, log: Any) -> None:
+    """Zip the store's files in ``directory`` to ``archive``.
 
-    Equivalent to ``shutil.make_archive(str(directory), "zip",
-    root_dir=directory)`` except that it reports progress and writes only
-    file entries (no separate directory entries).
+    Stored, not deflated: Icechunk's files are already compressed.
     """
-    archive = directory.with_name(directory.name + ".zip")
-    sizes = file_sizes(directory)
+    sizes = store_files(directory)
     with TransferBar(
         "zip", total_bytes=sum(sizes.values()), total_files=len(sizes), log=log
     ) as bar:
-        with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_STORED) as zf:
             for key in sorted(sizes):
                 zf.write(directory / key, key)
                 bar.add_bytes(sizes[key])
                 bar.file_done()
-    return archive
 
 
 def upload(
@@ -377,7 +375,7 @@ def upload(
     workers: int,
     log: Any,
 ) -> int:
-    """Send what the destination lacks, ``repo`` last; return how many were sent."""
+    """Send the store files the destination lacks, ``repo`` last; return how many."""
     try:
         have = object_sizes(destination, bucket, prefix, log=log)
     except ClientError as error:
@@ -385,7 +383,7 @@ def upload(
             f"listing {bucket}/{prefix} failed: {error}. "
             "Check the SOURCE_COOP_* credentials cover that prefix."
         ) from error
-    local = file_sizes(directory)
+    local = store_files(directory)
     todo = sorted(
         key
         for key, size in local.items()
@@ -398,13 +396,14 @@ def upload(
         flush=True,
     )
 
+    manager = transfer(destination, workers)
     with TransferBar(
         "upload", total_bytes=total_bytes, total_files=len(todo) + 1, log=log
     ) as bar:
 
         def put(key: str) -> None:
-            destination.upload_file(
-                str(directory / key), bucket, prefix + key, Callback=bar.add_bytes
+            manager.upload_file(
+                str(directory / key), bucket, prefix + key, callback=bar.add_bytes
             )
             bar.file_done()
 
@@ -435,15 +434,21 @@ def publish(
 ) -> Path | None:
     """Download, prune, zip, upload; return the zip, or None on a dry or trial run.
 
-    The prefixes are repository roots ending in ``/``. ``directory`` caches
-    what the tip needs so reruns fetch only what's new; the pruned copy lives
-    beside it with a ``-tip`` suffix and is rebuilt every run.
-
-    ``limit`` fetches at most that many objects and stops after the
-    download: a partial store can't be pruned or published. The objects it
-    fetches are complete, so a later full run into the same ``directory``
-    skips them.
+    The prefixes are repository roots ending in ``/``. ``directory`` must be
+    empty or absent and ``<directory>.zip`` absent; it ends up holding the
+    pruned tip. ``limit`` fetches at most that many objects and stops after
+    the download: a partial store can't be pruned or published.
     """
+    directory = directory.resolve()
+    archive = directory.with_name(directory.name + ".zip")
+    if directory.exists() and any(directory.iterdir()):
+        raise SystemExit(
+            f"{directory} is not empty; delete it or pass an empty --dir "
+            "(each run downloads the tip afresh)"
+        )
+    if archive.exists():
+        raise SystemExit(f"{archive} exists; delete it or pass another --dir")
+
     if dry_run:
         with tempfile.TemporaryDirectory() as scratch:
             fetch(source, source_bucket, source_prefix, Path(scratch), REPO_INFO_KEY)
@@ -457,7 +462,7 @@ def publish(
         return None
 
     started = time.monotonic()
-    total = 1 if limit is not None else 5 if upload_copy else 4
+    total = 1 if limit is not None else 4 if upload_copy else 3
 
     with stage(1, total, "download", log):
         download(
@@ -474,23 +479,18 @@ def publish(
         print(f"trial done in {elapsed}; stopping before prune", file=log)
         return None
 
-    tip_dir = directory.with_name(directory.name + "-tip")
-    with stage(2, total, f"link into {tip_dir}", log):
-        shutil.rmtree(tip_dir, ignore_errors=True)
-        link_tree(directory, tip_dir)
+    with stage(2, total, "prune to tip of main", log):
+        prune(directory, log=log)
 
-    with stage(3, total, "prune to tip of main", log):
-        prune(tip_dir, log=log)
-
-    with stage(4, total, "zip", log):
-        archive = zip_directory(tip_dir, log=log)
-        print(f"zipped {archive} ({archive.stat().st_size / 1e6:.1f} MB)", file=log)
+    with stage(3, total, "zip", log):
+        zip_store(directory, archive, log=log)
+        print(f"zipped {archive} ({human_bytes(archive.stat().st_size)})", file=log)
 
     if upload_copy:
-        with stage(5, total, "upload to Source Coop", log):
+        with stage(4, total, "upload to Source Coop", log):
             upload(
                 destination,
-                tip_dir,
+                directory,
                 destination_bucket,
                 destination_prefix,
                 workers=workers,
@@ -518,12 +518,12 @@ def main() -> int:
         "--limit",
         type=int,
         metavar="N",
-        help="trial run: download at most N missing objects, then stop",
+        help="trial run: download at most N objects, then stop",
     )
     parser.add_argument(
         "--dir",
         type=Path,
-        help="where the download is cached (default: stores/<S3_PREFIX>)",
+        help="empty or absent directory for the download (default: stores/<prefix>)",
     )
     args = parser.parse_args()
 

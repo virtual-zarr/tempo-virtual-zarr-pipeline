@@ -58,7 +58,7 @@ def s3(tmp_path: Path, tip: str) -> Any:
                 CreateBucketConfiguration={"LocationConstraint": "us-west-2"},
             )
         source = tmp_path / "source"
-        for key in mirror_to_source_coop.file_sizes(source):
+        for key in mirror_to_source_coop.store_files(source):
             client.put_object(
                 Bucket=SRC_BUCKET,
                 Key=SRC_PREFIX + key,
@@ -79,6 +79,10 @@ def run(client: Any, directory: Path, **kwargs: Any) -> Path | None:
         workers=4,
         **kwargs,
     )
+
+
+def published(s3: Any) -> dict[str, int]:
+    return mirror_to_source_coop.object_sizes(s3, DST_BUCKET, DST_PREFIX)
 
 
 def test_clients_ignore_a_configured_endpoint(monkeypatch: Any) -> None:
@@ -109,6 +113,31 @@ def test_destination_credentials_are_required(monkeypatch: Any) -> None:
     assert client.meta.endpoint_url == "https://s3.us-west-2.amazonaws.com"
 
 
+def test_store_files_skips_what_is_not_icechunks(tmp_path: Path) -> None:
+    for name in (
+        "repo",
+        "config.yaml",
+        "chunks/ABC",
+        "chunks/.DS_Store",
+        "chunks/ABC.s3transfer-tmp",  # a plain file, so it counts
+        "manifests/DEF",
+        ".DS_Store",
+        "overwritten/repo.1",
+        "notes.txt",
+        "chunks/nested/XYZ",
+    ):
+        (tmp_path / name).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / name).write_bytes(b"x")
+
+    assert set(mirror_to_source_coop.store_files(tmp_path)) == {
+        "repo",
+        "config.yaml",
+        "chunks/ABC",
+        "chunks/ABC.s3transfer-tmp",
+        "manifests/DEF",
+    }
+
+
 def test_publishes_only_the_tip_of_main(s3: Any, tip: str, tmp_path: Path) -> None:
     order: list[str] = []
     s3.meta.events.register(
@@ -120,19 +149,29 @@ def test_publishes_only_the_tip_of_main(s3: Any, tip: str, tmp_path: Path) -> No
 
     archive = run(s3, tmp_path / "copy")
 
-    published = mirror_to_source_coop.object_sizes(s3, DST_BUCKET, DST_PREFIX)
-    assert sum(k.startswith("chunks/") for k in published) == 1
-    assert sum(k.startswith("snapshots/") for k in published) == 2  # root + tip
-    assert not any(k.startswith("overwritten/") for k in published)
+    keys = set(published(s3))
+    assert sum(k.startswith("chunks/") for k in keys) == 1
+    assert sum(k.startswith("snapshots/") for k in keys) == 2  # root + tip
+    # Root, tip, and the two expired ancestors the tip still references.
+    assert sum(k.startswith("transactions/") for k in keys) == 4
+    assert all(
+        k == "repo" or k.split("/")[0] in mirror_to_source_coop.STORE_DIRS for k in keys
+    )
     assert order[-1] == DST_PREFIX + "repo"
 
     # The zip is the same pruned store, readable after unzipping.
     assert archive is not None
+    assert archive == (tmp_path / "copy.zip").resolve()
     unpacked = tmp_path / "unpacked"
     shutil.unpack_archive(archive, unpacked)
+    assert mirror_to_source_coop.store_files(unpacked).keys() == keys
     repo = icechunk.Repository.open(icechunk.local_filesystem_storage(str(unpacked)))
     assert repo.list_branches() == {"main"}
     assert repo.lookup_branch("main") == tip
+    assert (
+        repo.inspect_transaction_log(tip)["synthetic_composite"]["missing_tx_logs"]
+        == []
+    )
     array = zarr.open_array(repo.readonly_session("main").store, path="x")
     np.testing.assert_array_equal(array[:], np.arange(1000) + 2)
 
@@ -144,8 +183,42 @@ def test_rerun_uploads_only_the_repo_file(s3: Any, tmp_path: Path) -> None:
         "provide-client-params.s3.PutObject",
         lambda params, **_: order.append(params["Key"]),
     )
-    run(s3, tmp_path / "copy")
+    run(s3, tmp_path / "copy2")
     assert order == [DST_PREFIX + "repo"]
+
+
+def test_failed_upload_leaves_the_old_tip(s3: Any, tmp_path: Path) -> None:
+    run(s3, tmp_path / "copy")
+    before = s3.get_object(Bucket=DST_BUCKET, Key=DST_PREFIX + "repo")["Body"].read()
+    chunk = next(k for k in published(s3) if k.startswith("chunks/"))
+    s3.delete_object(Bucket=DST_BUCKET, Key=DST_PREFIX + chunk)
+
+    def fail_chunk_puts(params: Any, **_: Any) -> None:
+        if params["Key"].startswith(DST_PREFIX + "chunks/"):
+            raise RuntimeError("simulated upload failure")
+
+    s3.meta.events.register("provide-client-params.s3.PutObject", fail_chunk_puts)
+    with pytest.raises(Exception, match="simulated upload failure"):
+        run(s3, tmp_path / "copy2")
+
+    assert chunk not in published(s3)
+    after = s3.get_object(Bucket=DST_BUCKET, Key=DST_PREFIX + "repo")["Body"].read()
+    assert after == before
+
+
+def test_refuses_a_non_empty_directory_or_an_existing_zip(
+    s3: Any, tmp_path: Path
+) -> None:
+    (tmp_path / "copy").mkdir()
+    (tmp_path / "copy" / "precious").write_text("do not delete")
+    with pytest.raises(SystemExit, match="not empty"):
+        run(s3, tmp_path / "copy", dry_run=True)
+    assert (tmp_path / "copy" / "precious").read_text() == "do not delete"
+
+    (tmp_path / "other.zip").write_bytes(b"old")
+    with pytest.raises(SystemExit, match="exists"):
+        run(s3, tmp_path / "other")
+    assert (tmp_path / "other.zip").read_bytes() == b"old"
 
 
 def test_dry_run_and_no_upload_write_nothing(s3: Any, tmp_path: Path) -> None:
@@ -154,30 +227,15 @@ def test_dry_run_and_no_upload_write_nothing(s3: Any, tmp_path: Path) -> None:
 
     archive = run(s3, tmp_path / "copy", upload_copy=False)
     assert archive is not None and archive.exists()
-    assert mirror_to_source_coop.object_sizes(s3, DST_BUCKET, DST_PREFIX) == {}
+    assert published(s3) == {}
 
 
-def test_downloads_only_what_the_tip_needs(s3: Any, tip: str, tmp_path: Path) -> None:
-    source = tmp_path / "source"
-    repo = icechunk.Repository.open(icechunk.local_filesystem_storage(str(source)))
-    tip_manifests = {f"manifests/{m.id}" for m in repo.list_manifest_files(tip)}
-    cache = tmp_path / "copy"
-    (cache / "manifests").mkdir(parents=True)
-    (cache / "manifests" / "STALE").write_bytes(b"from an earlier tip")
-
-    run(s3, cache, upload_copy=False)
-
-    cached = mirror_to_source_coop.file_sizes(cache)
-    assert {k for k in cached if k.startswith("manifests/")} == tip_manifests
-    # Only the tip and root snapshots, not the history or the stale branch's.
-    assert {k for k in cached if k.startswith("snapshots/")} == {
-        f"snapshots/{tip}",
-        f"snapshots/{list(repo.ancestry(branch='main'))[-1].id}",
-    }
-    # The prune works on hard links; the cache must come through unchanged.
-    for key in cached:
-        if key != "repo":
-            assert (cache / key).read_bytes() == (source / key).read_bytes(), key
+def test_limit_stops_after_a_partial_download(s3: Any, tmp_path: Path) -> None:
+    assert run(s3, tmp_path / "copy", upload_copy=False, limit=1) is None
+    # repo, the tip and root snapshots fetched directly, plus one object.
+    assert len(mirror_to_source_coop.store_files(tmp_path / "copy")) == 4
+    assert not (tmp_path / "copy.zip").exists()
+    assert published(s3) == {}
 
 
 def test_dry_run_reports_the_tip(s3: Any, tmp_path: Path) -> None:

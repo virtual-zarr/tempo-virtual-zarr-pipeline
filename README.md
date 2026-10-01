@@ -265,21 +265,30 @@ mismatch or read failure exits non-zero.
 ### Publishing to Source Cooperative
 
 `scripts/mirror_to_source_coop.py` publishes the tip of a collection's
-`main` branch twice over: as the public Source Cooperative repository
-(`s3://us-west-2.opendata.source.coop/pangeo/tempo-virtual-icechunk/<S3_PREFIX>/`)
-and as a zip of the same files. It downloads only what the tip needs (its
-snapshot, manifests and native chunks, not the history that makes up most
-of the store) to `stores/<S3_PREFIX>/` (gitignored; reruns fetch only what
-is new), hard-links that into `stores/<S3_PREFIX>-tip/` and prunes the
-copy with Icechunk's own
-`expire_snapshots` and `garbage_collect`, so the copy holds exactly the
-files the tip references and names only `main`. The source keeps its
-`GC_EXPIRY_DAYS` rollback window and the pipeline keeps committing
-throughout. The pruned copy is zipped to `stores/<S3_PREFIX>-tip.zip` and
-uploaded with `repo` last, so a reader never sees a tip that names files
-still in flight. A crashed run leaves the old tip in place. Nothing is
-deleted from either bucket, so files earlier runs published linger as
-orphans.
+`main` branch as the public Source Cooperative repository
+(`s3://us-west-2.opendata.source.coop/pangeo/tempo-virtual-icechunk/<prefix>/`,
+where `<prefix>` is `S3_PREFIX/ICECHUNK_PREFIX`, e.g. `tempo/no2/v04`) and
+leaves a zip of the same files beside the download. The zip is not
+published anywhere.
+
+It downloads what the tip needs to `stores/<prefix>/` (gitignored): the tip
+and root snapshots and their manifests, which skips the historical snapshots
+and manifests that make up most of the store, plus all of `transactions/`
+and `chunks/`, which are small here (every transaction log is a few KB and
+only the bookkeeping arrays have native chunks). It then prunes that
+directory in place with Icechunk's own `expire_snapshots` and
+`garbage_collect`, so it holds exactly the files the tip references and
+names only `main`; the source keeps its `GC_EXPIRY_DAYS` rollback window
+and the pipeline keeps committing throughout. The pruned directory is zipped
+to `stores/<prefix>.zip` and uploaded with `repo` last, so a reader never
+sees a tip that names files still in flight. Only Icechunk's own files are
+zipped or uploaded; a stray `.DS_Store` or the `overwritten/` backups are
+not. A crashed run leaves the old tip in place. Nothing is deleted from
+either bucket, so files earlier runs published linger as orphans.
+
+The script refuses a non-empty download directory and an existing zip, and
+never deletes anything local: each run needs a fresh `stores/<prefix>/` (or
+an empty `--dir`) and downloads the tip afresh.
 
 ```bash
 uv run --env-file .env_no2 --env-file .env.local scripts/mirror_to_source_coop.py --dry-run   # tip size only
@@ -293,9 +302,9 @@ Source Coop issued for the repository, `SOURCE_COOP_ACCESS_KEY_ID` and
 pre-commit hook rejects them in a tracked env file. Runs are manual, one
 per collection, so the public copy is only as fresh as the last run.
 
-Readers of the zip unpack it and open the directory with
+The zip, if you hand it to someone, unpacks to a directory that opens with
 `icechunk.local_filesystem_storage`. Both copies carry only the tip, so
-`ancestry()` on them is one snapshot deep.
+`ancestry()` on them is the tip and the root.
 
 The copy publishes the store's metadata and native arrays, not the granule
 bytes: the virtual chunks still point at `asdc-prod-protected`, so readers
