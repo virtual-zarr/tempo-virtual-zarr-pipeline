@@ -972,4 +972,11 @@ class Processor:
     def garbage_collect(self, expiry_time: datetime) -> icechunk.GCSummary:
         repo = self.open_backfill_repo()
         repo.expire_snapshots(older_than=expiry_time)
-        return repo.garbage_collect(delete_object_older_than=expiry_time)
+        # icechunk's default lets 512 MiB of compressed manifests be in
+        # flight, which decode to several times that: too close to the GC
+        # Batch job's 2000 MB (cdk/stack.py). A smaller budget only slows
+        # the walk; it never changes what is deleted.
+        return repo.garbage_collect(
+            delete_object_older_than=expiry_time,
+            max_compressed_manifest_mem_bytes=128 * 1024 * 1024,
+        )
