@@ -5,6 +5,7 @@ client configuration. Pruning is Icechunk on a local directory, so the
 source repository is built on disk and pushed into moto object by object.
 """
 
+import io
 import shutil
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -13,7 +14,7 @@ from typing import Any
 
 import boto3
 import icechunk
-import mirror_to_source_coop
+import mirror_to_source_coop as m
 import numpy as np
 import pytest
 import zarr
@@ -60,7 +61,7 @@ def mock_s3(source: Path) -> Iterator[Any]:
                 Bucket=bucket,
                 CreateBucketConfiguration={"LocationConstraint": "us-west-2"},
             )
-        for key in mirror_to_source_coop.store_files(source):
+        for key in m.store_files(source):
             client.put_object(
                 Bucket=SRC_BUCKET,
                 Key=SRC_PREFIX + key,
@@ -75,22 +76,19 @@ def s3(tmp_path: Path, tip: str) -> Iterator[Any]:
         yield client
 
 
-def run(client: Any, directory: Path, **kwargs: Any) -> Path | None:
-    return mirror_to_source_coop.publish(
-        client,
-        client,
-        source_bucket=SRC_BUCKET,
-        source_prefix=SRC_PREFIX,
-        destination_bucket=DST_BUCKET,
-        destination_prefix=DST_PREFIX,
-        directory=directory,
-        workers=4,
-        **kwargs,
-    )
+def run(client: Any, directory: Path, *, upload_copy: bool = True) -> Path:
+    """The stages as ``main`` runs them; return the zip."""
+    archive = directory.with_name(directory.name + ".zip")
+    m.download(client, SRC_BUCKET, SRC_PREFIX, directory, workers=4)
+    m.prune(directory)
+    m.zip_store(directory, archive)
+    if upload_copy:
+        m.upload(client, directory, DST_BUCKET, DST_PREFIX, workers=4)
+    return archive
 
 
 def published(s3: Any) -> dict[str, int]:
-    return mirror_to_source_coop.object_sizes(s3, DST_BUCKET, DST_PREFIX)
+    return m.object_sizes(s3, DST_BUCKET, DST_PREFIX)
 
 
 def test_clients_ignore_a_configured_endpoint(monkeypatch: Any) -> None:
@@ -98,10 +96,7 @@ def test_clients_ignore_a_configured_endpoint(monkeypatch: Any) -> None:
     monkeypatch.setenv("SOURCE_COOP_ACCESS_KEY_ID", "key")
     monkeypatch.setenv("SOURCE_COOP_SECRET_ACCESS_KEY", "secret")
 
-    for client in (
-        mirror_to_source_coop.source_client(),
-        mirror_to_source_coop.destination_client(),
-    ):
+    for client in (m.source_client(), m.destination_client()):
         assert client.meta.endpoint_url == "https://s3.us-west-2.amazonaws.com"
 
 
@@ -110,12 +105,12 @@ def test_destination_credentials_are_required(monkeypatch: Any) -> None:
     monkeypatch.delenv("SOURCE_COOP_ACCESS_KEY_ID", raising=False)
     monkeypatch.delenv("SOURCE_COOP_SECRET_ACCESS_KEY", raising=False)
     with pytest.raises(SystemExit):
-        mirror_to_source_coop.destination_client()
+        m.destination_client()
 
     monkeypatch.setenv("SOURCE_COOP_ACCESS_KEY_ID", "key")
     monkeypatch.setenv("SOURCE_COOP_SECRET_ACCESS_KEY", "secret")
 
-    client = mirror_to_source_coop.destination_client()
+    client = m.destination_client()
     # Path-style, since the bucket name has dots.
     assert client.meta.config.s3["addressing_style"] == "path"
     assert client.meta.endpoint_url == "https://s3.us-west-2.amazonaws.com"
@@ -137,7 +132,7 @@ def test_store_files_skips_what_is_not_icechunks(tmp_path: Path) -> None:
         (tmp_path / name).parent.mkdir(parents=True, exist_ok=True)
         (tmp_path / name).write_bytes(b"x")
 
-    assert set(mirror_to_source_coop.store_files(tmp_path)) == {
+    assert set(m.store_files(tmp_path)) == {
         "repo",
         "config.yaml",
         "chunks/ABC",
@@ -152,7 +147,7 @@ def test_publishes_only_the_tip_of_main(s3: Any, tip: str, tmp_path: Path) -> No
         "provide-client-params.s3.PutObject",
         lambda params, **_: order.append(params["Key"]),
     )
-    source_keys = mirror_to_source_coop.object_sizes(s3, SRC_BUCKET, SRC_PREFIX)
+    source_keys = m.object_sizes(s3, SRC_BUCKET, SRC_PREFIX)
     assert sum(k.startswith("chunks/") for k in source_keys) == 3
 
     archive = run(s3, tmp_path / "copy")
@@ -162,17 +157,14 @@ def test_publishes_only_the_tip_of_main(s3: Any, tip: str, tmp_path: Path) -> No
     assert sum(k.startswith("snapshots/") for k in keys) == 2  # root + tip
     # Root, tip, and the two expired ancestors the tip still references.
     assert sum(k.startswith("transactions/") for k in keys) == 4
-    assert all(
-        k == "repo" or k.split("/")[0] in mirror_to_source_coop.STORE_DIRS for k in keys
-    )
+    assert all(k == "repo" or k.split("/")[0] in m.STORE_DIRS for k in keys)
     assert order[-1] == DST_PREFIX + "repo"
 
     # The zip is the same pruned store, readable after unzipping.
-    assert archive is not None
-    assert archive == (tmp_path / "copy.zip").resolve()
+    assert archive == tmp_path / "copy.zip"
     unpacked = tmp_path / "unpacked"
     shutil.unpack_archive(archive, unpacked)
-    assert mirror_to_source_coop.store_files(unpacked).keys() == keys
+    assert m.store_files(unpacked).keys() == keys
     repo = icechunk.Repository.open(icechunk.local_filesystem_storage(str(unpacked)))
     assert repo.list_branches() == {"main"}
     assert repo.lookup_branch("main") == tip
@@ -220,7 +212,7 @@ def test_refuses_a_non_empty_directory_or_an_existing_zip(
     (tmp_path / "copy").mkdir()
     (tmp_path / "copy" / "precious").write_text("do not delete")
     with pytest.raises(SystemExit, match="not empty"):
-        run(s3, tmp_path / "copy", dry_run=True)
+        run(s3, tmp_path / "copy")
     assert (tmp_path / "copy" / "precious").read_text() == "do not delete"
 
     (tmp_path / "other.zip").write_bytes(b"old")
@@ -229,34 +221,26 @@ def test_refuses_a_non_empty_directory_or_an_existing_zip(
     assert (tmp_path / "other.zip").read_bytes() == b"old"
 
 
-def test_dry_run_and_no_upload_write_nothing(s3: Any, tmp_path: Path) -> None:
-    assert run(s3, tmp_path / "copy", dry_run=True) is None
+def test_report_and_no_upload_write_nothing(s3: Any, tmp_path: Path) -> None:
+    log = io.StringIO()
+    m.report(s3, SRC_BUCKET, SRC_PREFIX, log=log)
+    assert "the tip of main needs" in log.getvalue()
     assert not (tmp_path / "copy").exists()
 
     archive = run(s3, tmp_path / "copy", upload_copy=False)
-    assert archive is not None and archive.exists()
+    assert archive.exists()
     assert published(s3) == {}
 
 
-def test_limit_stops_after_a_partial_download(s3: Any, tmp_path: Path) -> None:
-    assert run(s3, tmp_path / "copy", upload_copy=False, limit=1) is None
+def test_limit_downloads_a_partial_store(s3: Any, tmp_path: Path) -> None:
+    m.download(s3, SRC_BUCKET, SRC_PREFIX, tmp_path / "copy", workers=4, limit=1)
     # repo, the tip and root snapshots fetched directly, plus one object.
-    assert len(mirror_to_source_coop.store_files(tmp_path / "copy")) == 4
-    assert not (tmp_path / "copy.zip").exists()
+    assert len(m.store_files(tmp_path / "copy")) == 4
     assert published(s3) == {}
 
 
-def test_dry_run_reports_the_tip(s3: Any, tmp_path: Path) -> None:
-    lines: list[str] = []
-
-    class Log:
-        def write(self, text: str) -> None:
-            lines.append(text)
-
-        def flush(self) -> None:
-            pass
-
-    run(s3, tmp_path / "copy", dry_run=True, log=Log())
-    report = "".join(lines)
-    assert "the tip of main needs" in report
-    assert not (tmp_path / "copy").exists()
+def test_zip_store_refuses_a_directory_without_a_store(tmp_path: Path) -> None:
+    (tmp_path / "empty").mkdir()
+    with pytest.raises(SystemExit, match="no Icechunk store"):
+        m.zip_store(tmp_path / "empty", tmp_path / "empty.zip")
+    assert not (tmp_path / "empty.zip").exists()

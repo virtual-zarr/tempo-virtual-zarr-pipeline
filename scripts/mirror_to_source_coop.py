@@ -1,49 +1,52 @@
 #!/usr/bin/env python3
 """Publish the tip of the Icechunk store to Source Cooperative, and zip it locally.
 
-Downloads what the tip of ``main`` needs into a fresh directory (its
-snapshot, manifests, every transaction log and every native chunk; the
-historical snapshots and manifests are most of the source's size), prunes
-that directory to the tip with Icechunk's own expire and garbage-collect
-(the source keeps its rollback window and the pipeline keeps committing),
-zips it, then uploads it to Source Coop with ``repo`` last, so a reader
-never sees a tip that names files still in flight. Only Icechunk's own
-files are zipped or uploaded. Nothing is deleted from either bucket;
-objects earlier runs published linger as orphans.
+Four stages, listed one per line at the bottom of ``main``; comment out
+the ones you don't need, since each reads what the one before left in the
+directory. ``download`` fetches what the tip of ``main`` needs into an
+empty directory (its snapshot, manifests, every transaction log and every
+native chunk; the historical snapshots and manifests are most of the
+source's size). ``prune`` cuts that directory down to the tip in place
+with Icechunk's own expire and garbage-collect (the source keeps its
+rollback window and the pipeline keeps committing). ``zip_store`` zips it;
+the zip stays local and is not published anywhere. ``upload`` sends it to
+Source Coop with ``repo`` last, so a reader never sees a tip that names
+files still in flight. Only Icechunk's own files are zipped or uploaded.
+Nothing is deleted from either bucket; objects earlier runs published
+linger as orphans.
 
-The zip stays local; it is not published anywhere.
-
-The directory must be empty or absent and its ``.zip`` sibling absent: the
-script refuses to touch anything else. Each run downloads the tip afresh.
+The script never deletes anything local: ``download`` refuses a non-empty
+directory and ``zip_store`` an existing zip. After a crash, comment out the
+stages that finished and rerun.
 
 Source reads use your AWS credentials. Destination writes use the keys
 Source Coop issued: SOURCE_COOP_ACCESS_KEY_ID, SOURCE_COOP_SECRET_ACCESS_KEY
-and optionally SOURCE_COOP_SESSION_TOKEN. The store location comes from
-ICECHUNK_BUCKET and S3_PREFIX/ICECHUNK_PREFIX.
+and optionally SOURCE_COOP_SESSION_TOKEN, checked when ``upload`` starts.
+The store location comes from ICECHUNK_BUCKET and S3_PREFIX/ICECHUNK_PREFIX.
 
 Progress bars go to stderr. Off a terminal (CI, redirected output) they
 redraw every 30 seconds instead of continuously.
 
-Usage (--dry-run only reports; --no-upload stops after the zip; --limit N
-fetches N objects as a trial and stops, pairing well with a scratch --dir):
+Usage (--dry-run only reports what the tip needs; --limit N downloads at
+most N objects as a trial, with the later stages commented out):
     uv run --env-file .env_no2 --env-file .env.local scripts/mirror_to_source_coop.py
 """
 
 from __future__ import annotations
 
 import argparse
+import functools
 import os
 import sys
 import tempfile
 import threading
 import time
 import zipfile
-from collections.abc import Iterator
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, ParamSpec, TypeVar
 
 import boto3
 import icechunk
@@ -80,6 +83,9 @@ FAR_FUTURE = datetime(9999, 1, 1, tzinfo=timezone.utc)
 # Seconds between progress redraws, on and off a terminal.
 TTY_INTERVAL = 0.1
 LOG_INTERVAL = 30.0
+
+P = ParamSpec("P")
+R = TypeVar("R")
 
 
 # --------------------------------------------------------------------------
@@ -143,14 +149,20 @@ class TransferBar(tqdm):  # type: ignore[type-arg]
             self._show_files(refresh=False)
 
 
-@contextmanager
-def stage(number: int, total: int, name: str, log: Any) -> Iterator[None]:
-    """Announce a step and report how long it took."""
-    print(f"[{number}/{total}] {name}", file=log, flush=True)
-    start = time.monotonic()
-    yield
-    elapsed = tqdm.format_interval(time.monotonic() - start)
-    print(f"[{number}/{total}] {name}: done in {elapsed}", file=log, flush=True)
+def stage(step: Callable[P, R]) -> Callable[P, R]:
+    """Announce a stage by its function name and report how long it took."""
+
+    @functools.wraps(step)
+    def run(*args: P.args, **kwargs: P.kwargs) -> R:
+        log: Any = kwargs.get("log", sys.stderr)
+        print(f"{step.__name__}...", file=log, flush=True)
+        start = time.monotonic()
+        result = step(*args, **kwargs)
+        elapsed = tqdm.format_interval(time.monotonic() - start)
+        print(f"{step.__name__}: done in {elapsed}", file=log, flush=True)
+        return result
+
+    return run
 
 
 # --------------------------------------------------------------------------
@@ -240,11 +252,6 @@ def store_files(directory: Path) -> dict[str, int]:
     }
 
 
-# --------------------------------------------------------------------------
-# Pipeline steps
-# --------------------------------------------------------------------------
-
-
 def fetch(source: Any, bucket: str, prefix: str, directory: Path, key: str) -> None:
     path = directory / key
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -280,23 +287,44 @@ def tip_objects(
     return sizes
 
 
+# --------------------------------------------------------------------------
+# Stages
+# --------------------------------------------------------------------------
+
+
+def report(source: Any, bucket: str, prefix: str, *, log: Any = sys.stderr) -> None:
+    """Dry run: say what the tip needs, from a scratch copy of ``repo``."""
+    with tempfile.TemporaryDirectory() as scratch:
+        fetch(source, bucket, prefix, Path(scratch), REPO_INFO_KEY)
+        sizes = tip_objects(source, bucket, prefix, Path(scratch))
+    print(
+        f"the tip of main needs {len(sizes) + 1:,} objects "
+        f"({human_bytes(sum(sizes.values()))}) from s3://{bucket}/{prefix}",
+        file=log,
+    )
+
+
+@stage
 def download(
     source: Any,
     bucket: str,
     prefix: str,
     directory: Path,
     *,
-    workers: int,
-    log: Any,
+    workers: int = WORKERS,
+    log: Any = sys.stderr,
     limit: int | None = None,
 ) -> int:
-    """Fetch what the tip needs into ``directory``; return how many objects.
+    """Fetch what the tip needs into the empty ``directory``; return how many.
 
     ``repo`` comes first: it pins a snapshot whose files already exist, so a
     commit landing mid-download can't leave the copy naming files it never
     fetched. boto3 renames completed downloads into place, so a crash
-    leaves no partial file under a store key.
+    leaves no partial file under a store key. ``limit`` fetches at most that
+    many objects, for a trial; a partial store can't be pruned or published.
     """
+    if directory.exists() and any(directory.iterdir()):
+        raise SystemExit(f"{directory} is not empty; delete it or pass an empty --dir")
     directory.mkdir(parents=True, exist_ok=True)
     fetch(source, bucket, prefix, directory, REPO_INFO_KEY)
     remote = tip_objects(source, bucket, prefix, directory, log=log)
@@ -332,11 +360,12 @@ def download(
     return len(todo)
 
 
-def prune(directory: Path, *, log: Any) -> str:
+@stage
+def prune(directory: Path, *, log: Any = sys.stderr) -> str:
     """Cut the copy down to the tip of ``main`` in place; return the tip's id.
 
-    Icechunk exposes no progress hooks here, so this step reports only
-    its duration (via the enclosing stage).
+    Icechunk exposes no progress hooks here, so this stage reports only
+    its duration.
     """
     repo = icechunk.Repository.open(icechunk.local_filesystem_storage(str(directory)))
     print("expiring snapshots...", file=log, flush=True)
@@ -355,12 +384,17 @@ def prune(directory: Path, *, log: Any) -> str:
     return tip
 
 
-def zip_store(directory: Path, archive: Path, *, log: Any) -> None:
-    """Zip the store's files in ``directory`` to ``archive``.
+@stage
+def zip_store(directory: Path, archive: Path, *, log: Any = sys.stderr) -> None:
+    """Zip the store's files in ``directory`` to the new file ``archive``.
 
     Stored, not deflated: Icechunk's files are already compressed.
     """
+    if archive.exists():
+        raise SystemExit(f"{archive} exists; delete it or pass another --dir")
     sizes = store_files(directory)
+    if REPO_INFO_KEY not in sizes:
+        raise SystemExit(f"{directory} holds no Icechunk store (no repo file)")
     with TransferBar(
         "zip", total_bytes=sum(sizes.values()), total_files=len(sizes), log=log
     ) as bar:
@@ -369,16 +403,18 @@ def zip_store(directory: Path, archive: Path, *, log: Any) -> None:
                 zf.write(directory / key, key)
                 bar.add_bytes(sizes[key])
                 bar.file_done()
+    print(f"zipped {archive} ({human_bytes(archive.stat().st_size)})", file=log)
 
 
+@stage
 def upload(
     destination: Any,
     directory: Path,
     bucket: str,
     prefix: str,
     *,
-    workers: int,
-    log: Any,
+    workers: int = WORKERS,
+    log: Any = sys.stderr,
 ) -> int:
     """Send the store files the destination lacks, ``repo`` last; return how many."""
     try:
@@ -422,91 +458,6 @@ def upload(
     return len(todo) + 1
 
 
-def publish(
-    source: Any,
-    destination: Any,
-    *,
-    source_bucket: str,
-    source_prefix: str,
-    destination_bucket: str,
-    destination_prefix: str,
-    directory: Path,
-    workers: int = WORKERS,
-    dry_run: bool = False,
-    upload_copy: bool = True,
-    limit: int | None = None,
-    log: Any = sys.stderr,
-) -> Path | None:
-    """Download, prune, zip, upload; return the zip, or None on a dry or trial run.
-
-    The prefixes are repository roots ending in ``/``. ``directory`` must be
-    empty or absent and ``<directory>.zip`` absent; it ends up holding the
-    pruned tip. ``limit`` fetches at most that many objects and stops after
-    the download: a partial store can't be pruned or published.
-    """
-    directory = directory.resolve()
-    archive = directory.with_name(directory.name + ".zip")
-    if directory.exists() and any(directory.iterdir()):
-        raise SystemExit(
-            f"{directory} is not empty; delete it or pass an empty --dir "
-            "(each run downloads the tip afresh)"
-        )
-    if archive.exists():
-        raise SystemExit(f"{archive} exists; delete it or pass another --dir")
-
-    if dry_run:
-        with tempfile.TemporaryDirectory() as scratch:
-            fetch(source, source_bucket, source_prefix, Path(scratch), REPO_INFO_KEY)
-            sizes = tip_objects(source, source_bucket, source_prefix, Path(scratch))
-        print(
-            f"dry run: the tip of main needs {len(sizes) + 1:,} objects "
-            f"({human_bytes(sum(sizes.values()))}) from "
-            f"s3://{source_bucket}/{source_prefix}; would download to {directory}",
-            file=log,
-        )
-        return None
-
-    started = time.monotonic()
-    total = 1 if limit is not None else 4 if upload_copy else 3
-
-    with stage(1, total, "download", log):
-        download(
-            source,
-            source_bucket,
-            source_prefix,
-            directory,
-            workers=workers,
-            log=log,
-            limit=limit,
-        )
-    if limit is not None:
-        elapsed = tqdm.format_interval(time.monotonic() - started)
-        print(f"trial done in {elapsed}; stopping before prune", file=log)
-        return None
-
-    with stage(2, total, "prune to tip of main", log):
-        prune(directory, log=log)
-
-    with stage(3, total, "zip", log):
-        zip_store(directory, archive, log=log)
-        print(f"zipped {archive} ({human_bytes(archive.stat().st_size)})", file=log)
-
-    if upload_copy:
-        with stage(4, total, "upload to Source Coop", log):
-            upload(
-                destination,
-                directory,
-                destination_bucket,
-                destination_prefix,
-                workers=workers,
-                log=log,
-            )
-
-    elapsed = tqdm.format_interval(time.monotonic() - started)
-    print(f"all done in {elapsed}", file=log)
-    return archive
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
@@ -515,15 +466,10 @@ def main() -> int:
         help="report what the tip needs and exit without downloading",
     )
     parser.add_argument(
-        "--no-upload",
-        action="store_true",
-        help="stop after writing the zip; needs no Source Coop credentials",
-    )
-    parser.add_argument(
         "--limit",
         type=int,
         metavar="N",
-        help="trial run: download at most N objects, then stop",
+        help="trial: download at most N objects (comment out the later stages)",
     )
     parser.add_argument(
         "--dir",
@@ -531,40 +477,39 @@ def main() -> int:
         help="empty or absent directory for the download (default: stores/<prefix>)",
     )
     args = parser.parse_args()
+    if args.limit is not None and args.limit < 1:
+        parser.error("--limit must be at least 1")
 
-    source_bucket = os.environ.get("ICECHUNK_BUCKET")
-    source_prefix = storage_prefix()
-    if not source_bucket or not source_prefix:
+    bucket = os.environ.get("ICECHUNK_BUCKET")
+    prefix = storage_prefix()
+    if not bucket or not prefix:
         print(
             "ICECHUNK_BUCKET and S3_PREFIX/ICECHUNK_PREFIX must be set "
             "(local-filesystem stores have nothing to publish)",
             file=sys.stderr,
         )
         return 2
-    source_prefix = source_prefix.strip("/")
-
-    # Nest the per-collection source prefix under DEST_ROOT.
-    destination_prefix = f"{DEST_ROOT}/{source_prefix}"
-    if args.limit is not None and args.limit < 1:
-        parser.error("--limit must be at least 1")
-    upload_copy = not (args.dry_run or args.no_upload or args.limit is not None)
-
+    prefix = prefix.strip("/")
+    destination_prefix = f"{DEST_ROOT}/{prefix}/"  # per collection, under DEST_ROOT
+    directory = (args.dir or Path("stores") / prefix).resolve()
+    archive = directory.with_name(directory.name + ".zip")
+    source = source_client()
     print(
-        f"s3://{source_bucket}/{source_prefix}/ -> s3://{DEST_BUCKET}/{destination_prefix}/",
+        f"s3://{bucket}/{prefix}/ -> s3://{DEST_BUCKET}/{destination_prefix}",
         file=sys.stderr,
     )
-    publish(
-        source_client(),
-        destination_client() if upload_copy else None,
-        source_bucket=source_bucket,
-        source_prefix=f"{source_prefix}/",
-        destination_bucket=DEST_BUCKET,
-        destination_prefix=f"{destination_prefix}/",
-        directory=args.dir or Path("stores") / source_prefix,
-        dry_run=args.dry_run,
-        upload_copy=upload_copy,
-        limit=args.limit,
-    )
+
+    if args.dry_run:
+        report(source, bucket, f"{prefix}/")
+        return 0
+
+    # The stages. Each reads what the one before left in `directory`, so
+    # comment out the ones you don't need: everything after download for a
+    # --limit trial, or the ones that finished when rerunning after a crash.
+    download(source, bucket, f"{prefix}/", directory, limit=args.limit)
+    prune(directory)
+    zip_store(directory, archive)
+    upload(destination_client(), directory, DEST_BUCKET, destination_prefix)
     return 0
 
 

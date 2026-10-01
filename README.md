@@ -286,13 +286,17 @@ zipped or uploaded; a stray `.DS_Store` or the `overwritten/` backups are
 not. A crashed run leaves the old tip in place. Nothing is deleted from
 either bucket, so files earlier runs published linger as orphans.
 
-The script refuses a non-empty download directory and an existing zip, and
-never deletes anything local: each run needs a fresh `stores/<prefix>/` (or
-an empty `--dir`) and downloads the tip afresh.
+The four stages (`download`, `prune`, `zip_store`, `upload`) are listed one
+per line at the bottom of `main()`, and each reads what the one before left
+in the directory, so comment out the ones you don't need: `upload` for a
+zip-only run, everything after `download` for a `--limit N` trial, or the
+stages that finished when rerunning after a crash. The script never deletes
+anything local: `download` refuses a non-empty directory and `zip_store` an
+existing zip, so a full run needs a fresh `stores/<prefix>/` (or an empty
+`--dir`).
 
 ```bash
-uv run --env-file .env_no2 --env-file .env.local scripts/mirror_to_source_coop.py --dry-run   # tip size only
-uv run --env-file .env_no2 scripts/mirror_to_source_coop.py --no-upload                       # zip only
+uv run --env-file .env_no2 scripts/mirror_to_source_coop.py --dry-run                         # tip size only
 uv run --env-file .env_no2 --env-file .env.local scripts/mirror_to_source_coop.py
 ```
 
