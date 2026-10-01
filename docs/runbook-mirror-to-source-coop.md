@@ -5,69 +5,110 @@ Cooperative. `scripts/mirror_to_source_coop.py` downloads every object
 under the store prefix, zips the directory, and uploads both to
 `s3://us-west-2.opendata.source.coop/pangeo/tempo-virtual-icechunk/`
 (details in [README → Publishing to Source Cooperative](../README.md#publishing-to-source-cooperative)).
-The store streams through the machine running the script, so run it in
-**us-west-2**, where the store bucket and Source Coop's bucket both live:
-transfers stay in-region (fast, no egress charge) and the copy fits in a
-few hours instead of a day.
+
+Run it from a terminal on the VEDA JupyterHub. The hub is in us-west-2,
+where the store bucket and Source Coop's bucket both live, so the store
+streams through the pod in-region (fast, no egress charge). Both sides
+use short-lived credentials scoped to this job: the source side an SSO
+permission set that can only read the store, the destination side the
+keys Source Coop issued.
 
 The script is not idempotent and never deletes: every run copies
 everything again and overwrites what is there. That is fine; it just
 costs time.
 
-## Step 0 — size the job
+## Step 0 — once: a read-only permission set for the store
 
-From anywhere with read access to the store:
+Ask an Identity Center administrator for a permission set in the
+pipeline account (say `TempoStoreReader`) with this inline policy and a
+session duration of 12 hours, assigned to whoever runs the mirror. It is
+exactly the read half of what the stack grants its own Lambdas
+(`cdk/stack_constructs/grants.py`): listing and reading under the
+collection prefixes, nothing else in the account.
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": "s3:GetObject",
+      "Resource": "arn:aws:s3:::<ICECHUNK_BUCKET>/tempo/*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": "s3:ListBucket",
+      "Resource": "arn:aws:s3:::<ICECHUNK_BUCKET>",
+      "Condition": {"StringLike": {"s3:prefix": "tempo/*"}}
+    }
+  ]
+}
+```
+
+Without it, the fallback is to log in with a broader permission set and
+assume a role carrying the same policy (`aws sts assume-role --role-arn
+... --policy file://scoped.json`), exporting the three keys it returns.
+Those are capped at one hour by role chaining, and the script does not
+refresh them, so the download (the only phase that reads the source) has
+to finish inside the hour. Prefer the permission set.
+
+## Step 1 — set up on the hub
+
+In a hub terminal, with the Python (Pangeo) image:
 
 ```bash
-export AWS_PROFILE=<profile>
-set -a; source .env_no2; set +a            # or .env_hcho
+git clone <this repository> && cd tempo-virtual-zarr-pipeline
+uv sync                                    # curl -LsSf https://astral.sh/uv/install.sh | sh if missing
+aws --version                              # must be v2 for SSO login
+```
+
+Check free space in the home volume: the copy needs room for twice the
+store (the directory plus the zip). Store size, after Step 2:
+
+```bash
 PREFIX=$(uv run python -c \
   "from virtualizarr_processor.manifest import storage_prefix; print(storage_prefix())")
 aws s3 ls "s3://$ICECHUNK_BUCKET/$PREFIX/" --recursive --summarize | tail -2
+df -h ~
 ```
 
 (`PREFIX` is `S3_PREFIX/ICECHUNK_PREFIX` joined the way the stack joins
 them; either may be unset.)
 
-The machine needs free disk for twice that total (the directory plus the
-zip).
-
-## Step 1 — a machine in us-west-2
-
-Launch an EC2 instance in us-west-2 (any current general-purpose type;
-network bandwidth matters more than CPU) with:
-
-- an instance role allowing `s3:ListBucket` and `s3:GetObject` on the
-  store bucket (the stack's reader policy, or any role you already use to
-  read the store);
-- a volume with the free space from Step 0;
-- Session Manager or SSH access.
-
-Then install the project on it:
-
-```bash
-sudo dnf install -y git                    # Amazon Linux; apt on Ubuntu
-curl -LsSf https://astral.sh/uv/install.sh | sh && source ~/.bashrc
-git clone <this repository> && cd tempo-virtual-zarr-pipeline
-uv sync
-```
-
 ## Step 2 — credentials
 
-Source Coop writes need the keys it issued for the repository (Source
-Coop → the repository → *Manage* → *API keys*). Put them in the
-gitignored `.env.local` (template: `.env.local.sample`):
+**Source.** Log in with the scoped permission set. The hub pod already
+carries a role of its own in the environment; `AWS_PROFILE` takes
+precedence over it in boto3's credential chain, so the script and the
+CLI both use the SSO session.
+
+```bash
+aws configure sso --profile tempo-reader   # SSO start URL, pipeline account, TempoStoreReader, us-west-2
+export AWS_PROFILE=tempo-reader
+set -a; source .env_no2; set +a            # or .env_hcho
+aws sts get-caller-identity               # ...assumed-role/AWSReservedSSO_TempoStoreReader_.../<you>
+```
+
+The device-code login prints a URL and a code; open it in your laptop's
+browser. The session lasts the permission set's duration and the CLI
+refreshes credentials within it on its own.
+
+**Destination.** Put the temporary keys Source Coop issued for the
+repository in the gitignored `.env.local` (template: `.env.local.sample`):
 
 ```
 SOURCE_COOP_ACCESS_KEY_ID=...
 SOURCE_COOP_SECRET_ACCESS_KEY=...
+SOURCE_COOP_SESSION_TOKEN=...
 ```
 
-Source reads use the instance role; nothing else to configure.
+They must still be valid when the upload phase starts, after the
+download and zip.
 
 ## Step 3 — run
 
-In `tmux` (or `nohup`), so a dropped session does not kill the copy:
+In `tmux`, so a closed browser tab does not kill the copy (a culled pod
+still will; keep the tab open or start early in the day):
 
 ```bash
 tmux new -s mirror
@@ -108,5 +149,11 @@ print(zarr.open_group(repo.readonly_session('main').store, mode='r').tree())
 
 ## Step 5 — clean up
 
-Terminate the instance (or `rm -rf stores/`). The local copy holds
-nothing that is not already in both buckets.
+The home volume persists between sessions, so leave nothing behind:
+
+```bash
+rm -rf stores/ .env.local
+aws sso logout                             # drops the cached SSO token
+```
+
+The local copy holds nothing that is not already in both buckets.

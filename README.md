@@ -273,8 +273,9 @@ plus a zip of the same files beside it as `<prefix>.zip`, where `<prefix>` is
 `stores/<prefix>/` (gitignored), zips it to `stores/<prefix>.zip`, and
 uploads both. Nothing is compared, ordered or deleted: a rerun copies
 everything again, and a crash mid-upload leaves a partial copy until the
-next run. Run it from compute in us-west-2, where both buckets live;
-[the runbook](docs/runbook-mirror-to-source-coop.md) walks through it.
+next run. Run it from the VEDA JupyterHub, which is in us-west-2 with
+both buckets; [the runbook](docs/runbook-mirror-to-source-coop.md) covers
+the scoped credentials and the steps.
 
 ```bash
 uv run --env-file .env_no2 --env-file .env.local scripts/mirror_to_source_coop.py
