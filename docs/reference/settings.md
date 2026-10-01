@@ -27,6 +27,7 @@ The ones that matter most:
 | `BACKFILL_MAX_CONCURRENCY` | 50 | parallel workers per partition |
 | `FORWARD_QUEUE_ENABLED` | inverse of backfill | enable the SQS consumer; the poller and re-sort job deploy only when it is on |
 | `SQS_BATCH_SIZE` | 10 | files per consumer invocation (one commit each) |
+| `SQS_MAX_BATCHING_WINDOW_SECONDS` | 300 | how long the consumer waits to fill a batch. Fewer commits, at the cost of up to this much ingest latency |
 | `POLL_SCHEDULE_MINUTES` | 30 | CMR poller cadence; 0 deploys no poller |
 | `POLL_START_ISO` | — | first-poll start time, else a fixed lookback from now; set to the backfill inventory's build time when enabling forward processing |
 | `POLL_WATERMARK_URI` | `s3://<bucket>/<prefix>/state/cmr-watermark.json` | where the poller keeps its CMR revision watermark |

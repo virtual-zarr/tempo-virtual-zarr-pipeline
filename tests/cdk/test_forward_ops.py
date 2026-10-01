@@ -270,3 +270,17 @@ def test_gc_compute_environment_uses_default_x86_instances() -> None:
         "AWS::Batch::ComputeEnvironment",
         {"ComputeResources": Match.object_like({"InstanceTypes": ["default_x86_64"]})},
     )
+
+
+def test_consumer_batches_arrivals_into_fewer_commits() -> None:
+    """Each consumer invocation commits once; the batching window keeps a
+    burst of arrivals from becoming a commit per message."""
+    t = _template()
+    t.has_resource_properties(
+        "AWS::Lambda::EventSourceMapping",
+        {"BatchSize": 10, "MaximumBatchingWindowInSeconds": 300},
+    )
+    t.has_resource_properties(
+        "AWS::SQS::Queue",
+        {"QueueName": Match.string_like_regexp("-queue$"), "VisibilityTimeout": 2100},
+    )
