@@ -1,9 +1,10 @@
 # Runbook: mirror a store to Source Cooperative
 
 Use this to publish (or refresh) a collection's Icechunk store on Source
-Cooperative. `scripts/mirror_to_source_coop.py` downloads every object
-under the store prefix, zips the directory, and uploads both to
-`s3://us-west-2.opendata.source.coop/pangeo/tempo-virtual-icechunk/`
+Cooperative. `scripts/mirror_to_source_coop.py` streams every object
+under the store prefix to
+`s3://us-west-2.opendata.source.coop/pangeo/tempo-virtual-icechunk/`,
+building a zip of them on the way that it uploads beside them
 (details in [README → Publishing to Source Cooperative](../README.md#publishing-to-source-cooperative)).
 
 Run it from a terminal on the VEDA JupyterHub. The hub is in us-west-2,
@@ -49,8 +50,8 @@ Without it, the fallback is to log in with a broader permission set and
 assume a role carrying the same policy (`aws sts assume-role --role-arn
 ... --policy file://scoped.json`), exporting the three keys it returns.
 Those are capped at one hour by role chaining, and the script does not
-refresh them, so the download (the only phase that reads the source) has
-to finish inside the hour. Prefer the permission set.
+refresh them, so the whole copy of objects (everything but the final zip
+upload) has to finish inside the hour. Prefer the permission set.
 
 ## Step 1 — set up on the hub
 
@@ -62,8 +63,8 @@ uv sync                                    # curl -LsSf https://astral.sh/uv/ins
 aws --version                              # must be v2 for SSO login
 ```
 
-Check free space in the home volume: the copy needs room for twice the
-store (the directory plus the zip). Store size, after Step 2:
+Check free space in the home volume: only the zip lands on disk, so the
+copy needs room for about the store's size. Store size, after Step 2:
 
 ```bash
 PREFIX=$(uv run python -c \
@@ -102,8 +103,8 @@ SOURCE_COOP_SECRET_ACCESS_KEY=...
 SOURCE_COOP_SESSION_TOKEN=...
 ```
 
-They must still be valid when the upload phase starts, after the
-download and zip.
+They are used from the first object on, and last for the zip upload at
+the end.
 
 ## Step 3 — run
 
@@ -115,8 +116,8 @@ tmux new -s mirror
 uv run --env-file .env_no2 --env-file .env.local scripts/mirror_to_source_coop.py
 ```
 
-It prints the object count at the start of each of its three steps
-(download, zip, upload) and `done:` at the end. Repeat for the other
+It prints the object count when the copy starts, `uploading` when the
+zip goes up, and `done:` at the end. Repeat for the other
 collection with `.env_hcho`.
 
 ## Step 4 — verify
@@ -156,4 +157,4 @@ rm -rf stores/ .env.local
 aws sso logout                             # drops the cached SSO token
 ```
 
-The local copy holds nothing that is not already in both buckets.
+The zip holds nothing that is not already in both buckets.

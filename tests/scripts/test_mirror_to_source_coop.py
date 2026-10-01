@@ -31,7 +31,7 @@ def test_mirror_copies_every_object_and_a_zip(tmp_path: Path) -> None:
         for key, body in OBJECTS.items():
             s3.put_object(Bucket="air-quality", Key="tempo/no2/v04/" + key, Body=body)
 
-        m.mirror(s3, s3, "air-quality", "tempo/no2/v04", tmp_path / "v04")
+        m.mirror(s3, s3, "air-quality", "tempo/no2/v04", tmp_path / "v04.zip")
 
         dest = f"{m.DEST_ROOT}/tempo/no2/v04/"
         assert keys(s3, m.DEST_BUCKET, dest) == OBJECTS
@@ -40,6 +40,10 @@ def test_mirror_copies_every_object_and_a_zip(tmp_path: Path) -> None:
         )
         with zipfile.ZipFile(tmp_path / "got.zip") as zf:
             assert {info.filename: zf.read(info) for info in zf.infolist()} == OBJECTS
+        assert {p.name for p in tmp_path.iterdir()} == {
+            "v04.zip",
+            "got.zip",
+        }  # no store dir
 
 
 def test_destination_credentials_are_required(monkeypatch: Any) -> None:

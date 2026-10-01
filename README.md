@@ -269,13 +269,14 @@ Source Cooperative repository: every object under
 `s3://$ICECHUNK_BUCKET/<prefix>/` to
 `s3://us-west-2.opendata.source.coop/pangeo/tempo-virtual-icechunk/<prefix>/`,
 plus a zip of the same files beside it as `<prefix>.zip`, where `<prefix>` is
-`S3_PREFIX/ICECHUNK_PREFIX`, e.g. `tempo/no2/v04`. It downloads the store to
-`stores/<prefix>/` (gitignored), zips it to `stores/<prefix>.zip`, and
-uploads both. Nothing is compared, ordered or deleted: a rerun copies
-everything again, and a crash mid-upload leaves a partial copy until the
-next run. Run it from the VEDA JupyterHub, which is in us-west-2 with
-both buckets; [the runbook](docs/runbook-mirror-to-source-coop.md) covers
-the scoped credentials and the steps.
+`S3_PREFIX/ICECHUNK_PREFIX`, e.g. `tempo/no2/v04`. Objects stream through
+the process, one GET and one PUT each, and into a zip built at
+`stores/<prefix>.zip` (gitignored) that is uploaded at the end; only the
+zip touches disk. Nothing is compared, ordered or deleted: a rerun copies
+everything again, and a crash leaves a partial copy until the next run.
+Run it from the VEDA JupyterHub, which is in us-west-2 with both buckets;
+[the runbook](docs/runbook-mirror-to-source-coop.md) covers the scoped
+credentials and the steps.
 
 ```bash
 uv run --env-file .env_no2 --env-file .env.local scripts/mirror_to_source_coop.py

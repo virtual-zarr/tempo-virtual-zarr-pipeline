@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """Copy the Icechunk store to Source Cooperative, with a zip of it alongside.
 
-Downloads every object under the store prefix to a local directory, zips
-that directory, then uploads both to Source Coop: the objects under
-``<DEST_ROOT>/<prefix>/`` and the zip as ``<DEST_ROOT>/<prefix>.zip``.
+Streams every object under the store prefix through this process: each
+is read from the source, written to Source Coop under
+``<DEST_ROOT>/<prefix>/`` and added to a local zip, which is then
+uploaded as ``<DEST_ROOT>/<prefix>.zip``. The objects never touch disk;
+the zip does, so free space of about the store's size is needed.
 Nothing is compared, ordered or deleted; a rerun copies everything again
-and overwrites what is there. Run it in us-west-2, where both buckets
-live: docs/runbook-mirror-to-source-coop.md.
+and overwrites what is there. Run it from the VEDA JupyterHub, in
+us-west-2 with both buckets: docs/runbook-mirror-to-source-coop.md.
 
 Source reads use your AWS credentials. Destination writes use the keys
 Source Coop issued: SOURCE_COOP_ACCESS_KEY_ID, SOURCE_COOP_SECRET_ACCESS_KEY
@@ -22,6 +24,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import threading
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -80,64 +83,43 @@ def list_keys(client: Any, bucket: str, prefix: str) -> list[str]:
     ]
 
 
-def download(source: Any, bucket: str, prefix: str, directory: Path) -> list[str]:
-    """Fetch everything under ``prefix`` into ``directory``; return the keys."""
-    keys = list_keys(source, bucket, prefix)
-    print(f"downloading {len(keys):,} objects to {directory}", file=sys.stderr)
-
-    def get(key: str) -> None:
-        path = directory / key
-        path.parent.mkdir(parents=True, exist_ok=True)
-        source.download_file(bucket, prefix + key, str(path))
-
-    with ThreadPoolExecutor(WORKERS) as pool:
-        list(pool.map(get, keys))
-    return keys
-
-
-def zip_dir(directory: Path, keys: list[str], archive: Path) -> None:
-    """Zip ``keys`` under ``directory`` into ``archive``, stored not deflated:
-    Icechunk's files are already compressed."""
-    print(f"zipping {archive}", file=sys.stderr)
-    with zipfile.ZipFile(archive, "w") as zf:
-        for key in sorted(keys):
-            zf.write(directory / key, key)
-
-
-def upload(destination: Any, files: dict[Path, str], bucket: str) -> None:
-    """Send each local path to its key in ``bucket``."""
-    print(f"uploading {len(files):,} objects to s3://{bucket}", file=sys.stderr)
-
-    def put(item: tuple[Path, str]) -> None:
-        destination.upload_file(str(item[0]), bucket, item[1])
-
-    with ThreadPoolExecutor(WORKERS) as pool:
-        list(pool.map(put, files.items()))
-
-
 def mirror(
-    source: Any, destination: Any, bucket: str, prefix: str, directory: Path
-) -> dict[Path, str]:
-    """Copy ``s3://bucket/prefix/`` and a zip of it to Source Coop.
+    source: Any, destination: Any, bucket: str, prefix: str, archive: Path
+) -> list[str]:
+    """Copy ``s3://bucket/prefix/`` and a zip of it to Source Coop; return the keys.
 
-    ``prefix`` has no slashes at either end. Returns what was uploaded,
-    local path -> destination key.
+    ``prefix`` has no slashes at either end. Each object is held in memory
+    between its GET and PUT, so WORKERS objects at a time; Icechunk's
+    files are at most a few hundred MB (manifests), the rest KB.
     """
-    archive = directory.with_name(directory.name + ".zip")
-    keys = download(source, bucket, f"{prefix}/", directory)
-    zip_dir(directory, keys, archive)
-    files = {directory / key: f"{DEST_ROOT}/{prefix}/{key}" for key in keys}
-    files[archive] = f"{DEST_ROOT}/{prefix}.zip"
-    upload(destination, files, DEST_BUCKET)
-    return files
+    keys = list_keys(source, bucket, f"{prefix}/")
+    dest = f"{DEST_ROOT}/{prefix}/"
+    print(
+        f"copying {len(keys):,} objects to s3://{DEST_BUCKET}/{dest}", file=sys.stderr
+    )
+    lock = threading.Lock()  # zipfile is not thread-safe
+    # Stored, not deflated: Icechunk's files are already compressed.
+    with zipfile.ZipFile(archive, "w") as zf:
+
+        def copy(key: str) -> None:
+            body = source.get_object(Bucket=bucket, Key=f"{prefix}/{key}")[
+                "Body"
+            ].read()
+            destination.put_object(Bucket=DEST_BUCKET, Key=dest + key, Body=body)
+            with lock:
+                zf.writestr(key, body)
+
+        with ThreadPoolExecutor(WORKERS) as pool:
+            list(pool.map(copy, keys))
+    print(f"uploading {archive}", file=sys.stderr)
+    destination.upload_file(str(archive), DEST_BUCKET, f"{DEST_ROOT}/{prefix}.zip")
+    return keys
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
-        "--dir",
-        type=Path,
-        help="local directory for the copy (default: stores/<prefix>)",
+        "--zip", type=Path, help="where to build the zip (default: stores/<prefix>.zip)"
     )
     args = parser.parse_args()
 
@@ -149,15 +131,14 @@ def main() -> int:
         )
         return 2
     prefix = prefix.strip("/")
-    directory = (args.dir or Path("stores") / prefix).resolve()
+    archive = args.zip or Path("stores") / f"{prefix}.zip"
+    archive.parent.mkdir(parents=True, exist_ok=True)
     print(
         f"s3://{bucket}/{prefix}/ -> s3://{DEST_BUCKET}/{DEST_ROOT}/{prefix}/",
         file=sys.stderr,
     )
-    files = mirror(source_client(), destination_client(), bucket, prefix, directory)
-    print(
-        f"done: {len(files):,} objects, zip at s3://{DEST_BUCKET}/{DEST_ROOT}/{prefix}.zip"
-    )
+    keys = mirror(source_client(), destination_client(), bucket, prefix, archive)
+    print(f"done: {len(keys):,} objects + s3://{DEST_BUCKET}/{DEST_ROOT}/{prefix}.zip")
     return 0
 
 
