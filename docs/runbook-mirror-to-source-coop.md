@@ -7,6 +7,13 @@ under the store prefix to
 building a zip of them on the way that it uploads beside them
 (details in [README → Publishing to Source Cooperative](../README.md#publishing-to-source-cooperative)).
 
+The stores, from the tracked env files:
+
+| collection | env file    | source                                            | destination (under `pangeo/tempo-virtual-icechunk/`) |
+|------------|-------------|---------------------------------------------------|------------------------------------------------------|
+| NO2        | `.env_no2`  | `s3://airquality-data-store-develop/tempo/no2/v04/`  | `tempo/no2/v04/` and `tempo/no2/v04.zip`             |
+| HCHO       | `.env_hcho` | `s3://airquality-data-store-develop/tempo/hcho/v04/` | `tempo/hcho/v04/` and `tempo/hcho/v04.zip`           |
+
 Run it from a terminal on the VEDA JupyterHub. The hub is in us-west-2,
 where the store bucket and Source Coop's bucket both live, so the store
 streams through the pod in-region (fast, no egress charge). Both sides
@@ -21,11 +28,13 @@ costs time.
 ## Step 0 — once: a read-only permission set for the store
 
 Ask an Identity Center administrator for a permission set in the
-pipeline account (say `TempoStoreReader`) with this inline policy and a
-session duration of 12 hours, assigned to whoever runs the mirror. It is
-exactly the read half of what the stack grants its own Lambdas
-(`cdk/stack_constructs/grants.py`): listing and reading under the
-collection prefixes, nothing else in the account.
+account that owns `airquality-data-store-develop` (say
+`TempoStoreReader`) with this inline policy and a session duration of
+12 hours, assigned to whoever runs the mirror. It is exactly the read
+half of what the stack grants its own Lambdas
+(`cdk/stack_constructs/grants.py`): listing and reading under
+`tempo/`, which covers both collections and nothing else in the
+account.
 
 ```json
 {
@@ -34,12 +43,12 @@ collection prefixes, nothing else in the account.
     {
       "Effect": "Allow",
       "Action": "s3:GetObject",
-      "Resource": "arn:aws:s3:::<ICECHUNK_BUCKET>/tempo/*"
+      "Resource": "arn:aws:s3:::airquality-data-store-develop/tempo/*"
     },
     {
       "Effect": "Allow",
       "Action": "s3:ListBucket",
-      "Resource": "arn:aws:s3:::<ICECHUNK_BUCKET>",
+      "Resource": "arn:aws:s3:::airquality-data-store-develop",
       "Condition": {"StringLike": {"s3:prefix": "tempo/*"}}
     }
   ]
@@ -64,17 +73,13 @@ aws --version                              # must be v2 for SSO login
 ```
 
 Check free space in the home volume: only the zip lands on disk, so the
-copy needs room for about the store's size. Store size, after Step 2:
+copy needs room for about the store's size. Store size, after Step 2's
+login:
 
 ```bash
-PREFIX=$(uv run python -c \
-  "from virtualizarr_processor.manifest import storage_prefix; print(storage_prefix())")
-aws s3 ls "s3://$ICECHUNK_BUCKET/$PREFIX/" --recursive --summarize | tail -2
+aws s3 ls s3://airquality-data-store-develop/tempo/no2/v04/ --recursive --summarize | tail -2
 df -h ~
 ```
-
-(`PREFIX` is `S3_PREFIX/ICECHUNK_PREFIX` joined the way the stack joins
-them; either may be unset.)
 
 ## Step 2 — credentials
 
@@ -84,10 +89,10 @@ precedence over it in boto3's credential chain, so the script and the
 CLI both use the SSO session.
 
 ```bash
-aws configure sso --profile tempo-reader   # SSO start URL, pipeline account, TempoStoreReader, us-west-2
+aws configure sso --profile tempo-reader   # SSO start URL, the store's account, TempoStoreReader, us-west-2
 export AWS_PROFILE=tempo-reader
-set -a; source .env_no2; set +a            # or .env_hcho
 aws sts get-caller-identity               # ...assumed-role/AWSReservedSSO_TempoStoreReader_.../<you>
+aws s3 ls s3://airquality-data-store-develop/tempo/no2/v04/ | head -3   # repo, config.yaml, chunks/
 ```
 
 The device-code login prints a URL and a code; open it in your laptop's
@@ -113,25 +118,27 @@ still will; keep the tab open or start early in the day):
 
 ```bash
 tmux new -s mirror
-uv run --env-file .env_no2 --env-file .env.local scripts/mirror_to_source_coop.py
+uv run --env-file .env_no2  --env-file .env.local scripts/mirror_to_source_coop.py
+uv run --env-file .env_hcho --env-file .env.local scripts/mirror_to_source_coop.py
 ```
 
-It prints the object count when the copy starts, `uploading` when the
-zip goes up, and `done:` at the end. Repeat for the other
-collection with `.env_hcho`.
+The env file supplies `ICECHUNK_BUCKET`, `S3_PREFIX` and
+`ICECHUNK_PREFIX`; nothing in it needs editing. Each run prints the
+object count when the copy starts, `uploading` when the zip goes up, and
+`done:` at the end.
 
 ## Step 4 — verify
 
 Count objects on both sides; the destination should have the source's
-count plus one (the zip):
+count plus one (the zip). For NO2 (swap `no2` for `hcho`):
 
 ```bash
-aws s3 ls "s3://$ICECHUNK_BUCKET/$PREFIX/" --recursive --summarize | tail -2
+aws s3 ls s3://airquality-data-store-develop/tempo/no2/v04/ --recursive --summarize | tail -2
 aws s3 ls --no-sign-request \
-  "s3://us-west-2.opendata.source.coop/pangeo/tempo-virtual-icechunk/$PREFIX/" \
+  s3://us-west-2.opendata.source.coop/pangeo/tempo-virtual-icechunk/tempo/no2/v04/ \
   --recursive --summarize | tail -2
 aws s3 ls --no-sign-request \
-  "s3://us-west-2.opendata.source.coop/pangeo/tempo-virtual-icechunk/$PREFIX.zip"
+  s3://us-west-2.opendata.source.coop/pangeo/tempo-virtual-icechunk/tempo/no2/v04.zip
 ```
 
 Then open the public copy as a reader would (metadata only; no Earthdata
@@ -142,7 +149,7 @@ uv run python -c "
 import icechunk, zarr
 repo = icechunk.Repository.open(icechunk.s3_storage(
     bucket='us-west-2.opendata.source.coop',
-    prefix='pangeo/tempo-virtual-icechunk/$PREFIX',
+    prefix='pangeo/tempo-virtual-icechunk/tempo/no2/v04',
     region='us-west-2', anonymous=True))
 print(zarr.open_group(repo.readonly_session('main').store, mode='r').tree())
 "
