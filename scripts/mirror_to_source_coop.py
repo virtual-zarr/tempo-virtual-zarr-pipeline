@@ -344,7 +344,12 @@ def prune(directory: Path, *, log: Any) -> str:
         older_than=FAR_FUTURE, delete_expired_branches=True, delete_expired_tags=True
     )
     print("garbage-collecting...", file=log, flush=True)
-    summary = repo.garbage_collect(delete_object_older_than=FAR_FUTURE)
+    # GC fetches the retained snapshots' manifests concurrently, 500 at a
+    # time by default, and the local filesystem store opens each file
+    # several times for range reads: past macOS's 256 open-file limit.
+    summary = repo.garbage_collect(
+        delete_object_older_than=FAR_FUTURE, max_concurrent_manifest_fetches=WORKERS
+    )
     tip = repo.lookup_branch("main")
     print(f"pruned to main @ {tip}: {summary}", file=log)
     return tip

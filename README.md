@@ -306,6 +306,19 @@ The zip, if you hand it to someone, unpacks to a directory that opens with
 `icechunk.local_filesystem_storage`. Both copies carry only the tip, so
 `ancestry()` on them is the tip and the root.
 
+`scripts/verify_mirror_zip.py <zip>` checks a zip against the store it came
+from: every entry must exist in the store with the same bytes (`--quick`
+compares sizes only), the zip's `main` must be the store's `main` or an
+ancestor of it (the store having moved on is reported), and at that
+snapshot the Zarr metadata of every node and the set of virtual chunk
+locations must match. It needs only your AWS credentials, exits 1 on any
+difference, and takes about as long as the mirror's download, since it
+reads the tip's files again.
+
+```bash
+uv run --env-file .env_no2 scripts/verify_mirror_zip.py stores/tempo/no2/v04.zip
+```
+
 The copy publishes the store's metadata and native arrays, not the granule
 bytes: the virtual chunks still point at `asdc-prod-protected`, so readers
 of the public copy need Earthdata credentials and in-region compute exactly

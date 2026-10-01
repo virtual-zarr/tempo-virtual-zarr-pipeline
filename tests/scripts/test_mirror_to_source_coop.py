@@ -6,6 +6,8 @@ source repository is built on disk and pushed into moto object by object.
 """
 
 import shutil
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -48,8 +50,9 @@ def tip(tmp_path: Path) -> str:
     return build_repo(tmp_path / "source")
 
 
-@pytest.fixture()
-def s3(tmp_path: Path, tip: str) -> Any:
+@contextmanager
+def mock_s3(source: Path) -> Iterator[Any]:
+    """Both buckets in one moto backend, with ``source``'s store files pushed."""
     with mock_aws():
         client = boto3.client("s3", region_name="us-west-2")
         for bucket in (SRC_BUCKET, DST_BUCKET):
@@ -57,13 +60,18 @@ def s3(tmp_path: Path, tip: str) -> Any:
                 Bucket=bucket,
                 CreateBucketConfiguration={"LocationConstraint": "us-west-2"},
             )
-        source = tmp_path / "source"
         for key in mirror_to_source_coop.store_files(source):
             client.put_object(
                 Bucket=SRC_BUCKET,
                 Key=SRC_PREFIX + key,
                 Body=(source / key).read_bytes(),
             )
+        yield client
+
+
+@pytest.fixture()
+def s3(tmp_path: Path, tip: str) -> Iterator[Any]:
+    with mock_s3(tmp_path / "source") as client:
         yield client
 
 
