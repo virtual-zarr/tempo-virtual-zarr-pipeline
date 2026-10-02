@@ -23,9 +23,10 @@ The two should look the same; a shifted grid, a wrong scan, a scale or fill
 problem, or a missing region shows up at a glance.
 
 GIBS draws only the pixels that pass a quality screen. The store panel
-applies the screen that reproduces it (``main_data_quality_flag`` <= 1 and
-``eff_cloud_fraction`` < 0.5, matched empirically to within ~1% of pixels
-for both collections), so pixels only the store has (orange in the third
+applies the screen that reproduces it (``main_data_quality_flag`` <= 1,
+``eff_cloud_fraction`` < 0.5 and ``solar_zenith_angle`` < 80, matched
+empirically to within ~1% of pixels for both collections, on a midday and
+an early-morning scan), so pixels only the store has (orange in the third
 panel) or only GIBS has (black) should be scattered specks, not regions.
 Thin vertical stripes of ±1 bin are GIBS resampling its tiles onto this
 grid, not the store.
@@ -75,11 +76,13 @@ GPS_MINUS_UTC = np.timedelta64(18, "s")
 NO_DATA, OFF_PALETTE = -1, -2
 
 
-def screen(values: np.ndarray, flag: np.ndarray, cloud: np.ndarray) -> np.ndarray:
+def screen(
+    values: np.ndarray, flag: np.ndarray, cloud: np.ndarray, sza: np.ndarray
+) -> np.ndarray:
     """``values`` with NaN wherever GIBS would not draw the pixel."""
     # ponytail: thresholds fitted to GIBS output, not documented by GIBS; refit if
     # the masks stop matching.
-    return np.where((flag <= 1) & (cloud < 0.5), values, np.nan)
+    return np.where((flag <= 1) & (cloud < 0.5) & (sza < 80), values, np.nan)
 
 
 def fetch(url: str) -> bytes:
@@ -296,7 +299,7 @@ def main() -> int:
 
     variable = LAYERS[args.collection][0]
     da = open_store(args.collection)[
-        [variable, "main_data_quality_flag", "eff_cloud_fraction"]
+        [variable, "main_data_quality_flag", "eff_cloud_fraction", "solar_zenith_angle"]
     ]
     if args.time:
         # Worldview shows the scan whose start precedes the time, not the nearest;
@@ -318,6 +321,7 @@ def main() -> int:
         da[variable].values,
         da.main_data_quality_flag.values,
         da.eff_cloud_fraction.values,
+        da.solar_zenith_angle.values,
     )
     return compare(
         args.collection, values, da.latitude.values, da.longitude.values, utc, out

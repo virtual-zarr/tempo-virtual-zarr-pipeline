@@ -34,10 +34,11 @@ def test_value_and_color_bins_agree():
     ]
 
 
-def test_screen_drops_flagged_and_cloudy_pixels():
-    values = np.array([1.0, 2.0, 3.0, 4.0])
-    flag = np.array([0, 1, 2, 0])
-    cloud = np.array([0.1, 0.4, 0.1, 0.5])
+def test_screen_drops_flagged_cloudy_and_low_sun_pixels():
+    values = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
+    flag = np.array([0, 1, 2, 0, 0])
+    cloud = np.array([0.1, 0.4, 0.1, 0.5, 0.1])
+    sza = np.array([30.0, 79.9, 30.0, 30.0, 80.0])
     np.testing.assert_array_equal(
-        screen(values, flag, cloud), [1.0, 2.0, np.nan, np.nan]
+        screen(values, flag, cloud, sza), [1.0, 2.0, np.nan, np.nan, np.nan]
     )
