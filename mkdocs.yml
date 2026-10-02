@@ -3,7 +3,6 @@ site_name: tempo-virtual-zarr-pipeline
 repo_name: virtual-zarr/tempo-virtual-zarr-pipeline
 repo_url: https://github.com/virtual-zarr/tempo-virtual-zarr-pipeline
 site_description: Virtual Zarr / Icechunk ingestion pipeline for TEMPO L3 gridded products (HCHO and NO2)
-site_url: !ENV [READTHEDOCS_CANONICAL_URL, '']
 docs_dir: docs
 
 nav:
