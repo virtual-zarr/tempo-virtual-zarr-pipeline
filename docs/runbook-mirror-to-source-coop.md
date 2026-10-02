@@ -158,7 +158,56 @@ print(zarr.open_group(repo.readonly_session('main').store, mode='r').tree())
 "
 ```
 
-Then check the zip, from the local copy at `stores/<prefix>.zip` (it is
+### Verify the Icechunk store
+
+The public copy should be the same repository as the source, at the same
+version. Compare the snapshot `main` points at on each side and the
+length of its history; a run that stopped partway, or a source that
+moved on since the copy, shows up as a mismatch:
+
+```bash
+uv run --env-file .env_no2 python -c "
+import icechunk, os
+from virtualizarr_processor.manifest import storage_prefix
+p = storage_prefix()
+sides = {
+    'source': icechunk.s3_storage(bucket=os.environ['ICECHUNK_BUCKET'], prefix=p,
+                                  region='us-west-2', from_env=True),
+    'public': icechunk.s3_storage(bucket='us-west-2.opendata.source.coop',
+                                  prefix=f'pangeo/tempo-virtual-icechunk/{p}',
+                                  region='us-west-2', anonymous=True),
+}
+seen = set()
+for name, storage in sides.items():
+    repo = icechunk.Repository.open(storage)
+    main = repo.lookup_branch('main')
+    n = len(list(repo.ancestry(branch='main')))
+    print(f'{name}: main={main} snapshots={n}')
+    seen.add((main, n))
+print('OK' if len(seen) == 1 else 'MISMATCH')
+"
+```
+
+Then read it the way a user would. `check_virtual_containers.py`, pointed
+at the public copy anonymously, confirms the store declares its virtual
+chunk containers, covers every manifest URL with them, and reads a chunk
+back through them. That chunk read needs Earthdata credentials in the
+environment (EARTHDATA_TOKEN or username/password; see the script's
+docstring):
+
+```bash
+uv run --env-file .env_no2 python scripts/check_virtual_containers.py \
+  --bucket us-west-2.opendata.source.coop \
+  --prefix pangeo/tempo-virtual-icechunk/tempo/no2/v04 \
+  --region us-west-2 --anonymous
+```
+
+Never pass `--fix` here; the public copy is written only by the mirror.
+To fix a container, fix the source store and mirror again.
+
+### Verify the zip
+
+Check the zip from the local copy at `stores/<prefix>.zip` (it is
 what was uploaded). No script checks the zip itself, but both store
 checks open a local directory when `ICECHUNK_BUCKET` is empty and
 `ICECHUNK_LOCAL_PATH` is set. Clear the bucket with `env` inside
