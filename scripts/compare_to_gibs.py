@@ -25,8 +25,12 @@ applies the screen that reproduces it (``main_data_quality_flag`` <= 1,
 empirically to within ~1% of pixels for both collections, on a midday and
 an early-morning scan), so pixels only the store has (orange in the third
 panel) or only GIBS has (black) should be scattered specks, not regions.
-Thin vertical stripes of ±1 bin are GIBS resampling its tiles onto this
-grid, not the store.
+Thin vertical stripes, up to several bins either way, are GIBS resampling
+its tiles onto this grid, not the store: in about one column in seven
+(every 4, 7 or 11 columns) GIBS shows the cell one column east, and NO2 is
+noisy enough from cell to cell to differ by several bins. Shifted back, those
+columns agree as well as the rest. Rows are not affected, so horizontal
+stripes, or a shift in every column, would be a real problem.
 
 The store is read anonymously through Source Coop's proxy. Its chunks are
 virtual references into ASDC's bucket, so reading them needs Earthdata
