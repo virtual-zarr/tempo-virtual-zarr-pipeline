@@ -10,9 +10,11 @@ Nothing is compared, ordered or deleted; a rerun copies everything again
 and overwrites what is there. Run it from the VEDA JupyterHub, in
 us-west-2 with both buckets: docs/runbook-mirror-to-source-coop.md.
 
-Source reads use your AWS credentials. Destination writes use the keys
-Source Coop issued: SOURCE_COOP_ACCESS_KEY_ID, SOURCE_COOP_SECRET_ACCESS_KEY
-and optionally SOURCE_COOP_SESSION_TOKEN. The store location comes from
+Source reads use your AWS credentials. Destination writes go through
+Source Coop's S3-compatible proxy with the temporary keys it issued:
+SOURCE_COOP_ACCESS_KEY_ID, SOURCE_COOP_SECRET_ACCESS_KEY and
+SOURCE_COOP_SESSION_TOKEN. They are not AWS keys, so the proxy is the
+only endpoint that accepts them. The store location comes from
 ICECHUNK_BUCKET and S3_PREFIX/ICECHUNK_PREFIX.
 
 Usage:
@@ -34,9 +36,13 @@ import boto3
 from botocore.config import Config
 from virtualizarr_processor.manifest import storage_prefix
 
-DEST_BUCKET = "us-west-2.opendata.source.coop"
-DEST_ROOT = "pangeo/tempo-virtual-icechunk"
-REGION = "us-west-2"  # the store and Source Coop both live here
+# The proxy's bucket is the Source Coop account, its keys start with the
+# repository; it stores them under s3://us-west-2.opendata.source.coop/pangeo/.
+DEST_ENDPOINT = "https://data.source.coop"
+DEST_REGION = "us-east-1"  # what the proxy signs with (check_virtual_containers.py)
+DEST_BUCKET = "pangeo"
+DEST_ROOT = "tempo-virtual-icechunk"
+REGION = "us-west-2"  # the source store
 WORKERS = 16
 # Ignore any AWS_ENDPOINT_URL in the environment, which would redirect both
 # sides. botocore honors this from 1.29 on; the stubs do not list it yet.
@@ -49,11 +55,10 @@ def source_client() -> Any:
 
 
 def destination_client() -> Any:
-    """Source Coop, written with the keys it issued.
+    """Source Coop's proxy, written with the keys it issued.
 
     Required up front, since boto3 would otherwise sign with your AWS
-    identity and get a bare AccessDenied. Path-style because the bucket
-    name has dots.
+    identity. Path-style because the proxy has no per-bucket hostnames.
     """
     key = os.environ.get("SOURCE_COOP_ACCESS_KEY_ID")
     secret = os.environ.get("SOURCE_COOP_SECRET_ACCESS_KEY")
@@ -65,7 +70,8 @@ def destination_client() -> Any:
         )
     return boto3.client(
         "s3",
-        region_name=REGION,
+        region_name=DEST_REGION,
+        endpoint_url=DEST_ENDPOINT,
         aws_access_key_id=key,
         aws_secret_access_key=secret,
         aws_session_token=os.environ.get("SOURCE_COOP_SESSION_TOKEN"),

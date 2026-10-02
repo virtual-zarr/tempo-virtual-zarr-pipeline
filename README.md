@@ -282,9 +282,12 @@ credentials and the steps.
 uv run --env-file .env_no2 --env-file .env.local scripts/mirror_to_source_coop.py
 ```
 
-Source reads use your own AWS credentials. Destination writes use the keys
-Source Coop issued for the repository, `SOURCE_COOP_ACCESS_KEY_ID` and
-`SOURCE_COOP_SECRET_ACCESS_KEY` in `.env.local` (see the sample); the
+Source reads use your own AWS credentials. Destination writes go through
+Source Coop's S3-compatible proxy (`https://data.source.coop`, bucket `pangeo`)
+with the temporary keys Source Coop issued for the repository,
+`SOURCE_COOP_ACCESS_KEY_ID`, `SOURCE_COOP_SECRET_ACCESS_KEY` and
+`SOURCE_COOP_SESSION_TOKEN` in `.env.local` (see the sample). They are not
+AWS keys: the raw bucket rejects them with `InvalidAccessKeyId`. The
 pre-commit hook rejects them in a tracked env file. Runs are manual, one
 per collection, so the public copy is only as fresh as the last run.
 

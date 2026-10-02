@@ -14,9 +14,10 @@ The stores, from the tracked env files:
 | NO2        | `.env_no2`  | `s3://airquality-data-store-develop/tempo/no2/v04/`  | `tempo/no2/v04/` and `tempo/no2/v04.zip`             |
 | HCHO       | `.env_hcho` | `s3://airquality-data-store-develop/tempo/hcho/v04/` | `tempo/hcho/v04/` and `tempo/hcho/v04.zip`           |
 
-Run it from a terminal on the VEDA JupyterHub. The hub is in us-west-2,
-where the store bucket and Source Coop's bucket both live, so the store
-streams through the pod in-region (fast, no egress charge). Both sides
+Run it from a terminal on the VEDA JupyterHub. The hub is in us-west-2
+with the store bucket, so reads stay in-region; writes go through Source
+Coop's proxy at `https://data.source.coop`, which stores them in its
+us-west-2 bucket. Both sides
 use short-lived credentials scoped to this job: the source side an SSO
 permission set that can only read the store, the destination side the
 keys Source Coop issued.
@@ -100,7 +101,9 @@ browser. The session lasts the permission set's duration and the CLI
 refreshes credentials within it on its own.
 
 **Destination.** Put the temporary keys Source Coop issued for the
-repository in the gitignored `.env.local` (template: `.env.local.sample`):
+repository in the gitignored `.env.local` (template: `.env.local.sample`).
+They are Source Coop keys, not AWS ones, valid only at its proxy, which
+is where the script sends writes; all three are required:
 
 ```
 SOURCE_COOP_ACCESS_KEY_ID=...

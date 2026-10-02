@@ -56,6 +56,6 @@ def test_destination_credentials_are_required(monkeypatch: Any) -> None:
     monkeypatch.setenv("SOURCE_COOP_SECRET_ACCESS_KEY", "secret")
     monkeypatch.setenv("AWS_ENDPOINT_URL", "http://localhost:9000")  # ignored
     client = m.destination_client()
-    assert client.meta.config.s3["addressing_style"] == "path"  # bucket name has dots
-    assert client.meta.endpoint_url == "https://s3.us-west-2.amazonaws.com"
+    assert client.meta.config.s3["addressing_style"] == "path"
+    assert client.meta.endpoint_url == "https://data.source.coop"
     assert m.source_client().meta.endpoint_url == "https://s3.us-west-2.amazonaws.com"
