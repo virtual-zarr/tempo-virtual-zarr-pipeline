@@ -262,6 +262,41 @@ Earthdata material the workers use (or ambient AWS access to the source
 bucket). The pipeline's own writers never hold chunk-read access. Any
 mismatch or read failure exits non-zero.
 
+### Publishing to Source Cooperative
+
+`scripts/mirror_to_source_coop.py` copies a collection's store to the public
+Source Cooperative repository: every object under
+`s3://$ICECHUNK_BUCKET/<prefix>/` to
+`s3://us-west-2.opendata.source.coop/pangeo/tempo-virtual-icechunk/<prefix>/`,
+plus a zip of the same files beside it as `<prefix>.zip`, where `<prefix>` is
+`S3_PREFIX/ICECHUNK_PREFIX`, e.g. `tempo/no2/v04`. Objects stream through
+the process, one GET and one PUT each, and into a zip built at
+`stores/<prefix>.zip` (gitignored) that is uploaded at the end; only the
+zip touches disk. Nothing is compared, ordered or deleted: a rerun copies
+everything again, and a crash leaves a partial copy until the next run.
+Run it from the VEDA JupyterHub, which is in us-west-2 with both buckets;
+[the runbook](docs/runbook-mirror-to-source-coop.md) covers the scoped
+credentials and the steps.
+
+```bash
+uv run --env-file .env_no2 --env-file .env.local scripts/mirror_to_source_coop.py
+```
+
+Source reads use your own AWS credentials. Destination writes go through
+Source Coop's S3-compatible proxy (`https://data.source.coop`, bucket `pangeo`)
+with the temporary keys Source Coop issued for the repository,
+`SOURCE_COOP_ACCESS_KEY_ID`, `SOURCE_COOP_SECRET_ACCESS_KEY` and
+`SOURCE_COOP_SESSION_TOKEN` in `.env.local` (see the sample). They are not
+AWS keys: the raw bucket rejects them with `InvalidAccessKeyId`. The
+pre-commit hook rejects them in a tracked env file. Runs are manual, one
+per collection, so the public copy is only as fresh as the last run.
+
+The zip unpacks to a directory that opens with
+`icechunk.local_filesystem_storage`. The copy publishes the store's metadata
+and native arrays, not the granule bytes: the virtual chunks still point at
+`asdc-prod-protected`, so readers of the public copy need Earthdata
+credentials and in-region compute exactly as readers of the private store do.
+
 ### Recovery
 
 There's less to recover than you might expect:
