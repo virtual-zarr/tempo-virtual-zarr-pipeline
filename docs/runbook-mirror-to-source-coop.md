@@ -227,8 +227,10 @@ rm -rf /tmp/v04
 `check_virtual_containers.py` confirms the store declares its virtual
 chunk containers, covers every manifest URL with them, and reads a chunk
 back; `verify_store.py` compares sampled time steps against CMR and the
-source granules. Both read granule bytes, so they need Earthdata
-credentials (see their docstrings). Neither compares the zip's file list
+source granules. Both read granule bytes, so export EARTHDATA_TOKEN (or
+EARTHDATA_USERNAME and EARTHDATA_PASSWORD) first. Without it they fall
+back to the hub's own AWS role, which `asdc-prod-protected` refuses with
+`AccessDenied`. Neither compares the zip's file list
 against the source prefix, so the count from `unzip -l` is the only check
 of that.
 
