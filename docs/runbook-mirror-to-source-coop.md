@@ -213,7 +213,7 @@ reads chunks, so it needs the same Earthdata credentials:
 
 ```bash
 uv run scripts/compare_to_gibs.py --collection no2    # writes gibs-no2-<scan>.png
-uv run scripts/compare_to_gibs.py --collection hcho --time 2026-10-01T18:28
+uv run scripts/compare_to_gibs.py --collection hcho --time 2026-10-01T18:30   # the scan Worldview shows at 18:30
 ```
 
 ### Verify the zip

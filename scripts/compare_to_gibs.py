@@ -285,7 +285,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--collection", choices=sorted(LAYERS), default="no2")
     parser.add_argument(
-        "--time", help="UTC; the nearest scan is used (default: latest)"
+        "--time",
+        help="UTC; the scan in progress then, as Worldview picks it (default: latest)",
     )
     parser.add_argument("--bbox", nargs=4, type=float, metavar=("W", "S", "E", "N"))
     parser.add_argument(
@@ -298,7 +299,13 @@ def main() -> int:
         [variable, "main_data_quality_flag", "eff_cloud_fraction"]
     ]
     if args.time:
-        da = da.sel(time=np.datetime64(args.time) + GPS_MINUS_UTC, method="nearest")
+        # Worldview shows the scan whose start precedes the time, not the nearest;
+        # compare whole seconds, as GIBS keys scans (the axis has fractions).
+        starts = (da.time.values - GPS_MINUS_UTC).astype("datetime64[s]")
+        index = np.searchsorted(starts, np.datetime64(args.time, "s"), side="right")
+        if index == 0:
+            parser.error(f"--time {args.time} is before the first scan")
+        da = da.isel(time=index - 1)
     else:
         da = da.isel(time=-1)
     if args.bbox:
