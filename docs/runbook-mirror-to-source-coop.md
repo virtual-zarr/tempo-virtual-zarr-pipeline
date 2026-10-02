@@ -205,6 +205,17 @@ uv run --env-file .env_no2 python scripts/check_virtual_containers.py \
 Never pass `--fix` here; the public copy is written only by the mirror.
 To fix a container, fix the source store and mirror again.
 
+Finally, look at it. `compare_to_gibs.py` renders a scan of the public
+copy beside the GIBS image Worldview shows for the same scan (the imagery
+https://tempo.si.edu/data_for_public.html links to), with a per-pixel
+difference panel; its docstring says what a good result looks like. It
+reads chunks, so it needs the same Earthdata credentials:
+
+```bash
+uv run scripts/compare_to_gibs.py --collection no2    # writes gibs-no2-<scan>.png
+uv run scripts/compare_to_gibs.py --collection hcho --time 2026-10-01T18:28
+```
+
 ### Verify the zip
 
 Check the zip from the local copy at `stores/<prefix>.zip` (it is
