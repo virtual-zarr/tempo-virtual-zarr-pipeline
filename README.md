@@ -35,7 +35,7 @@ Layout and encoding:
   loaded and stored as native chunks — `[native]` below.
 - Everything else is virtual references into the source files.
 
-**`TEMPO_HCHO_L3` V04** — 13,611 scans as of 2026-07-30:
+**`TEMPO_HCHO_L3` V04**:
 
 ```
 /                                       dims: time (append dim), latitude=2950, longitude=7750
@@ -65,7 +65,7 @@ Layout and encoding:
 └── pbl_height                               int16
 ```
 
-**`TEMPO_NO2_L3` V04** — 13,618 scans as of 2026-07-30. Same coordinates and
+**`TEMPO_NO2_L3` V04** has the same coordinates and
 layout, with the NO2 variable set: `vertical_column_troposphere`,
 `vertical_column_stratosphere`, `vertical_column_total` and their
 uncertainties, twelve `qa_statistics` min/max/count variables,
@@ -163,7 +163,7 @@ branch was created. A commit that landed on `main` mid-run fails the promote
 instead of being discarded. The only thing that happens after the CAS is
 deleting the now-served `backfill` branch, which cannot fail the execution
 (a retried promote that finds the branch already gone converges instead of
-erroring — see finding #4).
+erroring).
 
 ### Validation
 
@@ -310,8 +310,7 @@ There's less to recover than you might expect:
 - The one case that needs an operator: a same-time/different-UR collision
   between the manifest and the pending ledger. This aborts the resort run by
   design — a loud, repeatable failure rather than a silent overwrite. Fix it
-  by hand (`rebuild_manifest.py` no longer exists) with a small Icechunk
-  commit that reads the `pending_ledger` root attribute, drops the offending
+  by hand with a small Icechunk commit that reads the `pending_ledger` root attribute, drops the offending
   entry, and writes it back.
 
 ### Source credentials
@@ -659,12 +658,6 @@ Regenerate it with the command in its header whenever the lock changes.
 
 Concurrent backfill runs are not supported.
 
-![Backfill](./docs/backfill-fork-merge-dark.png#gh-dark-mode-only)
-![Backfill](./docs/backfill-fork-merge.png#gh-light-mode-only)
-
-![Architecture](./docs/architecture-dark.png#gh-dark-mode-only)
-![Architecture](./docs/architecture.png#gh-light-mode-only)
-
 ## Monitoring
 
 Each deployment renders its own CloudWatch dashboard, named after the
@@ -724,11 +717,6 @@ Step Functions executions, the cumulative partitions-done/total graph, and worke
 watch it during the initial fill. Afterward, the two numbers worth a
 daily glance are the *Store lag (scan -> store)* and *Pending ledger depth* tiles;
 the *Lag attribution* widget next to them says how much of the lag is upstream.
-
-A cross-account Grafana dashboard covering both collections is planned
-but not built; see
-[`docs/grafana-monitoring-plan.md`](./docs/grafana-monitoring-plan.md)
-(on its own branch until merged).
 
 ## Development
 
