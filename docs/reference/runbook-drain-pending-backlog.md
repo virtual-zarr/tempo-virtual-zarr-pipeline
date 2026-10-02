@@ -35,7 +35,7 @@ aws logs tail "$LG" --since 26h --format short
   after a successful `Resorting` log line → **this runbook applies.**
 - An exception out of `merge_pending` (same-time/different-UR collision
   between manifest and ledger) → **stop.** That is the operator case in
-  [README → Recovery](../README.md#recovery): drop the offending ledger
+  [Recovery](pipeline.md#recovery): drop the offending ledger
   entry with a small Icechunk commit first.
 
 Record the current state (laptop-safe; metadata reads are not

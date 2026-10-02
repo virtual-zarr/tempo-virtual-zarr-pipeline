@@ -1,0 +1,74 @@
+# Based on https://github.com/virtual-zarr/obspec-utils/blob/main/mkdocs.yml
+site_name: tempo-virtual-zarr-pipeline
+repo_name: virtual-zarr/tempo-virtual-zarr-pipeline
+repo_url: https://github.com/virtual-zarr/tempo-virtual-zarr-pipeline
+site_description: Virtual Zarr / Icechunk ingestion pipeline for TEMPO L3 gridded products (HCHO and NO2)
+docs_dir: docs
+
+nav:
+  - "index.md"
+  - "Reference":
+    - "Architecture": "reference/architecture.md"
+    - "The virtual stores": "reference/stores.md"
+    - "How the pipeline works": "reference/pipeline.md"
+    - "Deploying and running": "reference/deploying.md"
+    - "Testing forward processing": "reference/testing-forward-processing.md"
+    - "Settings": "reference/settings.md"
+    - "Monitoring": "reference/monitoring.md"
+    - "Alarm email notifications": "reference/alarm-email-notifications.md"
+    - "Runbooks":
+      - "Drain a pending-ledger backlog": "reference/runbook-drain-pending-backlog.md"
+      - "Mirror to Source Cooperative": "reference/runbook-mirror-to-source-coop.md"
+      - "Production lag": "reference/runbook-production-lag.md"
+      - "Redrive the DLQ": "reference/runbook-redrive-dlq.md"
+    - "Development": "reference/development.md"
+
+theme:
+  language: en
+  name: material
+  palette:
+    - media: "(prefers-color-scheme)"
+      toggle:
+        icon: material/brightness-auto
+        name: Switch to light mode
+    - media: "(prefers-color-scheme: light)"
+      primary: blue grey
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: blue grey
+      toggle:
+        icon: material/brightness-4
+        name: Switch to system preference
+  font:
+    text: Roboto
+    code: Roboto Mono
+  features:
+    - content.code.annotate
+    - content.code.copy
+    - navigation.indexes
+    - navigation.instant
+    - navigation.tracking
+    - search.suggest
+    - search.share
+
+plugins:
+  - search
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - tables
+  - toc:
+      permalink: true

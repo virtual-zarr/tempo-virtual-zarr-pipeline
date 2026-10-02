@@ -87,7 +87,7 @@ everything the pipeline does.
   make sure the portal's "latest available" messaging assumes hours, not
   minutes.
 - **B dominates:** worth raising with ASDC — and strengthens the standing
-  ask (README, Forward processing note) for a provider SNS topic.
+  ask ([Feeding the queue](pipeline.md#forward-processing)) for a provider SNS topic.
 
 ## Step 2 — measure the pipeline share (per granule)
 
@@ -142,7 +142,7 @@ Work back along T2→T4:
   landing. Check the DLQ and the dashboard's *Rejected granules* table —
   a UR/time collision on the newest scan freezes the axis end while all
   older traffic proceeds normally. That is the operator case in
-  [README → Recovery](../README.md#recovery) /
+  [Recovery](pipeline.md#recovery) /
   [runbook-redrive-dlq](./runbook-redrive-dlq.md).
 
 ## Step 4 — remediation by stage
@@ -162,6 +162,6 @@ cadence, and anything tighter pages on the product's own rhythm.
 
 Re-run Step 1 after upstream announcements (reprocessing campaigns, SDC
 changes) and occasionally otherwise. If the median moves materially,
-update the figures quoted above and in the README (the *Feeding the
-queue* note and the smoke-test takeaways) so the next operator starts
+update the figures quoted above and in [Forward processing](pipeline.md#forward-processing)
+and the [smoke-test takeaways](development.md#titiler-multidim-smoke-test-takeaways-2026-08-06) so the next operator starts
 from the right baseline.

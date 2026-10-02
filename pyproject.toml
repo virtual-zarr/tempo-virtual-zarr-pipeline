@@ -36,6 +36,10 @@ dev = [
   "h5py",
   "moto>=5.0.0",
 ]
+docs = [
+    "mkdocs>=1.6.1,<2",
+    "mkdocs-material>=9.6.14",
+]
 
 
 [tool.ruff]
