@@ -97,7 +97,7 @@ Grep the consumer's log (as in Step 0) for each surviving granule: the
 `process_file:` line names the cause — `validation failed` (traceback
 adjacent), `refusing to overwrite` (a different granule claims the slot),
 or `moved timestamp` (a republication whose nominal time shifted). Those
-need an operator decision, not a redrive; see [README → Recovery](https://github.com/virtual-zarr/tempo-virtual-zarr-pipeline/blob/main/README.md#recovery).
+need an operator decision, not a redrive; see [Recovery](pipeline.md#recovery).
 
 ## Step 3 — verify
 

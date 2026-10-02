@@ -5,7 +5,7 @@ Cooperative. `scripts/mirror_to_source_coop.py` streams every object
 under the store prefix to
 `s3://us-west-2.opendata.source.coop/pangeo/tempo-virtual-icechunk/`,
 building a zip of them on the way that it uploads beside them
-(details in [README → Publishing to Source Cooperative](https://github.com/virtual-zarr/tempo-virtual-zarr-pipeline/blob/main/README.md#publishing-to-source-cooperative)).
+(details in [Publishing to Source Cooperative](pipeline.md#publishing-to-source-cooperative)).
 
 The stores, from the tracked env files:
 

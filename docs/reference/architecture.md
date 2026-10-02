@@ -6,8 +6,9 @@ against serving wrong data.
 
 In the figures, **blue** marks data (granules, time slots), **orange**
 marks the correctness mechanism under discussion, and dashed lines are
-asynchronous paths. The [README](https://github.com/virtual-zarr/tempo-virtual-zarr-pipeline/blob/main/README.md) covers operations
-(deployment, env settings, runbook); this document is the conceptual map.
+asynchronous paths. The other reference pages cover operations
+([deploying](deploying.md), [settings](settings.md), the runbooks); this
+document is the conceptual map.
 
 ## Why this design
 
