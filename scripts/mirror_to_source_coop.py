@@ -8,7 +8,7 @@ uploaded as ``<DEST_ROOT>/<prefix>.zip``. The objects never touch disk;
 the zip does, so free space of about the store's size is needed.
 Nothing is compared, ordered or deleted; a rerun copies everything again
 and overwrites what is there. Run it from the VEDA JupyterHub, in
-us-west-2 with both buckets: docs/runbook-mirror-to-source-coop.md.
+us-west-2 with both buckets: docs/reference/runbook-mirror-to-source-coop.md.
 
 Source reads use your AWS credentials. Destination writes go through
 Source Coop's S3-compatible proxy with the temporary keys it issued:

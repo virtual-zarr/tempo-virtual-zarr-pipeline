@@ -142,7 +142,7 @@ Work back along T2→T4:
   landing. Check the DLQ and the dashboard's *Rejected granules* table —
   a UR/time collision on the newest scan freezes the axis end while all
   older traffic proceeds normally. That is the operator case in
-  [README → Recovery](../README.md#recovery) /
+  [README → Recovery](https://github.com/virtual-zarr/tempo-virtual-zarr-pipeline/blob/main/README.md#recovery) /
   [runbook-redrive-dlq](./runbook-redrive-dlq.md).
 
 ## Step 4 — remediation by stage

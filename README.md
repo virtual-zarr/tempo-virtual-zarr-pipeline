@@ -16,7 +16,7 @@ template, which provides the AWS CDK infrastructure. Each collection gets its
 own Icechunk repository, deployed as a separate instance of the same stack.
 Improvements that aren't TEMPO-specific belong in the template, not here.
 
-[docs/architecture.md](./docs/architecture.md) has diagrams of the design
+[docs/reference/architecture.md](docs/reference/architecture.md) has diagrams of the design
 (virtual stores, backfill, forward routing, re-sort) and a glossary.
 
 ## The virtual stores
@@ -275,7 +275,7 @@ the process, one GET and one PUT each, and into a zip built at
 zip touches disk. Nothing is compared, ordered or deleted: a rerun copies
 everything again, and a crash leaves a partial copy until the next run.
 Run it from the VEDA JupyterHub, which is in us-west-2 with both buckets;
-[the runbook](docs/runbook-mirror-to-source-coop.md) covers the scoped
+[the runbook](docs/reference/runbook-mirror-to-source-coop.md) covers the scoped
 credentials and the steps.
 
 ```bash
@@ -701,7 +701,7 @@ resource names):
 
 | Metric | Emitted by | How to read it |
 |---|---|---|
-| `AxisEndLag` (seconds) | consumer after each commit; re-sort after each promote | store freshness; production lag is normally a few hours — mostly upstream (scan → CMR publication), see [runbook-production-lag](./docs/runbook-production-lag.md) for the attribution |
+| `AxisEndLag` (seconds) | consumer after each commit; re-sort after each promote | store freshness; production lag is normally a few hours — mostly upstream (scan → CMR publication), see [runbook-production-lag](docs/reference/runbook-production-lag.md) for the attribution |
 | `GranulesRouted` (dimension `Route`) | consumer, per consumed batch | `APPENDED` = growth, `UNCHANGED` = redeliveries of unchanged sources skipped without a write (the steady band; its absence with a flowing queue is the anomaly), `OVERWRITTEN` = genuine republications (rare), `PENDING` = out-of-order arrivals headed for the re-sort (routinely a large share), `REJECTED` = collisions headed for the DLQ (counted on first delivery only; redeliveries are not re-counted) |
 | `ProductionLag` / `CmrLag` (seconds) | poller, per fresh arrival (scan within 24 h, first seen this poll) | upstream share of the lag: scan start -> `ProductionDateTime`, and `ProductionDateTime` -> CMR `revision-date`; stacked with `VirtualizationLag` on the *Lag attribution* widget |
 | `VirtualizationLag` (seconds) | consumer, per `APPENDED` granule whose message carries the poller's `published` | the pipeline's share: CMR publication -> store commit; healthy is under `POLL_SCHEDULE_MINUTES` plus a few minutes |
