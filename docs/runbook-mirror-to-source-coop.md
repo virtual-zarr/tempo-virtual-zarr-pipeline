@@ -158,6 +158,31 @@ print(zarr.open_group(repo.readonly_session('main').store, mode='r').tree())
 "
 ```
 
+Then check the zip, from the local copy at `stores/<prefix>.zip` (it is
+what was uploaded). No script checks the zip itself, but both store
+checks open a local directory when `ICECHUNK_BUCKET` is empty and
+`ICECHUNK_LOCAL_PATH` is set. Clear the bucket with `env` inside
+`uv run`, so the env file cannot set it again:
+
+```bash
+unzip -tq stores/tempo/no2/v04.zip                      # every entry's CRC
+unzip -l stores/tempo/no2/v04.zip | tail -1             # file count = source object count
+unzip -q stores/tempo/no2/v04.zip -d /tmp/v04
+uv run --env-file .env_no2 env ICECHUNK_BUCKET= ICECHUNK_LOCAL_PATH=/tmp/v04 \
+  python scripts/check_virtual_containers.py
+uv run --env-file .env_no2 env ICECHUNK_BUCKET= ICECHUNK_LOCAL_PATH=/tmp/v04 \
+  python scripts/verify_store.py --samples 8
+rm -rf /tmp/v04
+```
+
+`check_virtual_containers.py` confirms the store declares its virtual
+chunk containers, covers every manifest URL with them, and reads a chunk
+back; `verify_store.py` compares sampled time steps against CMR and the
+source granules. Both read granule bytes, so they need Earthdata
+credentials (see their docstrings). Neither compares the zip's file list
+against the source prefix, so the count from `unzip -l` is the only check
+of that.
+
 ## Step 5 — clean up
 
 The home volume persists between sessions, so leave nothing behind:
