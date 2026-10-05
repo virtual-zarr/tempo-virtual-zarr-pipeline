@@ -7,6 +7,8 @@ docs_dir: docs
 
 nav:
   - "index.md"
+  - "Examples":
+    - "Quickstart: reading a store": "examples/quickstart.ipynb"
   - "Reference":
     - "Architecture": "reference/architecture.md"
     - "The virtual stores": "reference/stores.md"
@@ -56,6 +58,9 @@ theme:
 
 plugins:
   - search
+  - mkdocs-jupyter:
+      # Loading chunks needs AWS us-west-2; render the saved outputs instead.
+      execute: false
 
 markdown_extensions:
   - admonition
