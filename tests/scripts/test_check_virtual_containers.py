@@ -60,6 +60,19 @@ def break_persisted_container(path: pathlib.Path) -> None:
     icechunk.Repository.open(storage=storage, config=config).save_config()
 
 
+def persist_unnamed_container(path: pathlib.Path) -> None:
+    """Leave the store as one created before the container was named."""
+    storage = icechunk.local_filesystem_storage(str(path))
+    config = icechunk.Repository.fetch_config(storage)
+    assert config is not None
+    (container,) = config.virtual_chunk_containers.values()
+    config.clear_virtual_chunk_containers()
+    config.set_virtual_chunk_container(
+        icechunk.VirtualChunkContainer(container.url_prefix, container.store)
+    )
+    icechunk.Repository.open(storage=storage, config=config).save_config()
+
+
 def test_region_falls_back_to_the_session_before_giving_up(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -121,6 +134,16 @@ def test_stale_container_fails_and_fix_repairs_it(
     assert run(monkeypatch) == 1
 
     assert run(monkeypatch, "--fix") == 1  # non-zero: it changed something
+    assert run(monkeypatch) == 0
+
+
+def test_unnamed_container_fails_and_fix_names_it(
+    tiny: TinyCollection, monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    persist_unnamed_container(tmp_path / "repo")
+    assert run(monkeypatch, "--no-read") == 1
+
+    assert run(monkeypatch, "--fix") == 1
     assert run(monkeypatch) == 0
 
 

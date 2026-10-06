@@ -84,6 +84,14 @@ Every virtual reference is also stamped with the source object's observed
 modification time. If a source file is later overwritten, reads of the stale
 references fail instead of returning bytes from a changed file.
 
+References are stored relative to the store's virtual chunk container. The
+container is named `asdc`, so a reference looks like `vcc://asdc/TEMPO/...`
+and not `s3://asdc-prod-protected/TEMPO/...`. The store's config resolves the
+name to the S3 bucket. A reader outside us-west-2 can resolve it to the DAAC's
+HTTPS distribution instead. See [The virtual stores](stores.md). Stores built
+before this change hold absolute references. Migrate them with
+[the relativize runbook](runbook-relativize-virtual-refs.md).
+
 ## Forward processing
 
 A scheduled Lambda polls CMR for granules whose revision date advanced past a
