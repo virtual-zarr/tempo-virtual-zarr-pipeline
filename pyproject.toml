@@ -23,6 +23,7 @@ dev = [
   "aws-lambda-typing>=2.20.0",
   "aws-xray-sdk",
   "boto3-stubs[batch,s3,sqs]>=0.37.36",
+  "earthaccess-auth[icechunk]>=0.4.0",
   "mypy",
   "pre-commit",
   "nodeenv",
@@ -39,6 +40,7 @@ dev = [
 docs = [
     "mkdocs>=1.6.1,<2",
     "mkdocs-material>=9.6.14",
+    "mkdocs-jupyter>=0.25",
 ]
 
 
@@ -49,7 +51,8 @@ exclude = ["cdk.out", ".venv", "node_modules"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I"]
-per-file-ignores = {}
+# juv writes the notebooks' inline-metadata lines unwrapped
+per-file-ignores = { "docs/examples/*.ipynb" = ["E501"] }
 
 [tool.ruff.format]
 quote-style = "double"

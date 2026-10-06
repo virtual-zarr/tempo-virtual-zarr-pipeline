@@ -1,16 +1,13 @@
 # /// script
 # requires-python = ">=3.12"
 # dependencies = [
+#     "earthaccess-auth[icechunk]>=0.4.0",
 #     "icechunk",
 #     "matplotlib",
 #     "numpy",
 #     "xarray",
 #     "zarr",
-#     "virtualizarr-processor",
 # ]
-#
-# [tool.uv.sources]
-# virtualizarr-processor = { path = "../lambda/virtualizarr-processor" }
 # ///
 """Visually QA a published store against the imagery NASA serves to the public.
 
@@ -151,7 +148,7 @@ def gibs_rgba(
 def open_store(collection: str) -> Any:
     import icechunk
     import xarray as xr
-    from virtualizarr_processor.granule import icechunk_virtual_credentials
+    from earthaccess_auth.adapters.icechunk import earthdata_containers_credentials
 
     storage = icechunk.s3_storage(
         bucket="pangeo",
@@ -161,18 +158,9 @@ def open_store(collection: str) -> Any:
         anonymous=True,
         force_path_style=True,
     )
-    declared = icechunk.Repository.fetch_config(storage)
-    containers = declared.virtual_chunk_containers if declared else None
-    repo = icechunk.Repository.open(
-        storage,
-        authorize_virtual_chunk_access=icechunk.containers_credentials(
-            {
-                prefix: icechunk_virtual_credentials(
-                    prefix.removeprefix("s3://").split("/")[0]
-                )
-                for prefix in containers or {}
-            }
-        ),
+    repo = icechunk.Repository.open(storage)
+    repo = repo.reopen(
+        authorize_virtual_chunk_access=earthdata_containers_credentials(repo)
     )
     return xr.open_zarr(repo.readonly_session("main").store, consolidated=False)
 
