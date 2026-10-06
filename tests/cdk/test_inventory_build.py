@@ -92,24 +92,24 @@ def test_inventory_build_carries_processor_env() -> None:
     )
 
 
-def test_inventory_build_reads_store_but_never_writes_it() -> None:
-    """verify_store.py reads the icechunk store; the project must be able
-    to read the storage prefix and must not gain writes outside the
-    inventory prefix."""
+def test_inventory_build_writes_only_the_store_and_inventory_prefixes() -> None:
+    """verify_store.py reads the icechunk store and relativize_refs.py
+    commits to it; the project must be able to read and write the storage
+    prefix and must not gain writes anywhere but there and the inventory
+    prefix."""
     template = _template(ICECHUNK_BUCKET="icechunk-test")
     stmts = list(iam_statements(template, "inventorybuild"))
-    assert any(
-        any(a.startswith("s3:Get") for a in actions_of(s))
-        and any(
-            isinstance(r, str) and r.endswith("icechunk-test/tempo/hcho/v04/*")
-            for r in resources_of(s)
-        )
-        for s in stmts
-    )
+    store = "icechunk-test/tempo/hcho/v04/*"
+    for verb in ("s3:Get", "s3:Put"):
+        assert any(
+            any(a.startswith(verb) for a in actions_of(s))
+            and any(isinstance(r, str) and r.endswith(store) for r in resources_of(s))
+            for s in stmts
+        ), f"no {verb} grant on the store prefix"
     for s in stmts:
         if any(a.startswith(("s3:Put", "s3:Delete")) for a in actions_of(s)):
             assert all(
-                isinstance(r, str) and r.endswith("/inventory/*")
+                isinstance(r, str) and r.endswith(("/inventory/*", store))
                 for r in resources_of(s)
             ), f"unexpected write grant: {s}"
 

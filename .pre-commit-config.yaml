@@ -35,6 +35,7 @@ repos:
         entry: >-
           uv run mypy lambda cdk
           scripts/verify_store.py scripts/mirror_to_source_coop.py
+          scripts/relativize_refs.py
         language: system
         pass_filenames: false
         types_or: [python, toml]
