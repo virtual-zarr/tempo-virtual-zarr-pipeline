@@ -48,7 +48,7 @@ import boto3
 import icechunk
 import numpy as np
 import zarr
-from virtualizarr_processor.granule import icechunk_virtual_credentials
+from earthaccess_auth.adapters.icechunk import earthdata_containers_credentials
 from virtualizarr_processor.manifest import (
     MANIFEST_ARRAYS,
     StoreManifest,
@@ -71,13 +71,23 @@ def uncovered_urls(declared: set[str], urls: list[str]) -> list[str]:
     return sorted(missing)
 
 
-def credentials_for(prefix: str) -> Any:
-    """Credentials authorizing reads from a container's url_prefix."""
-    if prefix.startswith("file://"):
-        return icechunk.credentials.LocalFileSystemAccess
-    if prefix.startswith("s3://"):
-        return icechunk_virtual_credentials(prefix.removeprefix("s3://").split("/")[0])
-    raise ValueError(f"unsupported container prefix {prefix!r}")
+def authorize(repo: icechunk.Repository) -> icechunk.Repository:
+    """Reopen ``repo`` with its declared containers authorized, as a reader would.
+
+    Containers in Earthdata buckets get Earthdata credentials. Local ones
+    (test stores) need none. Any other container stays unauthorized, so a
+    reader's failure to read it shows up here too.
+    """
+    authorized = earthdata_containers_credentials(repo)
+    containers = repo.config.virtual_chunk_containers or {}
+    authorized |= icechunk.containers_credentials(
+        {
+            prefix: icechunk.credentials.LocalFileSystemAccess
+            for prefix in containers
+            if prefix.startswith("file://")
+        }
+    )
+    return repo.reopen(authorize_virtual_chunk_access=authorized)
 
 
 def chunk_store_for(prefix: str) -> Any:
@@ -218,13 +228,7 @@ def main() -> int:
             f"reference (expected {expected!r})"
         )
 
-    repo = icechunk.Repository.open(
-        storage=storage,
-        config=config,
-        authorize_virtual_chunk_access=icechunk.containers_credentials(
-            {prefix: credentials_for(prefix) for prefix in declared}
-        ),
-    )
+    repo = authorize(icechunk.Repository.open(storage=storage, config=config))
     manifest = StoreManifest.read(repo.readonly_session("main").store)
     if manifest is None:
         print("FAIL: store carries no manifest", file=sys.stderr)
