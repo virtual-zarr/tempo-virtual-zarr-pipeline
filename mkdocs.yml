@@ -23,6 +23,7 @@ nav:
       - "Mirror to Source Cooperative": "reference/runbook-mirror-to-source-coop.md"
       - "Production lag": "reference/runbook-production-lag.md"
       - "Redrive the DLQ": "reference/runbook-redrive-dlq.md"
+      - "Relativize virtual references": "reference/runbook-relativize-virtual-refs.md"
     - "Development": "reference/development.md"
 
 theme:

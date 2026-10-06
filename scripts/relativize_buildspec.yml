@@ -1,0 +1,19 @@
+# Buildspec for relative-reference migration runs of the stack's
+# InventoryBuild CodeBuild project. scripts/run_codebuild.sh -R selects
+# it per build with --buildspec-override. The project's default buildspec
+# stays scripts/inventory_buildspec.yml. It runs scripts/relativize_refs.py
+# in-region against the store the project env points at. Every granule is
+# parsed from source again with the DAAC's region-locked credentials.
+# RELATIVIZE_ARGS carries extra flags, for example "--batch 50". The
+# script commits as it goes. If the build hits the timeout, start another
+# build and the script continues.
+version: 0.2
+
+phases:
+  install:
+    commands:
+      - curl -LsSf https://astral.sh/uv/install.sh | sh
+  build:
+    commands:
+      - export PATH="$HOME/.local/bin:$PATH"
+      - uv run scripts/relativize_refs.py ${RELATIVIZE_ARGS}

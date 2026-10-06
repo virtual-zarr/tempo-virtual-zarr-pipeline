@@ -15,11 +15,14 @@ Environment variables:
   repository storage, or ``ICECHUNK_LOCAL_PATH`` for a local repository
   in tests.
 - ``VIRTUAL_CHUNK_PREFIX``: virtual chunk container prefix (default
-  ``s3://asdc-prod-protected/``; tests use ``file:///...``). Writers
-  register the S3 container without credentials (writing refs needs no
-  chunk access); readers open with ``authorize_virtual_reads=True``,
-  which authorizes it with EDL-derived temporary credentials or ambient
-  AWS credentials.
+  ``s3://asdc-prod-protected/``; tests use ``file:///...``). The container
+  is named ``asdc``. References are stored relative to it, as
+  ``vcc://asdc/<key>``. A reader can point a container with the same
+  name at another prefix that serves the same objects, such as the
+  DAAC's HTTPS distribution outside us-west-2. Writers register the
+  container without credentials (writing refs needs no chunk access).
+  Readers open with ``authorize_virtual_reads=True``, which authorizes
+  it with EDL-derived temporary credentials or ambient AWS credentials.
 - ``VIRTUAL_CHUNK_REGION``: region of the S3 container (default
   ``us-west-2``).
 
@@ -84,12 +87,35 @@ from virtualizarr_processor.typing import BranchInit, ProcessOutcome
 logger = logging.getLogger(__name__)
 
 DEFAULT_VIRTUAL_CHUNK_PREFIX = "s3://asdc-prod-protected/"
+# The container's name. References are stored as vcc://asdc/<key>. A
+# reader resolves them through the prefix of its own container with this
+# name. That is the s3:// bucket in us-west-2, or the https:// distribution
+# elsewhere. Do not rename it. Every stored reference uses this name.
+VIRTUAL_CHUNK_CONTAINER = "asdc"
+VCC_PREFIX = f"vcc://{VIRTUAL_CHUNK_CONTAINER}/"
 # Append-dimension slots (time chunks are one slot) per manifest split.
 # Bounds commit memory to one split's references instead of the archive's;
 # a full-axis read fetches n_slots/500 manifests per array, still cheap.
 MANIFEST_SPLIT_SLOTS = 500
 PARSE_ATTEMPTS = 3
 PARSE_BACKOFF_SECONDS = (5, 15)
+
+
+def virtual_chunk_prefix() -> str:
+    """The container prefix every reference is written relative to."""
+    return os.environ.get("VIRTUAL_CHUNK_PREFIX", DEFAULT_VIRTUAL_CHUNK_PREFIX)
+
+
+def relative_location(url: str, prefix: str) -> str:
+    """Return ``url`` as a reference relative to the container at ``prefix``.
+
+    A URL outside the prefix stays absolute. No container covers it, so
+    the read fails, as it does today. Filing it under the wrong container
+    would hide the problem.
+    """
+    if url.startswith(prefix):
+        return VCC_PREFIX + url.removeprefix(prefix)
+    return url
 
 
 def _granule_ur(file_key: str) -> str:
@@ -155,7 +181,7 @@ class Processor:
                 os.environ["ICECHUNK_LOCAL_PATH"]
             )
 
-        prefix = os.environ.get("VIRTUAL_CHUNK_PREFIX", DEFAULT_VIRTUAL_CHUNK_PREFIX)
+        prefix = virtual_chunk_prefix()
         config = icechunk.RepositoryConfig.default()
         # Split chunk manifests along the append dimension. Icechunk's
         # default is one manifest per array, so once the full archive is
@@ -197,7 +223,9 @@ class Processor:
         else:
             raise ValueError(f"Unsupported VIRTUAL_CHUNK_PREFIX {prefix!r}")
         config.set_virtual_chunk_container(
-            icechunk.VirtualChunkContainer(prefix, chunk_store)
+            icechunk.VirtualChunkContainer(
+                prefix, chunk_store, name=VIRTUAL_CHUNK_CONTAINER
+            )
         )
         return icechunk.Repository.open_or_create(
             storage=storage,
@@ -575,9 +603,14 @@ class Processor:
         seconds throughout. Dropping ``time`` leaves the axis written at
         init untouched, and clearing the granule attributes keeps store
         attributes template-only (differing group-attribute updates from
-        parallel forks would also fail the merge).
+        parallel forks would also fail the merge). The parser's absolute
+        URLs are rewritten as references relative to the named container
+        (see :func:`relative_location`).
         """
-        vds = vds.drop_vars("time")
+        prefix = virtual_chunk_prefix()
+        vds = vds.drop_vars("time").vz.rename_paths(
+            lambda url: relative_location(url, prefix)
+        )
         vds.attrs = {}
         vds.vz.to_icechunk(
             store,  # type: ignore[arg-type]

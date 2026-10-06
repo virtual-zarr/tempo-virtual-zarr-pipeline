@@ -1,17 +1,18 @@
 #!/usr/bin/env bash
 #
 # Run an in-region job via the stack's CodeBuild project: a backfill
-# inventory build (default) or a verify_store.py run (-V).
+# inventory build (default), a verify_store.py run (-V), or the one-time
+# relative-reference migration, relativize_refs.py (-R).
 #
 # The DAAC's temporary S3 credentials only work from us-west-2, so running
 # build_backfill_inventory.py locally with --access direct fails. This ships
 # the committed repo (git archive HEAD) as the project's source zip, starts a
 # build, and waits for it — every run is pinned by a commit plus the in-repo
 # buildspec (scripts/inventory_buildspec.yml, or scripts/verify_buildspec.yml
-# with -V).
+# with -V, or scripts/relativize_buildspec.yml with -R).
 #
 # Usage:
-#   scripts/run_codebuild.sh -e ENV_FILE [-m MAX_COUNT] [-u S3_URI] [-V [-a ARGS]] [-n]
+#   scripts/run_codebuild.sh -e ENV_FILE [-m MAX_COUNT] [-u S3_URI] [-V | -R] [-a ARGS] [-n]
 #
 # Examples:
 #   # 50-granule trial inventory for the hcho stack:
@@ -24,6 +25,9 @@
 #   # In-region verification of the deployed store:
 #   scripts/run_codebuild.sh -e .env_hcho -V
 #   scripts/run_codebuild.sh -e .env_hcho -V -a "--completeness"
+#   # Rewrite the store's references relative to the container (see
+#   # docs/reference/runbook-relativize-virtual-refs.md):
+#   scripts/run_codebuild.sh -e .env_hcho -R
 #
 # COLLECTION and the default S3_URI are baked into the project by the CDK
 # stack, so only the env file is required.
@@ -32,7 +36,7 @@ set -euo pipefail
 
 usage() {
   cat >&2 <<'EOF'
-Usage: run_codebuild.sh -e ENV_FILE [-m MAX_COUNT] [-u S3_URI] [-V [-a ARGS]] [-n]
+Usage: run_codebuild.sh -e ENV_FILE [-m MAX_COUNT] [-u S3_URI] [-V | -R] [-a ARGS] [-n]
 
   -e ENV_FILE   per-collection env file (e.g. .env_hcho); supplies the stack
                 name, region, bucket, prefixes, and AWS profile
@@ -40,8 +44,11 @@ Usage: run_codebuild.sh -e ENV_FILE [-m MAX_COUNT] [-u S3_URI] [-V [-a ARGS]] [-
   -u S3_URI     override the inventory destination baked into the project
   -V            run scripts/verify_store.py instead of building an inventory
                 (starts the same project with scripts/verify_buildspec.yml)
-  -a ARGS       extra verify_store.py flags, e.g. -a "--completeness"
-                (only meaningful with -V)
+  -R            run scripts/relativize_refs.py instead (the same project with
+                scripts/relativize_buildspec.yml, on a LARGE instance with an
+                8 h timeout). It commits as it goes. Run it again to continue.
+  -a ARGS       extra flags for the script, e.g. -a "--completeness" with -V
+                or -a "--batch 50" with -R
   -n            dry run: resolve and print bucket/prefix/project/commit,
                 then exit before uploading source or starting a build
 EOF
@@ -53,14 +60,16 @@ MAX_COUNT=""
 S3_URI=""
 DRY_RUN=""
 VERIFY=""
+RELATIVIZE=""
 VERIFY_ARGS=""
-while getopts ":e:m:u:a:Vnh" opt; do
+while getopts ":e:m:u:a:VRnh" opt; do
   case "$opt" in
     e) ENV_FILE="$OPTARG" ;;
     m) MAX_COUNT="$OPTARG" ;;
     u) S3_URI="$OPTARG" ;;
     a) VERIFY_ARGS="$OPTARG" ;;
     V) VERIFY="1" ;;
+    R) RELATIVIZE="1" ;;
     n) DRY_RUN="1" ;;
     h) usage ;;
     :) echo "Error: -$OPTARG requires a value." >&2; usage ;;
@@ -69,6 +78,7 @@ while getopts ":e:m:u:a:Vnh" opt; do
 done
 
 [ -n "$ENV_FILE" ] && [ -f "$ENV_FILE" ] || { echo "Error: pass -e ENV_FILE." >&2; usage; }
+[ -n "$VERIFY" ] && [ -n "$RELATIVIZE" ] && { echo "Error: -V and -R are exclusive." >&2; usage; }
 
 env_get() {
   # Semi-sensitive keys (AWS_PROFILE, ACCOUNT_ID, ...) live in .env.local
@@ -145,6 +155,8 @@ if [ -n "$DRY_RUN" ]; then
   echo "CodeBuild project:   $PROJECT" >&2
   if [ -n "$VERIFY" ]; then
     echo "Mode:                verify (scripts/verify_buildspec.yml${VERIFY_ARGS:+, args: $VERIFY_ARGS})" >&2
+  elif [ -n "$RELATIVIZE" ]; then
+    echo "Mode:                relativize (scripts/relativize_buildspec.yml${VERIFY_ARGS:+, args: $VERIFY_ARGS}; LARGE instance, 8 h timeout)" >&2
   else
     echo "Mode:                inventory build" >&2
   fi
@@ -198,6 +210,17 @@ BUILD_ARGS=()
 if [ -n "$VERIFY" ]; then
   BUILD_ARGS+=(--buildspec-override scripts/verify_buildspec.yml)
   OVERRIDES+=(name=VERIFY_ARGS,value="$VERIFY_ARGS",type=PLAINTEXT)
+elif [ -n "$RELATIVIZE" ]; then
+  # Parsing every granule is CPU-bound across worker processes. The full
+  # archive takes hours. So use more cores than the project's SMALL
+  # default, and the longest timeout CodeBuild allows. Progress is
+  # committed per batch. A build that times out is started again.
+  BUILD_ARGS+=(
+    --buildspec-override scripts/relativize_buildspec.yml
+    --compute-type-override BUILD_GENERAL1_LARGE
+    --timeout-in-minutes-override 480
+  )
+  OVERRIDES+=(name=RELATIVIZE_ARGS,value="$VERIFY_ARGS",type=PLAINTEXT)
 fi
 BUILD_ID="$(aws codebuild start-build ${REGION_ARGS[@]+"${REGION_ARGS[@]}"} \
   --project-name "$PROJECT" \

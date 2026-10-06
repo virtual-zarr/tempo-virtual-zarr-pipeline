@@ -1,9 +1,12 @@
 """End-to-end and failure-mode tests for the TEMPO processor."""
 
+import os
 import pathlib
 import pickle
+import shutil
 
 import h5py
+import icechunk
 import numpy as np
 import pytest
 import zarr
@@ -18,7 +21,11 @@ from tempo_fixtures import (
 )
 from virtualizarr_processor import backfill
 from virtualizarr_processor.inventory import BackfillInventory, GranuleEntry
-from virtualizarr_processor.processor import PartialWriteError, Processor
+from virtualizarr_processor.processor import (
+    PartialWriteError,
+    Processor,
+    relative_location,
+)
 from virtualizarr_processor.store_template import StoreValidationError
 from virtualizarr_processor.typing import ProcessOutcome
 
@@ -49,6 +56,46 @@ def run_backfill(processor: Processor, tiny: TinyCollection) -> zarr.Group:
     # Reading data back needs the container authorized; writing did not.
     reader = processor.open_backfill_repo(authorize_virtual_reads=True)
     return zarr.open_group(reader.readonly_session("main").store, mode="r")
+
+
+def test_relative_location_only_rewrites_urls_under_the_prefix() -> None:
+    prefix = "s3://asdc-prod-protected/"
+    assert relative_location(f"{prefix}TEMPO/a.nc", prefix) == "vcc://asdc/TEMPO/a.nc"
+    assert relative_location("s3://other/a.nc", prefix) == "s3://other/a.nc"
+
+
+def test_references_resolve_through_the_named_container(
+    tiny: TinyCollection, tmp_path: pathlib.Path
+) -> None:
+    """Relative references all move when the container points elsewhere."""
+    processor = Processor()
+    run_backfill(processor, tiny)
+    # The granules move; the store is not touched.
+    moved = tmp_path / "moved"
+    shutil.copytree(tmp_path / "collection", moved / "collection")
+    prefix = f"file://{moved}/"
+    config = processor.open_backfill_repo().config
+    config.clear_virtual_chunk_containers()
+    config.set_virtual_chunk_container(
+        icechunk.VirtualChunkContainer(
+            prefix, icechunk.local_filesystem_store(str(moved)), name="asdc"
+        )
+    )
+    reader = icechunk.Repository.open(
+        icechunk.local_filesystem_storage(os.environ["ICECHUNK_LOCAL_PATH"]),
+        config=config,
+        authorize_virtual_chunk_access=icechunk.containers_credentials(
+            {prefix: icechunk.credentials.LocalFileSystemAccess}
+        ),
+    )
+    session = reader.readonly_session("main")
+    locations = session.all_virtual_chunk_locations()
+    assert locations and all(loc.startswith(prefix) for loc in locations)
+    group = zarr.open_group(session.store, mode="r")
+    np.testing.assert_array_equal(
+        np.asarray(group["vertical_column"][0]),
+        expected_vertical_column(tiny.times[0])[0],
+    )
 
 
 def test_repo_opens_with_manifest_splitting(tiny: TinyCollection) -> None:
