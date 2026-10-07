@@ -18,12 +18,14 @@ stamps and the commit history do not change. The whole rewrite is one
 commit. A stopped run leaves nothing behind. Run it again.
 
 Icechunk stores a `last_updated_at` stamp with each reference. It does not
-read it back. The script keeps the stamp of each slot whose stamp the
-pipeline recorded. Every other slot, which is every backfilled slot, gets
-the run's own time. Reads of those slots keep failing after a later
-overwrite of the source. An overwrite that already happened is no longer
-detected after the migration. Step 3 verifies the store before the run for
-that reason.
+read it back. The rewrite writes each slot with the stamp the pipeline
+recorded for it in the store's stamp array. The backfill never recorded
+one, so `scripts/record_stamps.py` fills the unknown stamps first. It asks
+each source for its last-modified time, one HEAD request per slot, which
+is what the backfill stamped the slot with. A source modified after the
+commit that wrote its slot has changed since ingest. Such a slot keeps an
+unknown stamp and the script names it. The rewrite refuses a store with
+unknown stamps. Both scripts commit once.
 
 All commands assume the collection's env, for example:
 
@@ -94,18 +96,29 @@ minutes.
 aws lambda get-event-source-mapping --uuid "$MAPPING" --query State --output text
 ```
 
-## Step 3 — verify, then run the rewrite
+## Step 3 — record the stamps
 
-Run the in-region verification first. It reads sampled slots with their
-current stamps. A stale-reference failure here names a granule whose
-source changed under the store. Redeliver that granule before the
-migration, because the migration gives the slot a fresh stamp.
+The HEAD requests need the DAAC's temporary credentials, which work only
+in us-west-2. So this runs in the stack's CodeBuild project.
 
 ```bash
-./scripts/run_codebuild.sh -e $ENV -V
+./scripts/run_codebuild.sh -e $ENV -R
 ```
 
-Then run the rewrite from the laptop:
+The last line of a successful run:
+
+```
+OK: every stamp known
+```
+
+A run that ends in `FAIL: N sources changed after their slot was written`
+names the granules. Their references are stale, and the rewrite refuses
+the store until every stamp is known. Resume the writers (Step 5),
+redeliver those granules to the consumer, and start again at Step 2.
+
+## Step 4 — run the rewrite
+
+From the laptop:
 
 ```bash
 uv run --env-file $ENV --env-file .env.local scripts/relativize_refs.py
@@ -122,7 +135,7 @@ OK: 13612 slots relative in <snapshot>; container persisted
 If the run fails, read the error. A commit conflict means something else
 committed to `main`. Check Step 2 and run the same command again.
 
-## Step 4 — resume the writers
+## Step 5 — resume the writers
 
 ```bash
 aws lambda update-event-source-mapping --uuid "$MAPPING" --enabled
@@ -132,9 +145,9 @@ aws events enable-rule --name "$RESORT_RULE"
 The consumer then processes the messages the poller queued during the
 migration.
 
-## Step 5 — verify and republish
+## Step 6 — verify and republish
 
-Run the in-region verification again, as after a backfill:
+Run the in-region verification, as after a backfill:
 
 ```bash
 ./scripts/run_codebuild.sh -e $ENV -V

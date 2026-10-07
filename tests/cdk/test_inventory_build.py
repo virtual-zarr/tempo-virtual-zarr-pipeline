@@ -93,7 +93,7 @@ def test_inventory_build_carries_processor_env() -> None:
 
 
 def test_inventory_build_writes_only_the_store_and_inventory_prefixes() -> None:
-    """verify_store.py reads the icechunk store and relativize_refs.py
+    """verify_store.py reads the icechunk store and record_stamps.py
     commits to it; the project must be able to read and write the storage
     prefix and must not gain writes anywhere but there and the inventory
     prefix."""

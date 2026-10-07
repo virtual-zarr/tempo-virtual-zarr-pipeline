@@ -15,13 +15,10 @@ came from. Nothing is read from the source bucket, so the script runs from
 anywhere with write access to the store. One commit holds the whole
 rewrite. A stopped run leaves nothing behind. Run it again.
 
-Icechunk stores a ``last_updated_at`` stamp with each reference, but does
-not read it back. A slot whose stamp the pipeline recorded (see
-``GranuleStamps``) is written with that stamp. A slot with an unknown
-stamp, which is every backfilled slot, is written with the run's own
-time. Reads of that slot keep failing after a later overwrite of its
-source, as before. An overwrite that already happened is no longer
-detected. Run ``verify_store.py`` before and after the migration.
+Icechunk stores a ``last_updated_at`` stamp with each reference but does
+not read it back. Each slot is written with the stamp the store recorded
+for it (see ``GranuleStamps``). The script refuses a store with unknown
+stamps. Run ``record_stamps.py`` first.
 
 Uses the same environment variables as the processor Lambdas:
 
@@ -32,8 +29,7 @@ from __future__ import annotations
 
 import argparse
 import sys
-from datetime import datetime, timedelta, timezone
-from itertools import groupby
+from datetime import datetime
 
 from obspec_utils.registry import ObjectStoreRegistry
 from virtualizarr.parsers import IcechunkParser
@@ -53,6 +49,15 @@ def main() -> int:
     processor = Processor()
     repo = processor.open_backfill_repo()
     session = repo.writable_session(args.branch)
+    stamps = GranuleStamps.read(session.store) or []
+    unknown = sum(1 for stamp in stamps if not stamp)
+    if not stamps or unknown:
+        print(
+            f"FAIL: {unknown or 'all'} stamps unknown; run record_stamps.py first",
+            file=sys.stderr,
+        )
+        return 1
+
     dim = processor.config.append_dim
     # The axes, the manifest and the stamps are native arrays. The parser
     # would hand them back as references to the store's own chunk files.
@@ -64,24 +69,21 @@ def main() -> int:
     )
     vds.attrs = {}
     total = vds.sizes[dim]
-    stamps = GranuleStamps.read(session.store) or [""] * total
-    # One-second margin, as the processor adds to the source's own time.
-    run_stamp = datetime.now(timezone.utc) + timedelta(seconds=1)
+    if total != len(stamps):
+        print(f"FAIL: {total} slots but {len(stamps)} stamps", file=sys.stderr)
+        return 1
     prefix = virtual_chunk_prefix()
     print(f"{total} slots on {args.branch!r}", file=sys.stderr)
 
-    # Consecutive slots with the same stamp go in one region write. The
-    # unknown stamps of a backfilled store form one run.
-    for stamp, run in groupby(range(total), key=lambda i: stamps[i]):
-        slots = list(run)
-        region = slice(slots[0], slots[-1] + 1)
+    for i, stamp in enumerate(stamps):
+        region = slice(i, i + 1)
         vds.isel({dim: region}).vz.rename_paths(
             lambda url: relative_location(url, prefix)
         ).vz.to_icechunk(
             session.store,
             region={dim: region},
             validate_containers=False,
-            last_updated_at=datetime.fromisoformat(stamp) if stamp else run_stamp,
+            last_updated_at=datetime.fromisoformat(stamp),
         )
     snapshot = session.commit(f"Relativize virtual refs in {total} slots")
     repo.save_config()
