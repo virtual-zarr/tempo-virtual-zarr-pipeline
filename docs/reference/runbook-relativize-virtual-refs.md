@@ -9,19 +9,21 @@ references have the form `vcc://asdc/TEMPO/...`. A reader can then point
 the container named `asdc` at the HTTPS distribution and read the store
 from anywhere. See [The virtual stores](stores.md).
 
-`scripts/relativize_refs.py` does the rewrite. For each granule in the
-store manifest it parses the source file again, as a backfill worker does,
-and writes the references into the slot the granule already has. The time
-axis, the manifest, the pending ledger, the stamps and the commit history
-do not change. The script commits one batch of slots at a time. A stopped
-run continues from the last commit. Rewriting a slot a second time is
-harmless.
+`scripts/relativize_refs.py` does the rewrite. It reads every reference
+back from the store through VirtualiZarr's `IcechunkParser`, rewrites the
+location, and writes it into the slot it came from. It reads nothing from
+the source bucket. So it runs from a laptop, with write access to the
+store, in minutes. The time axis, the manifest, the pending ledger, the
+stamps and the commit history do not change. The whole rewrite is one
+commit. A stopped run leaves nothing behind. Run it again.
 
-The source reads need the DAAC's temporary credentials, which work only in
-us-west-2. So the script runs in the stack's CodeBuild project, with
-`run_codebuild.sh -R`. A full collection has about 13.6k granules. Parsing
-them on an 8-core instance takes hours. The build has an 8-hour timeout. If
-the build times out, start it again and the script continues.
+Icechunk stores a `last_updated_at` stamp with each reference. It does not
+read it back. The script keeps the stamp of each slot whose stamp the
+pipeline recorded. Every other slot, which is every backfilled slot, gets
+the run's own time. Reads of those slots keep failing after a later
+overwrite of the source. An overwrite that already happened is no longer
+detected after the migration. Step 3 verifies the store before the run for
+that reason.
 
 All commands assume the collection's env, for example:
 
@@ -49,8 +51,7 @@ uv run --env-file $ENV --env-file .env.local scripts/check_virtual_containers.py
 
 ## Step 1 — deploy
 
-The deploy ships the processor code that writes relative references. It
-also gives the CodeBuild project write access to the store.
+The deploy ships the processor code that writes relative references.
 
 ```bash
 uv run --env-file $ENV --env-file .env.local cdk deploy
@@ -63,8 +64,8 @@ has both a name and a prefix.
 ## Step 2 — pause the writers
 
 The script commits to `main`. If something else commits in between, the
-script's current batch fails. Nothing partial is written, but the batch
-has to run again. So disable the consumer's queue trigger and the re-sort
+script's commit fails. Nothing partial is written, but the run has to
+start over. So disable the consumer's queue trigger and the re-sort
 schedule. The poller can keep running. Its messages wait in the queue,
 which keeps them for 14 days. The consumer processes them after it is
 enabled again. The garbage collection job does not commit, so it can keep
@@ -93,31 +94,33 @@ minutes.
 aws lambda get-event-source-mapping --uuid "$MAPPING" --query State --output text
 ```
 
-## Step 3 — run the rewrite
+## Step 3 — verify, then run the rewrite
+
+Run the in-region verification first. It reads sampled slots with their
+current stamps. A stale-reference failure here names a granule whose
+source changed under the store. Redeliver that granule before the
+migration, because the migration gives the slot a fresh stamp.
 
 ```bash
-./scripts/run_codebuild.sh -e $ENV -R
+./scripts/run_codebuild.sh -e $ENV -V
 ```
 
-This uploads the committed repo, starts the build on a LARGE instance with
-an 8-hour timeout, and prints the end of the build log when the build
-finishes. The build logs one line per batch, such as
-`committed slots [a, b): <snapshot>`. The first batches show the rate. The default batch is 100
-slots. `-a "--batch 50"` halves the work lost when a batch fails.
+Then run the rewrite from the laptop:
 
-If the build times out or fails, read the log. A granule that fails
-validation fails its batch, and the log names the granule. Fix the cause
-if there is one, then run the same command again. The script reads the
-commit message at the branch tip and continues after the last committed
-batch. If the tip commit came from something else, the script starts from
-slot 0. That is correct, only slower.
+```bash
+uv run --env-file $ENV --env-file .env.local scripts/relativize_refs.py
+```
 
-The last lines of a successful run:
+A full collection has about 13.6k slots. The script holds every reference
+in memory, around a gigabyte for a full collection, and commits once. The
+last line of a successful run:
 
 ```
-committed slots [13500, 13612): ...
-OK: 13612 slots relative; named container persisted
+OK: 13612 slots relative in <snapshot>; container persisted
 ```
+
+If the run fails, read the error. A commit conflict means something else
+committed to `main`. Check Step 2 and run the same command again.
 
 ## Step 4 — resume the writers
 
@@ -131,7 +134,7 @@ migration.
 
 ## Step 5 — verify and republish
 
-Run the in-region verification, as after a backfill:
+Run the in-region verification again, as after a backfill:
 
 ```bash
 ./scripts/run_codebuild.sh -e $ENV -V

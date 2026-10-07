@@ -9,19 +9,19 @@ only from us-west-2 over S3. The processor now writes
 that through the prefix of its own container named ``asdc``, so one store
 serves S3 in us-west-2 and HTTPS everywhere else.
 
-Icechunk has no API to read a reference back and rewrite it. So this
-script parses every granule in the store manifest from source again, as
-a backfill worker does, and writes the references into the slot the
-granule already has. It goes through the slots in manifest order, in
-batches. Each batch is one commit on the branch. A rerun continues after
-the last batch named in the commit message at the branch tip. Rewriting
-a slot a second time is harmless. At the end the script saves the named
-container into the store's config.
+The script reads every reference back through VirtualiZarr's
+``IcechunkParser``, rewrites the location, and writes it into the slot it
+came from. Nothing is read from the source bucket, so the script runs from
+anywhere with write access to the store. One commit holds the whole
+rewrite. A stopped run leaves nothing behind. Run it again.
 
-The source reads need the DAAC's temporary credentials, which only work
-in us-west-2. Run the script in the stack's CodeBuild project with
-``scripts/run_codebuild.sh -R``, with forward processing paused. See
-docs/reference/runbook-relativize-virtual-refs.md.
+Icechunk stores a ``last_updated_at`` stamp with each reference, but does
+not read it back. A slot whose stamp the pipeline recorded (see
+``GranuleStamps``) is written with that stamp. A slot with an unknown
+stamp, which is every backfilled slot, is written with the run's own
+time. Reads of that slot keep failing after a later overwrite of its
+source, as before. An overwrite that already happened is no longer
+detected. Run ``verify_store.py`` before and after the migration.
 
 Uses the same environment variables as the processor Lambdas:
 
@@ -31,100 +31,64 @@ Uses the same environment variables as the processor Lambdas:
 from __future__ import annotations
 
 import argparse
-import multiprocessing
-import os
-import pickle
-import re
 import sys
-from concurrent.futures import ProcessPoolExecutor
-from functools import lru_cache
-from itertools import repeat
+from datetime import datetime, timedelta, timezone
+from itertools import groupby
 
-import icechunk
-from virtualizarr_processor import backfill
-from virtualizarr_processor.manifest import StoreManifest
-from virtualizarr_processor.processor import Processor
-
-MESSAGE = "Relativize virtual refs in slots [{start}, {stop}) of {total}"
-MESSAGE_PATTERN = re.compile(
-    r"Relativize virtual refs in slots \[\d+, (\d+)\) of (\d+)$"
+from obspec_utils.registry import ObjectStoreRegistry
+from virtualizarr.parsers import IcechunkParser
+from virtualizarr_processor.manifest import MANIFEST_ARRAYS, STAMP_ARRAY, GranuleStamps
+from virtualizarr_processor.processor import (
+    Processor,
+    relative_location,
+    virtual_chunk_prefix,
 )
-
-
-@lru_cache(maxsize=1)
-def _processor() -> Processor:
-    """One Processor per worker process. It loads the template once."""
-    return Processor()
-
-
-def rewrite_granule(shared: bytes, url: str) -> bytes:
-    """Parse ``url`` again and write its references into a child of ``shared``."""
-    child = pickle.loads(shared).fork()
-    if not _processor().process_backfill_file(url, child):
-        raise RuntimeError(f"rewrite failed for {url}; see the logged exception")
-    return pickle.dumps(child)
-
-
-def resume_point(repo: icechunk.Repository, branch: str, total: int) -> int:
-    """Return the slot after the last batch committed at the tip, or 0.
-
-    Only the tip commit is read. With forward processing paused, every
-    commit after the first batch comes from this script. If the tip commit
-    came from something else, for example a resumed consumer or a re-sort
-    that moved slots, the script starts over. That only costs time.
-    """
-    tip = next(repo.ancestry(branch=branch))
-    match = MESSAGE_PATTERN.search(tip.message)
-    if match and int(match.group(2)) == total:
-        return int(match.group(1))
-    return 0
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--branch", default="main")
-    parser.add_argument(
-        "--batch", type=int, default=100, help="slots per commit (default: 100)"
-    )
-    parser.add_argument(
-        "--workers",
-        type=int,
-        default=os.cpu_count(),
-        help="granules parsed in parallel (default: the CPU count)",
-    )
     args = parser.parse_args()
 
-    repo = Processor().open_backfill_repo()
-    manifest = StoreManifest.read(repo.readonly_session(args.branch).store)
-    if manifest is None:
-        print("FAIL: store carries no manifest", file=sys.stderr)
-        return 1
-    granules = manifest.granules
-    total = len(granules)
-    start = resume_point(repo, args.branch, total)
-    print(f"{total} slots on {args.branch!r}; starting at {start}", file=sys.stderr)
+    processor = Processor()
+    repo = processor.open_backfill_repo()
+    session = repo.writable_session(args.branch)
+    dim = processor.config.append_dim
+    # The axes, the manifest and the stamps are native arrays. The parser
+    # would hand them back as references to the store's own chunk files.
+    skip = [dim, *processor.coordinates, *MANIFEST_ARRAYS, STAMP_ARRAY]
+    vds = (
+        IcechunkParser(skip_variables=skip)
+        .parse_session(session, ObjectStoreRegistry(), native_chunks_prefix="native://")
+        .to_virtual_dataset()
+    )
+    vds.attrs = {}
+    total = vds.sizes[dim]
+    stamps = GranuleStamps.read(session.store) or [""] * total
+    # One-second margin, as the processor adds to the source's own time.
+    run_stamp = datetime.now(timezone.utc) + timedelta(seconds=1)
+    prefix = virtual_chunk_prefix()
+    print(f"{total} slots on {args.branch!r}", file=sys.stderr)
 
-    # Use spawn, not fork. The parent holds icechunk's async runtime. A
-    # forked child would get a copy of it without its threads.
-    context = multiprocessing.get_context("spawn")
-    with ProcessPoolExecutor(args.workers, mp_context=context) as pool:
-        for batch_start in range(start, total, args.batch):
-            batch = granules[batch_start : batch_start + args.batch]
-            stop = batch_start + len(batch)
-            shared = backfill.create_fork(repo, branch=args.branch)
-            children = pool.map(rewrite_granule, repeat(shared), [e.url for e in batch])
-            snapshot = backfill.merge_and_commit(
-                repo,
-                children,
-                branch=args.branch,
-                message=MESSAGE.format(start=batch_start, stop=stop, total=total),
-            )
-            print(
-                f"committed slots [{batch_start}, {stop}): {snapshot}", file=sys.stderr
-            )
-
+    # Consecutive slots with the same stamp go in one region write. The
+    # unknown stamps of a backfilled store form one run.
+    for stamp, run in groupby(range(total), key=lambda i: stamps[i]):
+        slots = list(run)
+        region = slice(slots[0], slots[-1] + 1)
+        vds.isel({dim: region}).vz.rename_paths(
+            lambda url: relative_location(url, prefix)
+        ).vz.to_icechunk(
+            session.store,
+            region={dim: region},
+            validate_containers=False,
+            last_updated_at=datetime.fromisoformat(stamp) if stamp else run_stamp,
+        )
+    snapshot = session.commit(f"Relativize virtual refs in {total} slots")
     repo.save_config()
-    print(f"OK: {total} slots relative; named container persisted", file=sys.stderr)
+    print(
+        f"OK: {total} slots relative in {snapshot}; container persisted",
+        file=sys.stderr,
+    )
     return 0
 
 
