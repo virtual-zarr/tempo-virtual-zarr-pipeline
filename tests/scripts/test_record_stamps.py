@@ -13,7 +13,11 @@ from virtualizarr_processor.processor import Processor
 
 
 def source_stamp(path: os.PathLike[str]) -> str:
-    modified = datetime.fromtimestamp(os.stat(path).st_mtime, tz=timezone.utc)
+    # obstore truncates the nanosecond mtime to microseconds. A float
+    # st_mtime through fromtimestamp rounds, and can land 1 µs later.
+    micros = os.stat(path).st_mtime_ns // 1000
+    epoch = datetime(1970, 1, 1, tzinfo=timezone.utc)
+    modified = epoch + timedelta(microseconds=micros)
     return stamp_value(modified + timedelta(seconds=1))
 
 
