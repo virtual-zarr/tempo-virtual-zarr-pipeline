@@ -235,13 +235,13 @@ Each reference records the source object's modification time. If a granule is ov
 
 <div class="grid grid-cols-2 gap-4 mt-2">
   <div>
-    <SlidevVideo autoplay loop muted class="rounded">
+    <SlidevVideo autoplay loop muted controls class="rounded">
       <source src="/media/tempo-hcho-scan-day.mp4" type="video/mp4" />
     </SlidevVideo>
     <p class="text-sm mt-1">Each hourly scan lands as one granule. The axis accumulates them.</p>
   </div>
   <div v-click>
-    <SlidevVideo autoplay loop muted class="rounded">
+    <SlidevVideo autoplay loop muted controls class="rounded">
       <source src="/media/tempo-hcho-store-growth.mp4" type="video/mp4" />
     </SlidevVideo>
     <p class="text-sm mt-1">The time axis growing as the store is appended.</p>
