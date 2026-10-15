@@ -1,35 +1,35 @@
 # Runbook: triage and redrive the dead-letter queue
 
-Use this when `<stack>-Dlq` is non-empty (the depth alarm fired, or you
-noticed messages parked there). Written from the 2026-08-25→31 incident:
-a manual backfill clearing left the store transiently unprocessable, so
-a poll wave of ~2,400 perfectly good granules burned their 20 receives
-and dead-lettered. The DLQ is terminal — SQS never retries out of it, and
-messages expire after 14 days **measured from their original enqueue**
-(moving to the DLQ does not reset the clock), so a stale backlog silently
-self-purges. Triage promptly.
+Use this when `<stack>-Dlq` is non-empty: the depth alarm fired, or you
+noticed messages parked there. It was written from the incident of
+2026-08-25 to 31. A manual backfill clearing left the store transiently
+unprocessable, so a poll wave of about 2,400 perfectly good granules burned
+their 20 receives and dead-lettered. The DLQ is terminal. SQS never retries
+out of it, and messages expire after 14 days **measured from their original
+enqueue**. Moving to the DLQ does not reset the clock, so a stale backlog
+silently self-purges. Triage promptly.
 
-Everything here is safe to repeat: peeking uses `--visibility-timeout 0`
-(consumes nothing), and the consumer's routing is idempotent — a redriven
+Everything here is safe to repeat. Peeking uses `--visibility-timeout 0`,
+which consumes nothing. The consumer's routing is idempotent: a redriven
 granule already in the store re-resolves as `overwritten`, an out-of-order
 one defers to the pending ledger (deduped by granule UR), and anything
 genuinely broken re-rejects back to the DLQ with a fresh retention clock.
 The worst case of a redrive is ending up where you started.
 
-All commands assume the collection's env, e.g.:
+All commands assume the collection's env, for example:
 
 ```bash
 export AWS_PROFILE=<profile>
-STACK_NAME=tempo-hcho          # repeat for the other stack — an incident
+STACK_NAME=tempo-hcho          # repeat for the other stack; an incident
                                # that hit one collection often hit both
 DLQ_URL=$(aws sqs get-queue-url --queue-name "${STACK_NAME}-Dlq" \
   --query QueueUrl --output text)
 ```
 
-## Step 0 — stale backlog or live failure?
+## Step 0: stale backlog or live failure?
 
-Depth over time answers it — the stack dashboard's "DLQ depth" tile shows
-the curve, or from the CLI (queue names are case-sensitive: `-Dlq`):
+Depth over time answers it. The stack dashboard's "DLQ depth" tile shows
+the curve, or use the CLI. Queue names are case-sensitive: `-Dlq`.
 
 ```bash
 aws cloudwatch get-metric-statistics --namespace AWS/SQS \
@@ -40,15 +40,15 @@ aws cloudwatch get-metric-statistics --namespace AWS/SQS \
   --query 'sort_by(Datapoints,&Timestamp)[].[Timestamp,Maximum]' --output text
 ```
 
-(Don't use the DLQ's `NumberOfMessagesSent` — redrive-policy moves don't
-increment it.)
+Do not use the DLQ's `NumberOfMessagesSent`. Redrive-policy moves do not
+increment it.
 
-- **Flat since a past incident window** → stale backlog, proceed to Step 1.
-- **Still climbing** → **stop.** Something is failing right now; find the
+- **Flat since a past incident window**: stale backlog. Proceed to Step 1.
+- **Still climbing**: **stop.** Something is failing right now. Find the
   reason before recycling messages into it. Sample the bodies and grep the
-  consumer's log for the granule (the `process_file:` error line states the
-  rejection reason; `Commit failed` lines mean whole batches — good
-  granules included — are cycling to the DLQ):
+  consumer's log for the granule. The `process_file:` error line states the
+  rejection reason. `Commit failed` lines mean whole batches, good granules
+  included, are cycling to the DLQ:
 
   ```bash
   aws sqs receive-message --queue-url "$DLQ_URL" --max-number-of-messages 10 \
@@ -63,15 +63,15 @@ increment it.)
   ```
 
   `SentTimestamp` is the original enqueue time, so it dates the incident.
-  Exact-duplicate urls are normal: the poller's 24 h overlap re-enqueues
+  Exact-duplicate urls are normal. The poller's 24 h overlap re-enqueues
   across polls, so distinct granules number well below the message count.
 
-## Step 1 — redrive
+## Step 1: redrive
 
-Moves every message back to the queue it dead-lettered from, as brand-new
-messages (receive count 0, fresh 14-day retention). Asynchronous;
-`--max-number-of-messages-per-second` caps the pace if you want the
-consumer to chew through it gradually:
+This moves every message back to the queue it dead-lettered from, as
+brand-new messages with receive count 0 and a fresh 14-day retention. It is
+asynchronous. `--max-number-of-messages-per-second` caps the pace if you
+want the consumer to chew through it gradually:
 
 ```bash
 DLQ_ARN=$(aws sqs get-queue-attributes --queue-url "$DLQ_URL" \
@@ -82,28 +82,27 @@ aws sqs list-message-move-tasks --source-arn "$DLQ_ARN"   # progress
 
 Expected behaviors mid-redrive, none of which need intervention:
 
-- The consumer logs floods of `appended`/`overwritten` (slot exists in
-  the axis, including already-ingested duplicates; deployments predating
-  the observability changes log both as `written`) and
-  `deferred` (historical granules headed for the pending ledger — the
-  scheduled re-sort folds them in; see the drain runbook if it backs up).
-- DLQ depth drops to ~0, then some messages trickle back over the next
+- The consumer logs floods of `appended` and `overwritten` (the slot exists
+  in the axis, including already-ingested duplicates) and `deferred`
+  (historical granules headed for the pending ledger). The scheduled
+  re-sort folds the deferred ones in. See the drain runbook if it backs up.
+- DLQ depth drops to about 0. Then some messages trickle back over the next
   hour or two as genuine failures re-exhaust their 20 receives.
 
-## Step 2 — triage the survivors
+## Step 2: triage the survivors
 
-Whatever re-accumulates is the real problem set, current as of today.
-Grep the consumer's log (as in Step 0) for each surviving granule: the
-`process_file:` line names the cause — `validation failed` (traceback
-adjacent), `refusing to overwrite` (a different granule claims the slot),
-or `moved timestamp` (a republication whose nominal time shifted). Those
-need an operator decision, not a redrive; see [Recovery](pipeline.md#recovery).
+Whatever re-accumulates is the real problem set, current as of today. Grep
+the consumer's log, as in Step 0, for each surviving granule. The
+`process_file:` line names the cause: `validation failed` (traceback
+adjacent), `refusing to overwrite` (a different granule claims the slot), or
+`moved timestamp` (a republication whose nominal time shifted). Those need
+an operator decision, not a redrive. See [Recovery](pipeline.md#recovery).
 
-## Step 3 — verify
+## Step 3: verify
 
-Completeness check against CMR — a granule in neither the manifest nor
-the ledger was lost (likely expired out of the DLQ) and needs re-enqueueing
-(re-poll with an earlier watermark, or a backfill):
+Run the completeness check against CMR. A granule in neither the manifest
+nor the ledger was lost, likely expired out of the DLQ, and needs
+re-enqueueing: re-poll with an earlier watermark, or run a backfill.
 
 ```bash
 ./scripts/run_codebuild.sh -e .env_hcho -V -a "--completeness"

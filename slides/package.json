@@ -1,0 +1,21 @@
+{
+  "name": "tempo-pipeline-deep-dive",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "slidev --open",
+    "build": "slidev build",
+    "export": "slidev export",
+    "shots": "node shoot.mjs"
+  },
+  "dependencies": {
+    "@alukach/slidev-addon-qrcode": "^0.1.0",
+    "@slidev/cli": "^53.0.0",
+    "@slidev/theme-default": "^0.25.0",
+    "vue": "^3.5.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.0",
+    "playwright": "^1.63.0"
+  }
+}

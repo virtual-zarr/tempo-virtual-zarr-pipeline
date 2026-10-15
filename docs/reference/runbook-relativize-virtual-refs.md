@@ -35,7 +35,7 @@ ENV=.env_no2                   # repeat the whole runbook for the other stack
 STACK_NAME=tempo-no2
 ```
 
-## Step 0 — name the container in the store's config
+## Step 0: name the container in the store's config
 
 This step is safe to run from a laptop. It changes only the store's
 `config.yaml`. The container in the store's config has no name yet, and
@@ -51,7 +51,7 @@ uv run --env-file $ENV --env-file .env.local scripts/check_virtual_containers.py
 # OK: containers cover every reference
 ```
 
-## Step 1 — deploy
+## Step 1: deploy
 
 The deploy ships the processor code that writes relative references.
 
@@ -63,7 +63,7 @@ From now on, forward processing writes relative references for new slots.
 A store with both kinds of references reads fine, because the container
 has both a name and a prefix.
 
-## Step 2 — pause the writers
+## Step 2: pause the writers
 
 The script commits to `main`. If something else commits in between, the
 script's commit fails. Nothing partial is written, but the run has to
@@ -96,7 +96,7 @@ minutes.
 aws lambda get-event-source-mapping --uuid "$MAPPING" --query State --output text
 ```
 
-## Step 3 — record the stamps
+## Step 3: record the stamps
 
 The HEAD requests need the DAAC's temporary credentials, which work only
 in us-west-2. So this runs in the stack's CodeBuild project.
@@ -116,7 +116,7 @@ names the granules. Their references are stale, and the rewrite refuses
 the store until every stamp is known. Resume the writers (Step 5),
 redeliver those granules to the consumer, and start again at Step 2.
 
-## Step 4 — run the rewrite
+## Step 4: run the rewrite
 
 From the laptop:
 
@@ -135,7 +135,7 @@ OK: 13612 slots relative in <snapshot>; container persisted
 If the run fails, read the error. A commit conflict means something else
 committed to `main`. Check Step 2 and run the same command again.
 
-## Step 5 — resume the writers
+## Step 5: resume the writers
 
 ```bash
 aws lambda update-event-source-mapping --uuid "$MAPPING" --enabled
@@ -145,7 +145,7 @@ aws events enable-rule --name "$RESORT_RULE"
 The consumer then processes the messages the poller queued during the
 migration.
 
-## Step 6 — verify and republish
+## Step 6: verify and republish
 
 Run the in-region verification, as after a backfill:
 
