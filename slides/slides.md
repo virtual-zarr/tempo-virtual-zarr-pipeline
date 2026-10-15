@@ -5,6 +5,7 @@ info: A technical deep dive into the pipeline that keeps the TEMPO L3 virtual Ic
 colorSchema: light
 transition: fade
 mdc: true
+routerMode: hash
 fonts:
   sans: Inter
 addons:
