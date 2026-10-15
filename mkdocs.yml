@@ -9,6 +9,7 @@ nav:
   - "index.md"
   - "Examples":
     - "Quickstart: reading a store": "examples/quickstart.ipynb"
+    - "Quickstart: reading over HTTPS": "examples/quickstart-https.ipynb"
   - "Reference":
     - "Architecture": "reference/architecture.md"
     - "The virtual stores": "reference/stores.md"
