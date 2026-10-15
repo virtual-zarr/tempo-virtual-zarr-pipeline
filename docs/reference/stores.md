@@ -1,17 +1,32 @@
 # The virtual stores
 
-Each store presents one collection as a single dataset: all variables from
-every group, flattened into the root group (titiler-multidim needs this
-layout), concatenated along `time`.
+There is one store per collection. Each store presents its collection as a
+single dataset: all variables from every group, flattened into the root
+group and concatenated along `time`. titiler-multidim needs the flat layout.
 
-Layout and encoding:
+## Where they are
 
-- Every 3-D variable has per-granule dims `(time, latitude, longitude)` =
+The pipeline writes each store to its own prefix in a private bucket. Public
+copies live on [Source Cooperative](https://source.coop/pangeo/tempo-virtual-icechunk):
+
+| Collection | Public copy |
+|---|---|
+| NO2 | `s3://us-west-2.opendata.source.coop/pangeo/tempo-virtual-icechunk/tempo/no2/v04/` |
+| HCHO | `s3://us-west-2.opendata.source.coop/pangeo/tempo-virtual-icechunk/tempo/hcho/v04/` |
+
+The public copies are refreshed by hand, so they are only as current as the
+last run of [the mirror runbook](runbook-mirror-to-source-coop.md). A zip of
+each copy sits beside it as `v04.zip`. It unpacks to a directory that opens
+with `icechunk.local_filesystem_storage`.
+
+## Layout and encoding
+
+- Every 3-D variable has per-granule dims `(time, latitude, longitude)` of
   (1, 2950, 7750) and keeps the source files' shuffle + deflate(1) codecs.
 - Chunks are (1, 738, 1938) for float64 and (1, 984, 2584) for everything
   else.
-- The 1-D coordinates are contiguous in the source netCDF-4, so they're
-  loaded and stored as native chunks — `[native]` below.
+- The 1-D coordinates are contiguous in the source netCDF-4 files, so they
+  are loaded and stored as native chunks. They are marked `[native]` below.
 - Everything else is virtual references into the source files.
 
 **`TEMPO_HCHO_L3` V04**:
@@ -44,60 +59,51 @@ Layout and encoding:
 └── pbl_height                               int16
 ```
 
-**`TEMPO_NO2_L3` V04** has the same coordinates and
-layout, with the NO2 variable set: `vertical_column_troposphere`,
-`vertical_column_stratosphere`, `vertical_column_total` and their
-uncertainties, twelve `qa_statistics` min/max/count variables,
-`amf_total`/`amf_troposphere`/`amf_stratosphere`, `tropopause_pressure`, and
-the same geolocation and ancillary variables as HCHO. 36 data variables in
-all.
+**`TEMPO_NO2_L3` V04** has the same coordinates and layout, with the NO2
+variable set: `vertical_column_troposphere`, `vertical_column_stratosphere`,
+`vertical_column_total` and their uncertainties, twelve `qa_statistics`
+min/max/count variables, `amf_total`, `amf_troposphere`, `amf_stratosphere`,
+`tropopause_pressure`, and the same geolocation and ancillary variables as
+HCHO. That is 36 data variables in all.
 
-Things worth knowing before you build on these:
+## Things to know before you build on them
 
 - The two time axes are independent. A handful of scans exist in only one
-  collection, and both grow separately — that's why each collection gets its
-  own repository. Joint analysis aligns at read time.
-- `latitude`/`longitude` are bit-identical between the two products and fixed
-  across scans.
-- `weight` varies per scan but the source files store it without a time
+  collection, and both axes grow separately. That is why each collection
+  gets its own repository. Joint analysis aligns the two at read time.
+- `latitude` and `longitude` are bit-identical between the two products and
+  fixed across scans.
+- `weight` varies per scan, but the source files store it without a time
   dimension. The pipeline promotes it to `(time, latitude, longitude)` at
-  ingest; without that, concatenation would silently keep only the first
+  ingest. Without that, concatenation would silently keep only the first
   scan's values.
-- References are relative to a virtual chunk container named `asdc`, for
-  example `vcc://asdc/TEMPO/...`. The store's config points the container
-  at `s3://asdc-prod-protected/` in us-west-2. Readers authorize it with
-  temporary credentials from
-  <https://data.asdc.earthdata.nasa.gov/s3credentials>. These credentials
-  work only in us-west-2. From any other place, point a container with the
-  same name at the DAAC's HTTPS distribution, which serves the same keys,
-  and authorize it with an EDL bearer token. This works, but CloudFront
-  rate-limits it. The token is a static header, so open the store again
-  when the token expires:
+- `main_data_quality_flag` is 0 for normal retrievals. The quickstarts show
+  a typical screen.
 
-  ```python
-  import icechunk
-  from earthaccess_auth import login
+## Reading the chunks
 
-  prefix = "https://data.asdc.earthdata.nasa.gov/asdc-prod-protected/"
-  config = icechunk.Repository.open(storage).config
-  config.set_virtual_chunk_container(
-      icechunk.VirtualChunkContainer(
-          prefix,
-          icechunk.http_store(
-              headers={"Authorization": f"Bearer {login().token['access_token']}"}
-          ),
-          name="asdc",
-      )
-  )
-  repo = icechunk.Repository.open(
-      storage,
-      config=config,
-      authorize_virtual_chunk_access=icechunk.containers_credentials(
-          {prefix: icechunk.credentials.HttpAccess}
-      ),
-  )
-  ```
+The store holds references, not bytes. Reading data means fetching byte
+ranges from ASDC's `asdc-prod-protected` bucket, which needs an
+[Earthdata Login](https://urs.earthdata.nasa.gov/) account. There are two
+ways in.
 
-  Stores built before this change hold absolute `s3://` references. Only
-  the S3 container can resolve them. Migrate them with
-  [the relativize runbook](runbook-relativize-virtual-refs.md).
+**In AWS us-west-2.** Exchange the login for temporary S3 credentials at
+<https://data.asdc.earthdata.nasa.gov/s3credentials> and read the bucket
+directly. The credentials work only from us-west-2. This is the fast path.
+[Quickstart: in AWS us-west-2](../examples/quickstart.ipynb) does it with
+earthaccess-auth.
+
+**From anywhere.** The DAAC's HTTPS distribution at
+`https://data.asdc.earthdata.nasa.gov/asdc-prod-protected/` serves the same
+keys as the bucket. It accepts an Earthdata bearer token, so it works from a
+laptop. It sits behind CloudFront, which rate-limits it, so expect it to be
+slower. [Quickstart: from anywhere](../examples/quickstart-https.ipynb)
+shows how.
+
+The second path works because references are stored relative to a virtual
+chunk container named `asdc`, as `vcc://asdc/TEMPO/...`. The store's own
+config points that container at the S3 bucket. A reader can point a
+container with the same name somewhere else, and every reference follows.
+Stores built before this change hold absolute `s3://` references, which only
+the S3 container can resolve. Migrate them with
+[the relativize runbook](runbook-relativize-virtual-refs.md).
