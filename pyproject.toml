@@ -13,6 +13,10 @@ dependencies = [
     "constructs>=10.0.0",
 ]
 
+[tool.uv]
+# Resolve only releases at least a week old.
+exclude-newer = "1 week"
+
 [tool.uv.sources]
 virtualizarr-processor = { path = "lambda/virtualizarr-processor", editable = true}
 backfill-handlers = { path = "lambda/backfill", editable = true }
