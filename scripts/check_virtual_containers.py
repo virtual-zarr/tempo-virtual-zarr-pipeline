@@ -2,9 +2,11 @@
 """Check that a store declares virtual chunk containers its readers can use.
 
 The store holds byte-range references into the DAAC's granule objects, not
-the bytes themselves. To follow a reference, icechunk needs a virtual chunk
-container whose url_prefix covers the referenced URL, and credentials
-authorizing it.
+the bytes themselves. References are relative to a container named
+``asdc``, as ``vcc://asdc/<key>``. Stores from before this change are
+migrated by scripts/relativize_refs.py. To follow a reference, icechunk
+needs a container with that name. Its url_prefix must cover the granule
+URLs, and the container must be authorized with credentials.
 
 The store's persisted container is written once, when the repository is
 created, from whatever $VIRTUAL_CHUNK_PREFIX was set to then; opening it
@@ -13,11 +15,12 @@ writers keep working after the prefix changes while the persisted copy goes
 stale, and a reader who opens the store without supplying a config of their
 own gets UnauthorizedVirtualChunkContainer on every chunk.
 
-Three things are checked:
+Four things are checked:
 
 1. the persisted config declares at least one virtual chunk container;
-2. every URL in the store manifest falls under one of them;
-3. a chunk actually reads back with those containers authorized.
+2. one of them is named ``asdc``, the name relative references use;
+3. every URL in the store manifest falls under one of the containers;
+4. a chunk actually reads back with those containers authorized.
 
 ``--fix`` writes the expected container into the store's config. It needs
 write access and adds no commit, since the config lives outside the
@@ -54,7 +57,10 @@ from virtualizarr_processor.manifest import (
     StoreManifest,
     storage_prefix,
 )
-from virtualizarr_processor.processor import DEFAULT_VIRTUAL_CHUNK_PREFIX
+from virtualizarr_processor.processor import (
+    VIRTUAL_CHUNK_CONTAINER,
+    virtual_chunk_prefix,
+)
 
 
 def uncovered_urls(declared: set[str], urls: list[str]) -> list[str]:
@@ -212,13 +218,14 @@ def main() -> int:
     args = parser.parse_args()
 
     storage = open_storage(args)
-    expected = os.environ.get("VIRTUAL_CHUNK_PREFIX", DEFAULT_VIRTUAL_CHUNK_PREFIX)
+    expected = virtual_chunk_prefix()
 
     config = icechunk.Repository.fetch_config(storage)
     if config is None:
         print("FAIL: store has no config.yaml", file=sys.stderr)
         return 1
-    declared = set(config.virtual_chunk_containers or {})
+    containers = config.virtual_chunk_containers or {}
+    declared = set(containers)
     print(f"containers:   {sorted(declared) or 'none'}", file=sys.stderr)
 
     problems: list[str] = []
@@ -226,6 +233,11 @@ def main() -> int:
         problems.append(
             f"no virtual chunk container declared; readers cannot follow any "
             f"reference (expected {expected!r})"
+        )
+    elif all(c.name != VIRTUAL_CHUNK_CONTAINER for c in containers.values()):
+        problems.append(
+            f"no container is named {VIRTUAL_CHUNK_CONTAINER!r}; relative "
+            f"references (vcc://{VIRTUAL_CHUNK_CONTAINER}/...) cannot resolve"
         )
 
     repo = authorize(icechunk.Repository.open(storage=storage, config=config))
@@ -242,7 +254,9 @@ def main() -> int:
 
     if args.fix and problems:
         config.set_virtual_chunk_container(
-            icechunk.VirtualChunkContainer(expected, chunk_store_for(expected))
+            icechunk.VirtualChunkContainer(
+                expected, chunk_store_for(expected), name=VIRTUAL_CHUNK_CONTAINER
+            )
         )
         icechunk.Repository.open(storage=storage, config=config).save_config()
         print(

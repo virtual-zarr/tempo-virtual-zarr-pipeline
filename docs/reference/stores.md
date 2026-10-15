@@ -63,7 +63,41 @@ Things worth knowing before you build on these:
   dimension. The pipeline promotes it to `(time, latitude, longitude)` at
   ingest; without that, concatenation would silently keep only the first
   scan's values.
-- Production stores reference `s3://asdc-prod-protected/...` in us-west-2.
-  Readers authorize the virtual chunk container with temporary credentials
-  from <https://data.asdc.earthdata.nasa.gov/s3credentials>. EDL-authed HTTPS
-  also works but CloudFront rate-limits it.
+- References are relative to a virtual chunk container named `asdc`, for
+  example `vcc://asdc/TEMPO/...`. The store's config points the container
+  at `s3://asdc-prod-protected/` in us-west-2. Readers authorize it with
+  temporary credentials from
+  <https://data.asdc.earthdata.nasa.gov/s3credentials>. These credentials
+  work only in us-west-2. From any other place, point a container with the
+  same name at the DAAC's HTTPS distribution, which serves the same keys,
+  and authorize it with an EDL bearer token. This works, but CloudFront
+  rate-limits it. The token is a static header, so open the store again
+  when the token expires:
+
+  ```python
+  import icechunk
+  from earthaccess_auth import login
+
+  prefix = "https://data.asdc.earthdata.nasa.gov/asdc-prod-protected/"
+  config = icechunk.Repository.open(storage).config
+  config.set_virtual_chunk_container(
+      icechunk.VirtualChunkContainer(
+          prefix,
+          icechunk.http_store(
+              headers={"Authorization": f"Bearer {login().token['access_token']}"}
+          ),
+          name="asdc",
+      )
+  )
+  repo = icechunk.Repository.open(
+      storage,
+      config=config,
+      authorize_virtual_chunk_access=icechunk.containers_credentials(
+          {prefix: icechunk.credentials.HttpAccess}
+      ),
+  )
+  ```
+
+  Stores built before this change hold absolute `s3://` references. Only
+  the S3 container can resolve them. Migrate them with
+  [the relativize runbook](runbook-relativize-virtual-refs.md).
