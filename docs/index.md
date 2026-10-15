@@ -25,6 +25,7 @@ Start here if you want the data.
   why the TEMPO source needs it.
 - [The pipeline](reference/pipeline.md): backfill, forward processing,
   verification, and publishing, in detail.
+- [Slides](slides/): the pipeline deep dive, a talk from October 2026.
 
 ## Operating
 
