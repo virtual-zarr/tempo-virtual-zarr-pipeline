@@ -1,0 +1,82 @@
+# Based on https://github.com/virtual-zarr/obspec-utils/blob/main/mkdocs.yml
+site_name: tempo-virtual-zarr-pipeline
+repo_name: virtual-zarr/tempo-virtual-zarr-pipeline
+repo_url: https://github.com/virtual-zarr/tempo-virtual-zarr-pipeline
+site_description: Virtual Zarr / Icechunk ingestion pipeline for TEMPO L3 gridded products (HCHO and NO2)
+docs_dir: docs
+
+nav:
+  - "index.md"
+  - "Reading the stores":
+    - "The virtual stores": "reference/stores.md"
+    - "Quickstart: in AWS us-west-2": "examples/quickstart.ipynb"
+    - "Quickstart: from anywhere": "examples/quickstart-https.ipynb"
+  - "How it works":
+    - "Architecture": "reference/architecture.md"
+    - "The pipeline": "reference/pipeline.md"
+  - "Operating":
+    - "Deploying and running": "reference/deploying.md"
+    - "Settings": "reference/settings.md"
+    - "Monitoring": "reference/monitoring.md"
+    - "Alarm email notifications": "reference/alarm-email-notifications.md"
+    - "Testing forward processing": "reference/testing-forward-processing.md"
+  - "Runbooks":
+    - "Drain a pending-ledger backlog": "reference/runbook-drain-pending-backlog.md"
+    - "Mirror to Source Cooperative": "reference/runbook-mirror-to-source-coop.md"
+    - "Attribute production lag": "reference/runbook-production-lag.md"
+    - "Redrive the dead-letter queue": "reference/runbook-redrive-dlq.md"
+    - "Relativize virtual references": "reference/runbook-relativize-virtual-refs.md"
+  - "Development": "reference/development.md"
+
+theme:
+  language: en
+  name: material
+  palette:
+    - media: "(prefers-color-scheme)"
+      toggle:
+        icon: material/brightness-auto
+        name: Switch to light mode
+    - media: "(prefers-color-scheme: light)"
+      primary: blue grey
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: blue grey
+      toggle:
+        icon: material/brightness-4
+        name: Switch to system preference
+  font:
+    text: Roboto
+    code: Roboto Mono
+  features:
+    - content.code.annotate
+    - content.code.copy
+    - navigation.indexes
+    - navigation.instant
+    - navigation.tracking
+    - search.suggest
+    - search.share
+
+plugins:
+  - search
+  - mkdocs-jupyter:
+      # Loading chunks needs AWS us-west-2; render the saved outputs instead.
+      execute: false
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - tables
+  - toc:
+      permalink: true

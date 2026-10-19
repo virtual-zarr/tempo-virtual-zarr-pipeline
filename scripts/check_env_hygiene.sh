@@ -3,7 +3,7 @@
 # gitignored .env.local (see .env.local.sample). Invoked by pre-commit with
 # the staged .env* filenames as arguments.
 set -euo pipefail
-DENY='ACCOUNT_ID|AWS_PROFILE|OWNER|CLIENT|ALARM_EMAIL|EARTHDATA_SECRET_ARN|VPC_ID'
+DENY='ACCOUNT_ID|AWS_PROFILE|OWNER|CLIENT|ALARM_EMAIL|EARTHDATA_SECRET_ARN|VPC_ID|SOURCE_COOP_[A-Z_]+'
 status=0
 for f in "$@"; do
   if grep -nE "^($DENY)=." "$f"; then

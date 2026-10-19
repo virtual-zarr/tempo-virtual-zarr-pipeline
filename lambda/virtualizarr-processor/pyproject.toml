@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Module for ingesting virtualizarr data to Icechunk"
 requires-python = ">=3.12"
 dependencies = [
-    "icechunk>=2.1",
+    "icechunk>=2.2",
     "obspec-utils",
     "obstore",
     "opentelemetry-api>=1.20",

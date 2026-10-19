@@ -899,8 +899,9 @@ class VirtualizarrSqsStack(Stack):
 
         The same project also runs ``scripts/verify_store.py`` when started
         with ``run_codebuild.sh -V`` (a ``--buildspec-override`` to
-        ``scripts/verify_buildspec.yml``), which is why it carries the
-        processor env and read access to the store prefix.
+        ``scripts/verify_buildspec.yml``) and ``scripts/record_stamps.py``
+        with ``-R``, which is why it carries the processor env and
+        read/write access to the store prefix.
         """
         collection = settings.TEMPO_COLLECTION or "hcho"
         env = {
@@ -914,6 +915,8 @@ class VirtualizarrSqsStack(Stack):
             # Extra flags for verify runs (scripts/verify_buildspec.yml via
             # --buildspec-override); empty for inventory builds.
             "VERIFY_ARGS": codebuild.BuildEnvironmentVariable(value=""),
+            # Extra flags for record_stamps runs (scripts/record_stamps_buildspec.yml).
+            "RECORD_STAMPS_ARGS": codebuild.BuildEnvironmentVariable(value=""),
         }
         # Verify runs open the store with the same env contract as the
         # Lambdas. setdefault keeps the Secrets-Manager EARTHDATA_TOKEN
@@ -948,12 +951,11 @@ class VirtualizarrSqsStack(Stack):
         self.icechunk_bucket.grant_put(
             self.inventory_build, f"{settings.inventory_prefix}/*"
         )
-        # Verify runs read the store; nothing in this project ever writes it.
-        self.icechunk_bucket.grant_read(
+        # Verify runs read the store; record_stamps runs commit to it.
+        grant_prefixed_read_write(
             self.inventory_build,
-            f"{settings.icechunk_storage_prefix}/*"
-            if settings.icechunk_storage_prefix
-            else "*",
+            self.icechunk_bucket,
+            [settings.icechunk_storage_prefix],
         )
         # Verify runs publish CompletenessDelta via put_metric_data
         # (CodeBuild logs are not EMF-parsed). PutMetricData cannot be

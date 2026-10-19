@@ -27,8 +27,8 @@ class StackSettings(BaseSettings):
     # non-empty to bootstrap a new store. Passed into Lambda as the combined path.
     ICECHUNK_PREFIX: str | None = None
     # Key prefix in the Icechunk bucket where backfill inventories are uploaded
-    # (see README: s3://<bucket>/<S3_PREFIX>/inventory/). The backfill partition
-    # Lambda is granted read on this prefix only.
+    # (s3://<bucket>/<S3_PREFIX>/inventory/; see docs/reference/deploying.md).
+    # The backfill partition Lambda is granted read on this prefix only.
     INVENTORY_PREFIX: str | None = None
     DATA_BUCKET_NAME: str | None = None
     PROJECT: str = "virtualizarr-data-pipelines"
