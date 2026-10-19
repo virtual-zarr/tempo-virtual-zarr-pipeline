@@ -121,11 +121,16 @@ class VirtualizarrSqsStack(Stack):
             retention_period=Duration.days(14),
         )
 
+        consumer_timeout_minutes = 5
         self.queue = sqs.Queue(
             self,
             f"{settings.STACK_NAME}-queue",
             queue_name=f"{settings.STACK_NAME}-queue",
-            visibility_timeout=Duration.seconds(1800),
+            # AWS guidance: 6x the consumer's timeout plus its batching window.
+            visibility_timeout=Duration.seconds(
+                6 * consumer_timeout_minutes * 60
+                + settings.SQS_MAX_BATCHING_WINDOW_SECONDS
+            ),
             dead_letter_queue=sqs.DeadLetterQueue(
                 max_receive_count=20,
                 queue=self.dlq,
@@ -289,7 +294,6 @@ class VirtualizarrSqsStack(Stack):
         self.process_messages_log_group = function_log_group(
             self, "process-messages-logs"
         )
-        consumer_timeout_minutes = 5
         self.process_messages_lambda = _lambda.DockerImageFunction(
             self,
             f"{settings.STACK_NAME}-process_messages_lambda",
@@ -376,7 +380,7 @@ class VirtualizarrSqsStack(Stack):
                     self._custom_metric("CommitFailures", statistic="Sum"),
                 ],
                 # The 5-min function timeout is what kills an invocation; the
-                # 1800 s SQS visibility timeout is only the redelivery bound.
+                # SQS visibility timeout is only the redelivery bound.
                 left_annotations=[
                     cloudwatch.HorizontalAnnotation(
                         value=consumer_timeout_minutes * 60_000,
@@ -422,6 +426,9 @@ class VirtualizarrSqsStack(Stack):
             lambda_event_sources.SqsEventSource(
                 self.queue,
                 batch_size=settings.SQS_BATCH_SIZE,
+                max_batching_window=Duration.seconds(
+                    settings.SQS_MAX_BATCHING_WINDOW_SECONDS
+                ),
                 report_batch_item_failures=True,
                 # No max_concurrency: Lambda rejects a mapping whose maximum
                 # exceeds the function's reserved concurrency (1, above), and

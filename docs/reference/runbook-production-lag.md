@@ -115,7 +115,8 @@ aws logs filter-log-events --log-group-name "$LG" --start-time "$(date -d '2 day
 ```
 
 Log-event time minus revision-date is the pipeline's share, T2 to T4.
-**Healthy is under `POLL_SCHEDULE_MINUTES` plus about 5 minutes.** If that
+**Healthy is under `POLL_SCHEDULE_MINUTES` plus `SQS_MAX_BATCHING_WINDOW_SECONDS`
+plus about 5 minutes.** If that
 holds across a handful of granules, the pipeline is exonerated. Everything
 else in Step 0's number is Step 1's upstream lag, and you are done.
 
@@ -136,7 +137,9 @@ Work back along T2 to T4:
 - **Queue (T3 to T4).** The dashboard's queue widget, or
   `ApproximateAgeOfOldestMessage` on `$STACK_NAME-queue`. Consumer
   *throttles* are expected, since reserved concurrency is 1 and SQS
-  redelivers. Sustained age growth is not. Look at `CommitFailures` (a
+  redelivers. So is an age up to `SQS_MAX_BATCHING_WINDOW_SECONDS`: a
+  partial batch waits that long to fill before the consumer is invoked.
+  Sustained age growth is not. Look at `CommitFailures` (a
   failed batch commit redelivers the whole batch after the visibility
   timeout, which reads as minutes of added latency per retry) and sustained
   `PromoteFailures` (writers fighting the re-sort).

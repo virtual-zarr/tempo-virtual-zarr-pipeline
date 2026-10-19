@@ -34,6 +34,11 @@ class StackSettings(BaseSettings):
     PROJECT: str = "virtualizarr-data-pipelines"
     SNS_TOPIC: str | None = None
     SQS_BATCH_SIZE: int = 10
+    # How long the consumer's event source waits to fill a batch. Every
+    # invocation commits once, so without a window a burst of arrivals
+    # becomes a commit per 1-2 messages, each rewriting every array's tail
+    # manifest. Costs up to this much ingest latency.
+    SQS_MAX_BATCHING_WINDOW_SECONDS: int = 300
 
     # Secrets Manager secret holding Earthdata Login material (JSON with
     # "EARTHDATA_TOKEN" or "EARTHDATA_USERNAME"+"EARTHDATA_PASSWORD",
