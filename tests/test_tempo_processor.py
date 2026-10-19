@@ -10,6 +10,7 @@ import icechunk
 import numpy as np
 import pytest
 import zarr
+from obstore.exceptions import UnauthenticatedError
 from tempo_fixtures import (
     TIME_BASE,
     TINY_LAT,
@@ -20,6 +21,7 @@ from tempo_fixtures import (
     write_tempo_granule,
 )
 from virtualizarr_processor import backfill
+from virtualizarr_processor import processor as processor_module
 from virtualizarr_processor.inventory import BackfillInventory, GranuleEntry
 from virtualizarr_processor.processor import (
     PartialWriteError,
@@ -765,3 +767,80 @@ def test_resort_fold_carries_stamps(tiny: TinyCollection) -> None:
     assert resorted[relocated_index] == slot1_stamp[1]  # kept through the fold
     assert pending[0].stamp is not None
     assert resorted[inserted_index] == stamp_value(pending[0].stamp)
+
+
+def _failing_parse(
+    monkeypatch: pytest.MonkeyPatch, message: str
+) -> tuple[list[int], list[str], list[str]]:
+    """Make the parse raise an UnauthenticatedError wrapped by a reader.
+
+    Returns the lists that record parse attempts, emitted metric names and
+    credential-cache resets. Backoff sleeps are skipped.
+    """
+    attempts: list[int] = []
+    emitted: list[str] = []
+    resets: list[str] = []
+
+    def unauthenticated(*args: object, **kwargs: object) -> None:
+        attempts.append(1)
+        try:
+            raise UnauthenticatedError(message)
+        except UnauthenticatedError as e:
+            raise RuntimeError("wrapped by a reader") from e
+
+    monkeypatch.setattr(processor_module, "open_flat_granule", unauthenticated)
+    monkeypatch.setattr(processor_module.time_module, "sleep", lambda s: None)
+    monkeypatch.setattr(
+        processor_module, "emit_metric", lambda name, value: emitted.append(name)
+    )
+    monkeypatch.setattr(
+        processor_module, "reset_earthdata_auth", lambda: resets.append("reset")
+    )
+    return attempts, emitted, resets
+
+
+def _new_granule_url(tiny: TinyCollection) -> str:
+    """A granule the store has not seen, so the unchanged fast path parses."""
+    path = write_tempo_granule(
+        tiny.granule_paths[0].parent / "granule_new.nc",
+        time_value=tiny.times[-1] + 3600.0,
+    )
+    return f"file://{path}"
+
+
+def test_forward_raises_on_earthdata_auth_failure(
+    tiny: TinyCollection, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An expired token fails every granule, so it must not route to
+    REJECTED (dead-lettered as bad data, retried with backoff). It raises
+    on the first attempt, counts EarthdataAuthErrors for the alarm, and
+    drops the cached credentials so a rotated secret takes effect."""
+    processor = backfilled(tiny)
+    url = _new_granule_url(tiny)
+    attempts, emitted, resets = _failing_parse(
+        monkeypatch, "External AWS credential provider: HTTPError: 401 Client Error"
+    )
+    session = processor.initialize_session(processor.open_backfill_repo())
+    with pytest.raises(RuntimeError, match="wrapped by a reader"):
+        processor.process_file(url, session)
+    assert len(attempts) == 1
+    assert emitted == ["EarthdataAuthErrors"]
+    assert resets == ["reset"]
+
+
+def test_forward_retries_transient_credential_endpoint_errors(
+    tiny: TinyCollection, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """obstore reports a 5xx or connection error from the s3credentials
+    endpoint as UnauthenticatedError too. Only a 401 means the token is
+    bad. Anything else keeps the normal retry-then-REJECTED path and
+    must not page as a token outage."""
+    processor = backfilled(tiny)
+    url = _new_granule_url(tiny)
+    attempts, emitted, resets = _failing_parse(
+        monkeypatch, "External AWS credential provider: HTTPError: 503 Server Error"
+    )
+    assert forward(processor, [url]) == [ProcessOutcome.REJECTED]
+    assert len(attempts) == processor_module.PARSE_ATTEMPTS
+    assert emitted == []
+    assert resets == []

@@ -318,6 +318,16 @@ class VirtualizarrSqsStack(Stack):
             "the consumer Lambda's CloudWatch logs (the FunctionName "
             "dimension below) for the traceback.",
         )
+        self._alarm(
+            "EarthdataAuthErrorsAlarm",
+            self._custom_metric("EarthdataAuthErrors", statistic="Sum"),
+            "The consumer could not get S3 credentials from Earthdata Login: "
+            "the token in the Earthdata secret is expired or revoked, so every "
+            "granule fails. Put a new token in the secret, then redrive the "
+            "dead-letter queue. The consumer re-reads the secret after each "
+            "failure, so the new token takes effect on the next batch. The "
+            "consumer logs show the 401 from the s3credentials endpoint.",
+        )
 
         # Dashboard forward-processing section (queue and consumer are
         # unconditional; the poller and re-sort widgets are appended inside
@@ -692,6 +702,9 @@ class VirtualizarrSqsStack(Stack):
             }
             if settings.POLL_START_ISO:
                 poller_env["POLL_START_ISO"] = settings.POLL_START_ISO
+            if settings.EARTHDATA_SECRET_ARN:
+                # Read only for the token's exp (EarthdataTokenTimeLeft).
+                poller_env["EARTHDATA_SECRET_ARN"] = settings.EARTHDATA_SECRET_ARN
             if settings.TEMPO_COLLECTION:
                 # Resolved at synth from the collection's declarative TOML so
                 # the lightweight poller image needs no processor package.
@@ -711,6 +724,27 @@ class VirtualizarrSqsStack(Stack):
                 environment=poller_env,
             )
             self.queue.grant_send_messages(self.cmr_poller_lambda)
+            if self.earthdata_secret is not None:
+                self.earthdata_secret.grant_read(self.cmr_poller_lambda)
+                self._alarm(
+                    "EarthdataTokenExpiryAlarm",
+                    self._custom_metric(
+                        "EarthdataTokenTimeLeft",
+                        statistic="Minimum",
+                        period=Duration.hours(1),
+                    ),
+                    "The Earthdata token in the Earthdata secret expires in "
+                    "under 7 days. When it does, every granule fails and "
+                    "dead-letters. Generate a new token in the account's "
+                    "Earthdata profile and put it in the secret. Warm "
+                    "consumers switch to it once the old one is rejected. "
+                    "The poller logs show a skipped emission if the secret "
+                    "cannot be read.",
+                    threshold=7 * 86400,
+                    comparison_operator=(
+                        cloudwatch.ComparisonOperator.LESS_THAN_THRESHOLD
+                    ),
+                )
             # The watermark lives in the icechunk bucket's state prefix,
             # under the store prefix.
             grant_prefixed_read_write(
@@ -985,6 +1019,9 @@ class VirtualizarrSqsStack(Stack):
         description: str,
         *,
         threshold: float = 0,
+        comparison_operator: cloudwatch.ComparisonOperator = (
+            cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD
+        ),
         evaluation_periods: int = 1,
         treat_missing_data: cloudwatch.TreatMissingData = (
             cloudwatch.TreatMissingData.NOT_BREACHING
@@ -1001,7 +1038,7 @@ class VirtualizarrSqsStack(Stack):
             alarm_name=f"{self.stack_name}-{construct_id}",
             metric=metric,
             threshold=threshold,
-            comparison_operator=(cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD),
+            comparison_operator=comparison_operator,
             evaluation_periods=evaluation_periods,
             treat_missing_data=treat_missing_data,
             alarm_description=description,

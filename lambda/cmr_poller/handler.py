@@ -14,6 +14,7 @@ Kept lightweight on purpose: stdlib HTTP against CMR's public search API
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import urllib.parse
@@ -108,6 +109,43 @@ def _emit(name: str, value: float, unit: str = "Count") -> None:
             pass
     except Exception:
         logger.warning("Skipping %s emission", name, exc_info=True)
+
+
+def token_expiry(secret: str) -> datetime | None:
+    """The ``exp`` of the Earthdata token in ``secret``, or None if it holds none.
+
+    Accepts the secret shapes the consumer reads (virtualizarr_processor.
+    granule._earthdata_auth): a plain token, or JSON with EARTHDATA_TOKEN.
+    Username/password secrets have no token and so nothing to expire.
+    """
+    try:
+        data = json.loads(secret)
+    except ValueError:
+        data = secret
+    token = data.get("EARTHDATA_TOKEN") if isinstance(data, dict) else str(data)
+    if not token:
+        return None
+    payload = token.strip().split(".")[1]
+    claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+    return datetime.fromtimestamp(claims["exp"], timezone.utc)
+
+
+def _emit_token_time_left(secret_arn: str, now: datetime) -> None:
+    """Emit EarthdataTokenTimeLeft so the token alarms before it expires.
+
+    Best-effort like _emit: a bad secret must not stop the poll. The
+    consumer raises on the expired token anyway (EarthdataAuthErrors).
+    """
+    try:
+        import boto3
+
+        secret = boto3.client("secretsmanager").get_secret_value(SecretId=secret_arn)
+        expiry = token_expiry(secret["SecretString"])
+    except Exception:
+        logger.warning("Skipping EarthdataTokenTimeLeft emission", exc_info=True)
+        return
+    if expiry is not None:
+        _emit("EarthdataTokenTimeLeft", (expiry - now).total_seconds(), "Seconds")
 
 
 def direct_s3_url(umm: dict[str, Any]) -> str | None:
@@ -250,6 +288,8 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     watermark_uri = os.environ["POLL_WATERMARK_URI"]
 
     started = datetime.now(timezone.utc)
+    if secret_arn := os.environ.get("EARTHDATA_SECRET_ARN"):
+        _emit_token_time_left(secret_arn, started)
     watermark = read_watermark(watermark_uri) or initial_watermark(started)
     since = watermark - OVERLAP
 

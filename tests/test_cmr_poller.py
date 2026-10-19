@@ -322,3 +322,46 @@ def test_watermark_not_advanced_when_enqueue_fails(
         poller.handler({}, MagicMock())
 
     assert poller.read_watermark(watermark_uri) is None
+
+
+def _jwt(exp: datetime) -> str:
+    """A token shaped like an EDL JWT. Only the payload's exp matters."""
+    import base64
+
+    payload = base64.urlsafe_b64encode(
+        json.dumps({"exp": int(exp.timestamp())}).encode()
+    )
+    return f"header.{payload.decode().rstrip('=')}.signature"
+
+
+def test_token_expiry_reads_every_secret_shape() -> None:
+    exp = datetime(2026, 10, 17, 2, 41, 36, tzinfo=timezone.utc)
+    token = _jwt(exp)
+    assert poller.token_expiry(token) == exp
+    assert poller.token_expiry(token + "\n") == exp
+    assert poller.token_expiry(json.dumps({"EARTHDATA_TOKEN": token})) == exp
+    creds = {"EARTHDATA_USERNAME": "u", "EARTHDATA_PASSWORD": "p"}
+    assert poller.token_expiry(json.dumps(creds)) is None
+
+
+@mock_aws
+def test_poll_emits_token_time_left(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The alarm watches this series, so a secret read must emit it and a
+    broken secret must only skip it, never fail the poll."""
+    monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
+    emitted: list[tuple] = []
+    monkeypatch.setattr(
+        poller, "_emit", lambda name, value, unit="Count": emitted.append((name, value))
+    )
+    sm = boto3.client("secretsmanager")
+    arn = sm.create_secret(
+        Name="edl",
+        SecretString=json.dumps({"EARTHDATA_TOKEN": _jwt(NOW + timedelta(days=3))}),
+    )["ARN"]
+
+    poller._emit_token_time_left(arn, NOW)
+    assert emitted == [("EarthdataTokenTimeLeft", 3 * 86400.0)]
+
+    sm.put_secret_value(SecretId=arn, SecretString="not-a-jwt")
+    poller._emit_token_time_left(arn, NOW)  # logs and returns
+    assert len(emitted) == 1

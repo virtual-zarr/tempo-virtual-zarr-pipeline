@@ -118,6 +118,16 @@ def _s3_credential_provider(bucket: str) -> "NasaEarthdataCredentialProvider | N
 s3_credential_provider = _s3_credential_provider
 
 
+def reset_earthdata_auth() -> None:
+    """Forget the cached EDL material so the next read re-reads the secret.
+
+    Called on a credential failure, so a rotated secret takes effect in a
+    warm container without waiting for Lambda to recycle it.
+    """
+    _earthdata_auth.cache_clear()
+    _s3_credential_provider.cache_clear()
+
+
 class EarthdataIcechunkCredentialFetcher:
     """Picklable ``get_credentials`` for icechunk's refreshable S3 credentials.
 
