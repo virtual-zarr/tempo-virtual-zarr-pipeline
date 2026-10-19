@@ -93,7 +93,7 @@ def _earthdata_auth() -> str | tuple[str, str] | None:
 
 
 @lru_cache(maxsize=None)
-def _s3_credential_provider(bucket: str) -> "NasaEarthdataCredentialProvider | None":
+def s3_credential_provider(bucket: str) -> "NasaEarthdataCredentialProvider | None":
     """An EDL-refreshing credential provider for ``bucket``, or None.
 
     None when no EDL material is configured or the bucket has no known
@@ -113,11 +113,6 @@ def _s3_credential_provider(bucket: str) -> "NasaEarthdataCredentialProvider | N
     return NasaEarthdataCredentialProvider(endpoint, auth=auth)
 
 
-# Public name for external callers (the inventory build script); the
-# leading-underscore original predates out-of-package use.
-s3_credential_provider = _s3_credential_provider
-
-
 def reset_earthdata_auth() -> None:
     """Forget the cached EDL material so the next read re-reads the secret.
 
@@ -125,7 +120,7 @@ def reset_earthdata_auth() -> None:
     warm container without waiting for Lambda to recycle it.
     """
     _earthdata_auth.cache_clear()
-    _s3_credential_provider.cache_clear()
+    s3_credential_provider.cache_clear()
 
 
 class EarthdataIcechunkCredentialFetcher:
@@ -140,7 +135,7 @@ class EarthdataIcechunkCredentialFetcher:
         self.bucket = bucket
 
     def __call__(self) -> icechunk.S3StaticCredentials:
-        provider = _s3_credential_provider(self.bucket)
+        provider = s3_credential_provider(self.bucket)
         if provider is None:
             raise RuntimeError(
                 f"no Earthdata credential source for bucket {self.bucket!r}: "
@@ -167,7 +162,7 @@ def icechunk_virtual_credentials(
     path uses. Otherwise ambient AWS credentials, which need a bucket-policy
     grant on the source bucket — also matching the read path's fallback.
     """
-    if _s3_credential_provider(bucket) is None:
+    if s3_credential_provider(bucket) is None:
         return icechunk.s3_from_env_credentials()
     return icechunk.s3_refreshable_credentials(
         EarthdataIcechunkCredentialFetcher(bucket)
@@ -187,7 +182,7 @@ def make_registry(url: str) -> ObjectStoreRegistry:
         return ObjectStoreRegistry({"file://": LocalStore()})
     if parsed.scheme == "s3":
         base = f"s3://{parsed.netloc}"
-        provider = _s3_credential_provider(parsed.netloc)
+        provider = s3_credential_provider(parsed.netloc)
         if provider is not None:
             return ObjectStoreRegistry(
                 {base: S3Store.from_url(base, credential_provider=provider)}
