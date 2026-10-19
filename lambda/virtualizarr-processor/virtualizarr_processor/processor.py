@@ -46,6 +46,7 @@ import numpy as np
 import xarray as xr
 import zarr
 from icechunk import ForkSession, Repository, Session
+from obstore.exceptions import UnauthenticatedError
 from pydantic_zarr.v3 import ArraySpec
 
 from virtualizarr_processor import manifest as manifest_module
@@ -59,6 +60,7 @@ from virtualizarr_processor.granule import (
     granule_time,
     icechunk_virtual_credentials,
     open_flat_granule,
+    reset_earthdata_auth,
     source_last_modified,
 )
 from virtualizarr_processor.inventory import SCHEMA_ID, BackfillInventory, GranuleEntry
@@ -72,6 +74,7 @@ from virtualizarr_processor.manifest import (
     StoreManifest,
     stamp_value,
 )
+from virtualizarr_processor.metrics import emit_metric
 from virtualizarr_processor.resort import first_shifted_index
 from virtualizarr_processor.store_template import (
     AnyGroupSpec,
@@ -99,6 +102,35 @@ VCC_PREFIX = f"vcc://{VIRTUAL_CHUNK_CONTAINER}/"
 MANIFEST_SPLIT_SLOTS = 500
 PARSE_ATTEMPTS = 3
 PARSE_BACKOFF_SECONDS = (5, 15)
+
+
+def _is_auth_error(exc: BaseException | None) -> bool:
+    """Whether ``exc`` or anything in its cause chain is a rejected token.
+
+    obstore wraps every credential-provider failure, including a 5xx or a
+    connection error from the s3credentials endpoint, in
+    UnauthenticatedError. Only the 401 means the token itself is bad. The
+    others are transient and keep the normal retry path.
+    """
+    while exc is not None:
+        if isinstance(exc, UnauthenticatedError) and "401" in str(exc):
+            return True
+        exc = exc.__cause__ or exc.__context__
+    return False
+
+
+def _raise_if_auth_error(exc: BaseException) -> None:
+    """Count a rejected token, drop the cached credentials, and re-raise.
+
+    An expired or revoked Earthdata token fails every granule. Raising
+    alarms the outage as one (EarthdataAuthErrors) instead of as rejected
+    granules. Resetting the cache lets the next invocation pick up a
+    rotated secret in this same container.
+    """
+    if _is_auth_error(exc):
+        emit_metric("EarthdataAuthErrors", 1)
+        reset_earthdata_auth()
+        raise exc
 
 
 def virtual_chunk_prefix() -> str:
@@ -658,7 +690,7 @@ class Processor:
     def _open_with_retry(self, file_key: str) -> xr.Dataset:
         """Parse the granule, retrying transient errors with backoff.
 
-        Validation errors are not retried. The retries keep object-store
+        Validation and credential errors are not retried. The retries keep object-store
         throttling under backfill concurrency from failing a whole batch.
         """
         for attempt in range(PARSE_ATTEMPTS):
@@ -666,8 +698,8 @@ class Processor:
                 return open_flat_granule(file_key, self.config)
             except GranuleValidationError:
                 raise
-            except Exception:
-                if attempt == PARSE_ATTEMPTS - 1:
+            except Exception as e:
+                if attempt == PARSE_ATTEMPTS - 1 or _is_auth_error(e):
                     raise
                 delay = PARSE_BACKOFF_SECONDS[
                     min(attempt, len(PARSE_BACKOFF_SECONDS) - 1)
@@ -824,9 +856,11 @@ class Processor:
                     file_key,
                 )
                 return ProcessOutcome.UNCHANGED
-        except Exception:
+        except Exception as e:
             # A HEAD failure lands here and falls through to the parse,
-            # whose first step is the same HEAD, as before.
+            # whose first step is the same HEAD, as before. A rejected
+            # token would only fail there again, so raise once, here.
+            _raise_if_auth_error(e)
             logger.warning(
                 "process_file: unchanged fast path failed for %s; parsing",
                 file_key,
@@ -834,7 +868,8 @@ class Processor:
             )
         try:
             vds, stamp = self._parse_and_validate(file_key)
-        except Exception:
+        except Exception as e:
+            _raise_if_auth_error(e)
             logger.exception("process_file: validation failed for %s", file_key)
             return ProcessOutcome.REJECTED
         try:

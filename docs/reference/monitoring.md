@@ -7,12 +7,14 @@ or configure. Deploy, and it exists.
 
 ## Alarms
 
-Five alarms page, via `ALARM_EMAIL` when it is set:
+Up to seven alarms page, via `ALARM_EMAIL` when it is set. `EarthdataTokenExpiryAlarm` exists only when `EARTHDATA_SECRET_ARN` is set:
 
 | Alarm | Fires when | It usually means |
 |---|---|---|
 | `DlqMessagesAlarm` | anything lands in the DLQ | granules rejected 20 times: a UR/time collision or a persistent parse failure. The dashboard's *Rejected granules* table shows which, by url for validation rejections and by SQS message id for granules that raised mid-processing |
 | `ConsumerErrorsAlarm` | the SQS consumer throws | check the consumer's log group |
+| `EarthdataAuthErrorsAlarm` | the consumer gets a 401 from the Earthdata `s3credentials` endpoint | the Earthdata token is expired or revoked, so every granule fails. Put a new token in the secret, then redrive the DLQ. The consumer drops its cached credentials after each 401, so the new token takes effect on the next batch. A 5xx or connection error from the endpoint does not count. Those keep the normal parse retries |
+| `EarthdataTokenExpiryAlarm` | the token in the Earthdata secret has under 7 days left, which the CMR poller emits as `EarthdataTokenTimeLeft` on every run | rotate the token before it lapses. Earthdata user tokens last 60 days |
 | `PollerErrorsAlarm` | the CMR poller fails its run and both async retries | CMR unreachable, or watermark state unreadable |
 | `ResortErrorsAlarm` | the re-sort job fails its run and both async retries. A single failure that a retry heals, such as a lost promote CAS, does not page | the fold failed before promoting. The ledger keeps growing until fixed |
 | `AxisEndLagAlarm` | the store's newest time slot is more than 24 h old, **or the `AxisEndLag` metric goes missing, for 24 consecutive hours** | the top-line staleness check. See below |

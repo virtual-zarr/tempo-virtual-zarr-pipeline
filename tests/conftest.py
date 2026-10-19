@@ -151,7 +151,7 @@ def _clear_earthdata_caches() -> Iterator[None]:
     from virtualizarr_processor import granule
 
     granule._earthdata_auth.cache_clear()
-    granule._s3_credential_provider.cache_clear()
+    granule.s3_credential_provider.cache_clear()
     yield
     granule._earthdata_auth.cache_clear()
-    granule._s3_credential_provider.cache_clear()
+    granule.s3_credential_provider.cache_clear()

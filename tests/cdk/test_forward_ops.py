@@ -172,12 +172,41 @@ def test_s3_prefix_scopes_state_env_and_run_artifact_lifecycle() -> None:
 
 def test_alarms_cover_dlq_consumer_and_scheduled_jobs() -> None:
     """Failure states are fail-safe but silent; alarms make them visible."""
-    # Forward deployment: DLQ depth, consumer, re-sort, and poller errors,
-    # plus the AxisEndLag staleness alarm.
-    _template().resource_count_is("AWS::CloudWatch::Alarm", 5)
-    # Backfill-only deployment: no scheduled forward jobs and no freshness alarm
-    # (a backfill-only stack has no freshness contract).
-    _template(BACKFILL_ENABLED=True).resource_count_is("AWS::CloudWatch::Alarm", 2)
+    # Forward deployment: DLQ depth, consumer, Earthdata auth, re-sort, and
+    # poller errors, plus the AxisEndLag staleness alarm.
+    _template().resource_count_is("AWS::CloudWatch::Alarm", 6)
+    # Backfill-only deployment: DLQ, consumer and Earthdata auth only. It has
+    # no scheduled forward jobs and no freshness alarm (a backfill-only stack
+    # has no freshness contract).
+    _template(BACKFILL_ENABLED=True).resource_count_is("AWS::CloudWatch::Alarm", 3)
+
+
+def test_token_expiry_alarm_needs_the_earthdata_secret() -> None:
+    """The poller reads the secret for the token's exp and alarms a week
+    before it lapses. Without a secret there is no token to watch."""
+    arn = "arn:aws:secretsmanager:us-west-2:111111111111:secret:tempo-earthdata-abc123"
+    template = _template(EARTHDATA_SECRET_ARN=arn)
+    template.resource_count_is("AWS::CloudWatch::Alarm", 7)
+    template.has_resource_properties(
+        "AWS::CloudWatch::Alarm",
+        {
+            "MetricName": "EarthdataTokenTimeLeft",
+            "ComparisonOperator": "LessThanThreshold",
+            "Threshold": 7 * 86400,
+        },
+    )
+    template.has_resource_properties(
+        "AWS::Lambda::Function",
+        Match.object_like(
+            {
+                "Environment": {
+                    "Variables": Match.object_like(
+                        {"EARTHDATA_SECRET_ARN": arn, "CONCEPT_ID": Match.any_value()}
+                    )
+                }
+            }
+        ),
+    )
 
 
 def test_alarm_notifications_are_readable_and_actionable() -> None:
