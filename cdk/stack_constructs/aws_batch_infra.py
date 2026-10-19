@@ -99,8 +99,8 @@ class BatchInfra(Construct):
             allocation_strategy=batch.AllocationStrategy.SPOT_CAPACITY_OPTIMIZED,
             images=[ecs_machine_image],
             launch_template=launch_template,
-            instance_classes=None,
-            use_optimal_instance_classes=True,
+            # x86 to match the GC image (LINUX_AMD64) and the ECS-optimized AMI.
+            default_instance_classes=[batch.DefaultInstanceClass.X86_64],
             spot=True,
             minv_cpus=0,
             maxv_cpus=max_vcpu,

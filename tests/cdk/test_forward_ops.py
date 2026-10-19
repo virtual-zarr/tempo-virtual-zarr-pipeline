@@ -231,3 +231,13 @@ def test_gc_requires_a_vpc() -> None:
 
     with pytest.raises(ValueError, match="VPC_ID"):
         _template(GARBAGE_COLLECTION_FREQUENCY=2)
+
+
+def test_gc_compute_environment_uses_default_x86_instances() -> None:
+    """Batch's deprecated "optimal" type means C4/M4/R4; the default x86
+    classes track current families. x86 because the GC image is amd64."""
+    template = _template(GARBAGE_COLLECTION_FREQUENCY=2, VPC_ID="vpc-12345")
+    template.has_resource_properties(
+        "AWS::Batch::ComputeEnvironment",
+        {"ComputeResources": Match.object_like({"InstanceTypes": ["default_x86_64"]})},
+    )
