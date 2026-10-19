@@ -149,10 +149,11 @@ The steps, for hcho:
 
 4. When the backfill has promoted, set `FORWARD_QUEUE_ENABLED=true` and
    `POLL_START_ISO` to the inventory's build time in `.env_hcho`, then
-   redeploy. The poller's first poll then picks up granules published while
-   the backfill ran, and the re-sort job folds in anything that arrived out
-   of order. To smoke-test the consumer with hand-sent messages before
-   turning the poller on, see
+   redeploy. If you also turn `BACKFILL_ENABLED` off, set `STORE_EXISTS=true`
+   so the stack skips the deploy-time initialize Lambda. The poller's first
+   poll then picks up granules published while the backfill ran, and the
+   re-sort job folds in anything that arrived out of order. To smoke-test the
+   consumer with hand-sent messages before turning the poller on, see
    [Testing forward processing](testing-forward-processing.md).
 
 5. Verify after the promote, and periodically after that:

@@ -105,6 +105,10 @@ class StackSettings(BaseSettings):
     #   backfill disabled -> default enabled  (normal forward-only deployment)
     FORWARD_QUEUE_ENABLED: bool | None = None
 
+    # Set to true when the store already exists, for example after a backfill
+    # has promoted. The stack then does not deploy the initialize Lambda.
+    STORE_EXISTS: bool = False
+
     @property
     def s3_key_prefix(self) -> str | None:
         """Return the normalized global S3 key prefix."""
@@ -144,4 +148,8 @@ class StackSettings(BaseSettings):
     def _resolve_forward_queue_enabled(self) -> "StackSettings":
         if self.FORWARD_QUEUE_ENABLED is None:
             self.FORWARD_QUEUE_ENABLED = not self.BACKFILL_ENABLED
+        if self.STORE_EXISTS and self.BACKFILL_ENABLED:
+            raise ValueError("STORE_EXISTS conflicts with BACKFILL_ENABLED")
+        if self.STORE_EXISTS and not self.FORWARD_QUEUE_ENABLED:
+            raise ValueError("STORE_EXISTS requires FORWARD_QUEUE_ENABLED")
         return self

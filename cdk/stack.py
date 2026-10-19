@@ -441,10 +441,12 @@ class VirtualizarrSqsStack(Stack):
         if settings.FORWARD_QUEUE_ENABLED:
             self._forward_ops(settings)
 
-        # When backfill is enabled, initialize_backfill_store (the Step Functions
-        # Init step) is the sole store bootstrap. Skipping the deploy-time seed
-        # avoids a create_array("foo", ...) collision on `main`.
-        if not settings.BACKFILL_ENABLED:
+        # When backfill is enabled, the Step Functions Init step
+        # (initialize_backfill_store) creates the store. Deploying the initialize
+        # Lambda as well would make both create the same array on `main`.
+        # When STORE_EXISTS is set, the store is already there, so the Lambda
+        # is not needed.
+        if not settings.BACKFILL_ENABLED and not settings.STORE_EXISTS:
             self.initialize_icechunk_lambda = _lambda.DockerImageFunction(
                 self,
                 f"{settings.STACK_NAME}-initialize-icechunk-lambda",
