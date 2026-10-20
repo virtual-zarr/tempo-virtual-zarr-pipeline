@@ -6,7 +6,11 @@ from stack import VirtualizarrSqsStack
 
 
 def _template(
-    *, backfill: bool, forward: bool | None = None, stage: str = "dev"
+    *,
+    backfill: bool,
+    forward: bool | None = None,
+    stage: str = "dev",
+    store_exists: bool = False,
 ) -> Template:
     kwargs = dict(
         STAGE=stage,
@@ -14,6 +18,7 @@ def _template(
         ICECHUNK_BUCKET_NAME="ice-test",
         DATA_BUCKET_NAME="data-test",
         BACKFILL_ENABLED=backfill,
+        STORE_EXISTS=store_exists,
     )
     if forward is not None:
         kwargs["FORWARD_QUEUE_ENABLED"] = forward
@@ -68,6 +73,13 @@ def test_backfill_disabled_creates_initialize_lambda() -> None:
 
 def test_backfill_enabled_skips_initialize_lambda() -> None:
     assert "initializeicechunk" not in _resource_ids(_template(backfill=True))
+
+
+def test_store_exists_skips_initialize_lambda() -> None:
+    t = _template(backfill=False, store_exists=True)
+    assert "initializeicechunk" not in _resource_ids(t)
+    t.resource_count_is("AWS::StepFunctions::StateMachine", 0)
+    t.has_resource_properties("AWS::Lambda::EventSourceMapping", {"Enabled": True})
 
 
 def test_backfill_enabled_requires_data_bucket_name() -> None:
