@@ -27,13 +27,18 @@ class StackSettings(BaseSettings):
     # non-empty to bootstrap a new store. Passed into Lambda as the combined path.
     ICECHUNK_PREFIX: str | None = None
     # Key prefix in the Icechunk bucket where backfill inventories are uploaded
-    # (see README: s3://<bucket>/<S3_PREFIX>/inventory/). The backfill partition
-    # Lambda is granted read on this prefix only.
+    # (s3://<bucket>/<S3_PREFIX>/inventory/; see docs/reference/deploying.md).
+    # The backfill partition Lambda is granted read on this prefix only.
     INVENTORY_PREFIX: str | None = None
     DATA_BUCKET_NAME: str | None = None
     PROJECT: str = "virtualizarr-data-pipelines"
     SNS_TOPIC: str | None = None
     SQS_BATCH_SIZE: int = 10
+    # How long the consumer's event source waits to fill a batch. Every
+    # invocation commits once, so without a window a burst of arrivals
+    # becomes a commit per 1-2 messages, each rewriting every array's tail
+    # manifest. Costs up to this much ingest latency.
+    SQS_MAX_BATCHING_WINDOW_SECONDS: int = 300
 
     # Secrets Manager secret holding Earthdata Login material (JSON with
     # "EARTHDATA_TOKEN" or "EARTHDATA_USERNAME"+"EARTHDATA_PASSWORD",
@@ -100,6 +105,10 @@ class StackSettings(BaseSettings):
     #   backfill disabled -> default enabled  (normal forward-only deployment)
     FORWARD_QUEUE_ENABLED: bool | None = None
 
+    # Set to true when the store already exists, for example after a backfill
+    # has promoted. The stack then does not deploy the initialize Lambda.
+    STORE_EXISTS: bool = False
+
     @property
     def s3_key_prefix(self) -> str | None:
         """Return the normalized global S3 key prefix."""
@@ -139,4 +148,8 @@ class StackSettings(BaseSettings):
     def _resolve_forward_queue_enabled(self) -> "StackSettings":
         if self.FORWARD_QUEUE_ENABLED is None:
             self.FORWARD_QUEUE_ENABLED = not self.BACKFILL_ENABLED
+        if self.STORE_EXISTS and self.BACKFILL_ENABLED:
+            raise ValueError("STORE_EXISTS conflicts with BACKFILL_ENABLED")
+        if self.STORE_EXISTS and not self.FORWARD_QUEUE_ENABLED:
+            raise ValueError("STORE_EXISTS requires FORWARD_QUEUE_ENABLED")
         return self

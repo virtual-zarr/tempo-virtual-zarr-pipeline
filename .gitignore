@@ -228,3 +228,6 @@ __marimo__/
 node_modules/
 
 stores/
+
+cdk.context.json
+site/

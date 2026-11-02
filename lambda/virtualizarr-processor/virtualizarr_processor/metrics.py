@@ -7,9 +7,10 @@ Stage} (falsy values dropped) plus explicit extras (e.g. Route). Emitters
 and dashboard must agree, or the emission lands in a different CloudWatch
 series and the widget/alarm silently shows nothing.
 
-Emission is best-effort by design (see README): a metric must never fail
-the batch, run, or verify it describes, so emit_metric logs and swallows
-its own failures instead of every call site wrapping it.
+Emission is best-effort by design (see docs/reference/monitoring.md): a
+metric must never fail the batch, run, or verify it describes, so
+emit_metric logs and swallows its own failures instead of every call site
+wrapping it.
 
 aws-lambda-powertools is imported lazily: every Lambda package that calls
 emit_metric ships it, while cdk/stack.py and scripts/verify_store.py

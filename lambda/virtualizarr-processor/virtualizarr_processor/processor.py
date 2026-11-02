@@ -15,11 +15,14 @@ Environment variables:
   repository storage, or ``ICECHUNK_LOCAL_PATH`` for a local repository
   in tests.
 - ``VIRTUAL_CHUNK_PREFIX``: virtual chunk container prefix (default
-  ``s3://asdc-prod-protected/``; tests use ``file:///...``). Writers
-  register the S3 container without credentials (writing refs needs no
-  chunk access); readers open with ``authorize_virtual_reads=True``,
-  which authorizes it with EDL-derived temporary credentials or ambient
-  AWS credentials.
+  ``s3://asdc-prod-protected/``; tests use ``file:///...``). The container
+  is named ``asdc``. References are stored relative to it, as
+  ``vcc://asdc/<key>``. A reader can point a container with the same
+  name at another prefix that serves the same objects, such as the
+  DAAC's HTTPS distribution outside us-west-2. Writers register the
+  container without credentials (writing refs needs no chunk access).
+  Readers open with ``authorize_virtual_reads=True``, which authorizes
+  it with EDL-derived temporary credentials or ambient AWS credentials.
 - ``VIRTUAL_CHUNK_REGION``: region of the S3 container (default
   ``us-west-2``).
 
@@ -43,6 +46,7 @@ import numpy as np
 import xarray as xr
 import zarr
 from icechunk import ForkSession, Repository, Session
+from obstore.exceptions import UnauthenticatedError
 from pydantic_zarr.v3 import ArraySpec
 
 from virtualizarr_processor import manifest as manifest_module
@@ -56,16 +60,21 @@ from virtualizarr_processor.granule import (
     granule_time,
     icechunk_virtual_credentials,
     open_flat_granule,
+    reset_earthdata_auth,
     source_last_modified,
 )
 from virtualizarr_processor.inventory import SCHEMA_ID, BackfillInventory, GranuleEntry
 from virtualizarr_processor.manifest import (
     MANIFEST_ARRAYS,
     PIPELINE_STATE_ATTRIBUTES,
+    STAMP_ARRAY,
     STORE_META_ATTRIBUTE,
+    GranuleStamps,
     PendingLedger,
     StoreManifest,
+    stamp_value,
 )
+from virtualizarr_processor.metrics import emit_metric
 from virtualizarr_processor.resort import first_shifted_index
 from virtualizarr_processor.store_template import (
     AnyGroupSpec,
@@ -81,12 +90,64 @@ from virtualizarr_processor.typing import BranchInit, ProcessOutcome
 logger = logging.getLogger(__name__)
 
 DEFAULT_VIRTUAL_CHUNK_PREFIX = "s3://asdc-prod-protected/"
+# The container's name. References are stored as vcc://asdc/<key>. A
+# reader resolves them through the prefix of its own container with this
+# name. That is the s3:// bucket in us-west-2, or the https:// distribution
+# elsewhere. Do not rename it. Every stored reference uses this name.
+VIRTUAL_CHUNK_CONTAINER = "asdc"
+VCC_PREFIX = f"vcc://{VIRTUAL_CHUNK_CONTAINER}/"
 # Append-dimension slots (time chunks are one slot) per manifest split.
 # Bounds commit memory to one split's references instead of the archive's;
 # a full-axis read fetches n_slots/500 manifests per array, still cheap.
 MANIFEST_SPLIT_SLOTS = 500
 PARSE_ATTEMPTS = 3
 PARSE_BACKOFF_SECONDS = (5, 15)
+
+
+def _is_auth_error(exc: BaseException | None) -> bool:
+    """Whether ``exc`` or anything in its cause chain is a rejected token.
+
+    obstore wraps every credential-provider failure, including a 5xx or a
+    connection error from the s3credentials endpoint, in
+    UnauthenticatedError. Only the 401 means the token itself is bad. The
+    others are transient and keep the normal retry path.
+    """
+    while exc is not None:
+        if isinstance(exc, UnauthenticatedError) and "401" in str(exc):
+            return True
+        exc = exc.__cause__ or exc.__context__
+    return False
+
+
+def _raise_if_auth_error(exc: BaseException) -> None:
+    """Count a rejected token, drop the cached credentials, and re-raise.
+
+    An expired or revoked Earthdata token fails every granule. Raising
+    alarms the outage as one (EarthdataAuthErrors) instead of as rejected
+    granules. Resetting the cache lets the next invocation pick up a
+    rotated secret in this same container.
+    """
+    if _is_auth_error(exc):
+        emit_metric("EarthdataAuthErrors", 1)
+        reset_earthdata_auth()
+        raise exc
+
+
+def virtual_chunk_prefix() -> str:
+    """The container prefix every reference is written relative to."""
+    return os.environ.get("VIRTUAL_CHUNK_PREFIX", DEFAULT_VIRTUAL_CHUNK_PREFIX)
+
+
+def relative_location(url: str, prefix: str) -> str:
+    """Return ``url`` as a reference relative to the container at ``prefix``.
+
+    A URL outside the prefix stays absolute. No container covers it, so
+    the read fails, as it does today. Filing it under the wrong container
+    would hide the problem.
+    """
+    if url.startswith(prefix):
+        return VCC_PREFIX + url.removeprefix(prefix)
+    return url
 
 
 def _granule_ur(file_key: str) -> str:
@@ -121,6 +182,7 @@ class Processor:
         self._replaced: dict[int, GranuleEntry] = {}
         self._axis_end: float | None = None
         self._write_failed = False
+        self._deferred = False
 
     # -- repository ---------------------------------------------------------
 
@@ -151,7 +213,7 @@ class Processor:
                 os.environ["ICECHUNK_LOCAL_PATH"]
             )
 
-        prefix = os.environ.get("VIRTUAL_CHUNK_PREFIX", DEFAULT_VIRTUAL_CHUNK_PREFIX)
+        prefix = virtual_chunk_prefix()
         config = icechunk.RepositoryConfig.default()
         # Split chunk manifests along the append dimension. Icechunk's
         # default is one manifest per array, so once the full archive is
@@ -193,7 +255,9 @@ class Processor:
         else:
             raise ValueError(f"Unsupported VIRTUAL_CHUNK_PREFIX {prefix!r}")
         config.set_virtual_chunk_container(
-            icechunk.VirtualChunkContainer(prefix, chunk_store)
+            icechunk.VirtualChunkContainer(
+                prefix, chunk_store, name=VIRTUAL_CHUNK_CONTAINER
+            )
         )
         return icechunk.Repository.open_or_create(
             storage=storage,
@@ -269,6 +333,16 @@ class Processor:
         # promote lands data and state in one atomic reset.
         StoreManifest.write(session.store, inventory)
         PendingLedger.write(session.store, ())
+        # Every stamp starts as "". The inventory carries no stamps and the
+        # fork/reduce plumbing shouldn't grow a side channel for them.
+        # Unknown stamps self-heal through the poller's overlap window, one
+        # slow-path overwrite per granule.
+        GranuleStamps.initialize(
+            session.store,
+            size=len(inventory.granules),
+            chunk=self.config.time_chunk_size,
+            append_dim=self.config.append_dim,
+        )
 
         # allow_extra: the branch also carries whatever `main` already held.
         validate_store(
@@ -328,6 +402,17 @@ class Processor:
         else:
             repo.create_branch("resort", from_tip)
         session = repo.writable_session("resort")
+        # Capture the pre-fold stamps by UR before any resize touches the
+        # manifest arrays: relocated slots keep their stamp (their refs
+        # move untouched in reindex_resort_slots), inserted slots take the
+        # ledger entry's stamp if present, else "" to self-heal.
+        old_stamps = GranuleStamps.read(session.store)
+        stamps_by_ur: dict[str, str] = {}
+        if old_stamps is not None:
+            old_urs = np.asarray(
+                zarr.open_array(session.store, path=MANIFEST_ARRAYS[0])[:]
+            )
+            stamps_by_ur = dict(zip(map(str, old_urs), old_stamps))
         template = resize(self.template, {self.config.append_dim: len(merged.granules)})
         for path, node in template.to_flat().items():
             if (
@@ -339,6 +424,20 @@ class Processor:
                 array.resize(node.shape)
         zarr.open_array(session.store, path="time")[:] = merged.times()
         StoreManifest.write(session.store, merged)
+        GranuleStamps.initialize(
+            session.store,
+            size=len(merged.granules),
+            chunk=self.config.time_chunk_size,
+            append_dim=self.config.append_dim,
+        )
+        GranuleStamps.write(
+            session.store,
+            [
+                stamps_by_ur.get(entry.granule_ur)
+                or (stamp_value(entry.stamp) if entry.stamp else "")
+                for entry in merged.granules
+            ],
+        )
         validate_store(
             template,
             zarr.open_group(session.store, mode="r"),
@@ -383,7 +482,11 @@ class Processor:
                 continue
             if self.config.append_dim not in node.dimension_names:
                 continue
-            if path.lstrip("/") in (self.config.append_dim, *MANIFEST_ARRAYS):
+            if path.lstrip("/") in (
+                self.config.append_dim,
+                *MANIFEST_ARRAYS,
+                STAMP_ARRAY,
+            ):
                 continue  # rewritten wholesale at init, not relocated
             axis_pos = node.dimension_names.index(self.config.append_dim)
             chunk_shape = node.chunk_grid["configuration"]["chunk_shape"]
@@ -497,7 +600,7 @@ class Processor:
             ):
                 continue
             name = path.lstrip("/")
-            if name in (self.config.append_dim, *MANIFEST_ARRAYS):
+            if name in (self.config.append_dim, *MANIFEST_ARRAYS, STAMP_ARRAY):
                 continue
             chunk_shape = node.chunk_grid["configuration"]["chunk_shape"]
             expected = math.prod(
@@ -532,9 +635,14 @@ class Processor:
         seconds throughout. Dropping ``time`` leaves the axis written at
         init untouched, and clearing the granule attributes keeps store
         attributes template-only (differing group-attribute updates from
-        parallel forks would also fail the merge).
+        parallel forks would also fail the merge). The parser's absolute
+        URLs are rewritten as references relative to the named container
+        (see :func:`relative_location`).
         """
-        vds = vds.drop_vars("time")
+        prefix = virtual_chunk_prefix()
+        vds = vds.drop_vars("time").vz.rename_paths(
+            lambda url: relative_location(url, prefix)
+        )
         vds.attrs = {}
         vds.vz.to_icechunk(
             store,  # type: ignore[arg-type]
@@ -582,7 +690,7 @@ class Processor:
     def _open_with_retry(self, file_key: str) -> xr.Dataset:
         """Parse the granule, retrying transient errors with backoff.
 
-        Validation errors are not retried. The retries keep object-store
+        Validation and credential errors are not retried. The retries keep object-store
         throttling under backfill concurrency from failing a whole batch.
         """
         for attempt in range(PARSE_ATTEMPTS):
@@ -590,8 +698,8 @@ class Processor:
                 return open_flat_granule(file_key, self.config)
             except GranuleValidationError:
                 raise
-            except Exception:
-                if attempt == PARSE_ATTEMPTS - 1:
+            except Exception as e:
+                if attempt == PARSE_ATTEMPTS - 1 or _is_auth_error(e):
                     raise
                 delay = PARSE_BACKOFF_SECONDS[
                     min(attempt, len(PARSE_BACKOFF_SECONDS) - 1)
@@ -649,6 +757,12 @@ class Processor:
                 "built_at": datetime.now(timezone.utc).isoformat(),
             }
             PendingLedger.write(session.store, ())
+            GranuleStamps.initialize(
+                session.store,
+                size=0,
+                chunk=self.config.time_chunk_size,
+                append_dim=self.config.append_dim,
+            )
             validate_store(
                 template,
                 zarr.open_group(session.store, mode="r"),
@@ -663,6 +777,7 @@ class Processor:
         self._replaced = {}
         self._axis_end = None
         self._write_failed = False
+        self._deferred = False
         return repo.writable_session("main")
 
     @property
@@ -687,17 +802,83 @@ class Processor:
             return self._appended[index - appended_start].granule_ur
         return None
 
+    def _unchanged_redelivery(self, file_key: str, store: object) -> bool:
+        """True when this delivery's source object still carries the exact
+        stamp its slot (or pending-ledger entry) was written with.
+
+        The stamp is the same change signal the read path lives by. An
+        equal stamp means the slot's existing references read correctly
+        and rewriting would reproduce them, so validation was already
+        done on these bytes and can be skipped. One HEAD request, no
+        parse. A store without the stamp array reads as all unknown and
+        disables this path.
+        """
+        stamps = GranuleStamps.read(cast(icechunk.IcechunkStore, store))
+        if stamps is None:
+            return False
+        candidate = source_last_modified(file_key) + timedelta(seconds=1)
+        ur = _granule_ur(file_key)
+        # Batch-local state first, as in _batch_ur_at, since a UR this batch
+        # already wrote is not yet in the committed arrays.
+        for entry in (*self._appended, *self._replaced.values()):
+            if entry.granule_ur == ur:
+                return entry.stamp == candidate
+        urs = [
+            str(v)
+            for v in np.asarray(
+                zarr.open_array(store, path=MANIFEST_ARRAYS[0])[:]  # type: ignore[arg-type]
+            )
+        ]
+        if ur in urs:
+            index = urs.index(ur)
+            # A stamp array shorter than the manifest (appends committed
+            # by pre-stamp code) reads as unknown for the missing tail.
+            stored = stamps[index] if index < len(stamps) else ""
+            return bool(stored) and stored == stamp_value(candidate)
+        return any(
+            entry.granule_ur == ur and entry.stamp == candidate
+            for entry in PendingLedger.read(cast(icechunk.IcechunkStore, store))
+        )
+
     def process_file(self, file_key: str, session: Session) -> ProcessOutcome:
         """Validate one granule and route it: append, overwrite, defer, or reject."""
         try:
+            if self._unchanged_redelivery(file_key, session.store):
+                # Freshness must keep emitting on invocations that commit
+                # nothing (overnight every batch is all-UNCHANGED), so
+                # track the axis end here too: one tail-chunk read.
+                axis_array = zarr.open_array(session.store, path="time")
+                if axis_array.shape[0]:
+                    self._axis_end = float(np.asarray(axis_array[-1]))
+                logger.info(
+                    "process_file: %s is unchanged since its slot was "
+                    "written; skipping parse and write",
+                    file_key,
+                )
+                return ProcessOutcome.UNCHANGED
+        except Exception as e:
+            # A HEAD failure lands here and falls through to the parse,
+            # whose first step is the same HEAD, as before. A rejected
+            # token would only fail there again, so raise once, here.
+            _raise_if_auth_error(e)
+            logger.warning(
+                "process_file: unchanged fast path failed for %s; parsing",
+                file_key,
+                exc_info=True,
+            )
+        try:
             vds, stamp = self._parse_and_validate(file_key)
-        except Exception:
+        except Exception as e:
+            _raise_if_auth_error(e)
             logger.exception("process_file: validation failed for %s", file_key)
             return ProcessOutcome.REJECTED
         try:
             time_value = float(np.asarray(vds["time"].values)[0])
             entry = GranuleEntry(
-                url=file_key, granule_ur=_granule_ur(file_key), time=time_value
+                url=file_key,
+                granule_ur=_granule_ur(file_key),
+                time=time_value,
+                stamp=stamp,
             )
             axis = np.asarray(zarr.open_array(session.store, path="time")[:])
             if axis.size:
@@ -778,6 +959,7 @@ class Processor:
             # it for the scheduled re-sort job; the ledger update is
             # part of this session and commits with the batch.
             PendingLedger.append(session.store, [entry])
+            self._deferred = True
             logger.info(
                 "process_file: deferred out-of-order granule %s (time %r) "
                 "to the pending ledger",
@@ -808,6 +990,16 @@ class Processor:
                 "a granule failed mid-write; discarding the batch session "
                 "instead of committing partial writes"
             )
+        if not (self._appended or self._replaced or self._deferred):
+            # An all-UNCHANGED batch changes nothing in the session and
+            # should commit nothing. Avoiding no-op snapshots (GC, mirror
+            # copies, time-travel history) is half the point of the fast path.
+            logger.info(
+                "commit_processed_files: batch made no store changes; "
+                "skipping commit at %s",
+                session.snapshot_id,
+            )
+            return cast(str, session.snapshot_id)
         if self._appended or self._replaced:
             axis_size = zarr.open_array(session.store, path="time").shape[0]
             ur_array = zarr.open_array(session.store, path="granule_ur")
@@ -821,6 +1013,18 @@ class Processor:
             for index, entry in self._replaced.items():
                 ur_array[index] = entry.granule_ur
                 url_array[index] = entry.url
+            # Record each written slot's stamp in the same session as the
+            # writes it describes (a store without the array stays without
+            # it until an init path creates one).
+            if GranuleStamps.read(session.store) is not None:
+                stamp_array = zarr.open_array(session.store, path=STAMP_ARRAY)
+                stamp_array.resize((axis_size,))
+                for offset, entry in enumerate(self._appended):
+                    stamp_array[start + offset] = (
+                        stamp_value(entry.stamp) if entry.stamp else ""
+                    )
+                for index, entry in self._replaced.items():
+                    stamp_array[index] = stamp_value(entry.stamp) if entry.stamp else ""
             if StoreManifest.read(session.store) is None:
                 raise StoreValidationError(
                     [
@@ -836,4 +1040,11 @@ class Processor:
     def garbage_collect(self, expiry_time: datetime) -> icechunk.GCSummary:
         repo = self.open_backfill_repo()
         repo.expire_snapshots(older_than=expiry_time)
-        return repo.garbage_collect(delete_object_older_than=expiry_time)
+        # icechunk's default lets 512 MiB of compressed manifests be in
+        # flight, which decode to several times that: too close to the GC
+        # Batch job's 2000 MB (cdk/stack.py). A smaller budget only slows
+        # the walk; it never changes what is deleted.
+        return repo.garbage_collect(
+            delete_object_older_than=expiry_time,
+            max_compressed_manifest_mem_bytes=128 * 1024 * 1024,
+        )

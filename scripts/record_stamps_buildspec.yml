@@ -1,0 +1,17 @@
+# Buildspec for stamp-recording runs of the stack's InventoryBuild
+# CodeBuild project. scripts/run_codebuild.sh -R selects it per build with
+# --buildspec-override. The project's default buildspec stays
+# scripts/inventory_buildspec.yml. It runs scripts/record_stamps.py
+# in-region against the store the project env points at. Every unknown
+# stamp costs one HEAD request with the DAAC's region-locked credentials.
+# RECORD_STAMPS_ARGS carries extra flags, for example "--branch main".
+version: 0.2
+
+phases:
+  install:
+    commands:
+      - curl -LsSf https://astral.sh/uv/install.sh | sh
+  build:
+    commands:
+      - export PATH="$HOME/.local/bin:$PATH"
+      - uv run scripts/record_stamps.py ${RECORD_STAMPS_ARGS}

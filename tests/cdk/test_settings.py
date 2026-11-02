@@ -1,3 +1,4 @@
+import pytest
 from settings import StackSettings
 
 
@@ -38,6 +39,22 @@ def test_forward_queue_disabled_explicit_with_backfill_off() -> None:
         FORWARD_QUEUE_ENABLED=False,
     )
     assert settings.FORWARD_QUEUE_ENABLED is False
+
+
+@pytest.mark.parametrize(
+    ("overrides", "match"),
+    [
+        ({"BACKFILL_ENABLED": True}, "BACKFILL_ENABLED"),
+        ({"FORWARD_QUEUE_ENABLED": False}, "FORWARD_QUEUE_ENABLED"),
+    ],
+)
+def test_store_exists_rejects_conflicting_settings(
+    overrides: dict[str, bool], match: str
+) -> None:
+    with pytest.raises(ValueError, match=match):
+        StackSettings(
+            STAGE="dev", ACCOUNT_ID="111111111111", STORE_EXISTS=True, **overrides
+        )
 
 
 def test_s3_prefix_scopes_the_icechunk_prefix() -> None:

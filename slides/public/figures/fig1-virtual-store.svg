@@ -1,0 +1,62 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 390" role="img" aria-label="The Icechunk store holds chunk references and bookkeeping only; readers fetch data bytes directly from the NASA source bucket." font-family="'Comic Shanns Mono', 'Comic Mono', 'Comic Neue', 'Comic Sans MS', cursive">
+  <defs>
+    <marker id="a-ink" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#1e1e1e"/></marker>
+    <marker id="a-sig" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#e8590c"/></marker>
+    <pattern id="a-hg" patternUnits="userSpaceOnUse" width="7" height="7" patternTransform="rotate(45)">
+      <rect width="7" height="7" fill="#40c057" opacity="0.28"/>
+      <line x1="0" y1="0" x2="0" y2="7" stroke="#2f9e44" stroke-width="0.9" opacity="0.55"/>
+      <line x1="0" y1="3.5" x2="7" y2="3.5" stroke="#2f9e44" stroke-width="0.9" opacity="0.55"/>
+    </pattern>
+  </defs>
+  <rect x="0" y="0" width="960" height="390" fill="#FCFBF8"/>
+  <text x="24" y="38" font-size="16" font-weight="700" fill="#1e1e1e">The store holds references to bytes in the source bucket</text>
+
+  <!-- source bucket -->
+  <rect x="40" y="70" width="260" height="240" rx="10" fill="#FFFFFF" stroke="#1e1e1e" stroke-width="1.5"/>
+  <rect x="54" y="82" width="34" height="34" rx="6" fill="url(#a-hg)" stroke="#2f9e44" stroke-width="1.3"/>
+  <path d="M 63,92 A 8,3 0 0 0 79,92 L 76,106 A 5,2 0 0 1 66,106 Z" fill="none" stroke="#1e1e1e" stroke-width="1.4"/>
+  <text x="96" y="97" font-size="12.5" font-weight="700" fill="#1e1e1e">NASA ASDC bucket</text>
+  <text x="96" y="112" font-size="10" fill="#868e96">asdc-prod-protected &#183; us-west-2</text>
+  <rect x="56" y="128" width="228" height="42" rx="8" fill="#d0ebff" stroke="#1971c2" stroke-width="1.3"/>
+  <text x="68" y="153" font-size="10.5" fill="#1e1e1e">TEMPO_NO2_L3 &#8230;T1742Z.nc</text>
+  <rect x="56" y="182" width="228" height="42" rx="8" fill="#d0ebff" stroke="#1971c2" stroke-width="1.3"/>
+  <text x="68" y="207" font-size="10.5" fill="#1e1e1e">TEMPO_NO2_L3 &#8230;T1842Z.nc</text>
+  <rect x="56" y="236" width="228" height="42" rx="8" fill="#d0ebff" stroke="#1971c2" stroke-width="1.3"/>
+  <text x="68" y="261" font-size="10.5" fill="#1e1e1e">TEMPO_NO2_L3 &#8230;T1942Z.nc</text>
+
+  <!-- icechunk store -->
+  <rect x="400" y="80" width="240" height="220" rx="10" fill="#ebfbee" stroke="#2f9e44" stroke-width="1.5"/>
+  <rect x="414" y="92" width="34" height="34" rx="6" fill="url(#a-hg)" stroke="#2f9e44" stroke-width="1.3"/>
+  <path d="M 423,102 A 8,3 0 0 0 439,102 L 436,116 A 5,2 0 0 1 426,116 Z" fill="none" stroke="#1e1e1e" stroke-width="1.4"/>
+  <text x="456" y="107" font-size="12.5" font-weight="700" fill="#1e1e1e">Icechunk repo (S3)</text>
+  <text x="456" y="122" font-size="9.5" fill="#868e96">chunk refs &#183; manifest &#183; ledger</text>
+  <rect x="420" y="150" width="62" height="36" rx="6" fill="#d0ebff" stroke="#1971c2" stroke-width="1.2"/>
+  <text x="451" y="172" font-size="10.5" fill="#1e1e1e" text-anchor="middle">17:42</text>
+  <rect x="489" y="150" width="62" height="36" rx="6" fill="#d0ebff" stroke="#1971c2" stroke-width="1.2"/>
+  <text x="520" y="172" font-size="10.5" fill="#1e1e1e" text-anchor="middle">18:42</text>
+  <rect x="558" y="150" width="62" height="36" rx="6" fill="#d0ebff" stroke="#1971c2" stroke-width="1.2"/>
+  <text x="589" y="172" font-size="10.5" fill="#1e1e1e" text-anchor="middle">19:42</text>
+  <text x="420" y="222" font-size="9.5" fill="#868e96">time axis = exact in-file /time[0]</text>
+  <text x="420" y="246" font-size="9.5" fill="#1e1e1e">manifest[slot] = granule UR</text>
+  <text x="420" y="262" font-size="9.5" fill="#1e1e1e">refs stamped with source mtime</text>
+  <text x="420" y="286" font-size="9.5" fill="#868e96">~KB per granule, refs only</text>
+
+  <!-- readers -->
+  <rect x="740" y="110" width="180" height="72" rx="10" fill="#FFFFFF" stroke="#1e1e1e" stroke-width="1.5"/>
+  <text x="756" y="140" font-size="12.5" font-weight="700" fill="#1e1e1e">readers</text>
+  <text x="756" y="158" font-size="10.5" fill="#868e96">xarray &#183; titiler &#183; QA</text>
+
+  <!-- refs from granules to store -->
+  <line x1="284" y1="149" x2="396" y2="149" stroke="#1e1e1e" stroke-width="1.5" stroke-dasharray="5 4" marker-end="url(#a-ink)"/>
+  <line x1="284" y1="203" x2="396" y2="203" stroke="#1e1e1e" stroke-width="1.5" stroke-dasharray="5 4" marker-end="url(#a-ink)"/>
+  <line x1="284" y1="257" x2="396" y2="257" stroke="#1e1e1e" stroke-width="1.5" stroke-dasharray="5 4" marker-end="url(#a-ink)"/>
+  <text x="325" y="140" font-size="10.5" fill="#1e1e1e">chunk refs</text>
+
+  <!-- reader opens store -->
+  <line x1="738" y1="146" x2="644" y2="146" stroke="#1e1e1e" stroke-width="1.5" stroke-dasharray="5 4" marker-end="url(#a-ink)"/>
+  <text x="691" y="134" font-size="10.5" fill="#1e1e1e" text-anchor="middle">open: metadata</text>
+
+  <!-- reader fetches bytes from source -->
+  <path d="M 800,184 C 786,320 500,344 308,298" fill="none" stroke="#e8590c" stroke-width="1.8" stroke-dasharray="6 4" marker-end="url(#a-sig)"/>
+  <text x="560" y="366" font-size="11" font-weight="700" fill="#e8590c" text-anchor="middle">byte-range GETs to the source files</text>
+</svg>

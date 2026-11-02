@@ -1,0 +1,149 @@
+/* The zarr.dev and virtualzarr.cloud look: coral-to-magenta gradient,
+   magenta accent, Inter, monospace uppercase eyebrows, soft cards. */
+
+:root {
+  --slidev-theme-primary: #c93d80;
+  --vz-primary-dark: #952f7c;
+  --vz-gradient: linear-gradient(135deg, #e58077 0%, #e34b75 50%, #bb1085 100%);
+  --vz-text-gradient: linear-gradient(120deg, #d97e6a, #c93d80);
+  --vz-muted: #6b6b76;
+  --vz-divider: #e4e4e9;
+  --vz-soft: #f7f7f8;
+  --vz-mono: ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, monospace;
+}
+
+.slidev-layout {
+  font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+}
+
+.slidev-layout h1 {
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.slidev-layout h1 .accent {
+  background: var(--vz-text-gradient);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.slidev-layout a {
+  color: var(--slidev-theme-primary);
+  border-bottom: none;
+}
+
+.slidev-layout ul li::marker,
+.slidev-layout ol li::marker {
+  color: var(--slidev-theme-primary);
+}
+
+.slidev-layout code {
+  color: var(--vz-primary-dark);
+}
+
+.slidev-layout pre code {
+  color: inherit;
+}
+
+/* Cover and section slides sit on the hero gradient with white text. */
+.slidev-layout.gradient {
+  background: var(--vz-gradient);
+  color: white;
+}
+
+.slidev-layout.gradient h1,
+.slidev-layout.gradient h2,
+.slidev-layout.gradient p,
+.slidev-layout.gradient a {
+  color: white;
+}
+
+.slidev-layout.gradient .eyebrow {
+  color: rgba(255, 255, 255, 0.85);
+}
+
+/* Monospace uppercase label above a title or inside a card. */
+.eyebrow {
+  display: block;
+  font-family: var(--vz-mono);
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--vz-muted);
+  margin-bottom: 0.4rem;
+}
+
+/* Cards and stat tiles, after zarr.dev's adopter cards. */
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(0, 1fr));
+  gap: 0.75rem;
+  margin-top: 1.25rem;
+}
+
+.card {
+  background: var(--vz-soft);
+  border: 1px solid var(--vz-divider);
+  border-radius: 10px;
+  padding: 0.9rem 1rem;
+  font-size: 0.95rem;
+  line-height: 1.45;
+}
+
+.card b {
+  display: block;
+  margin-bottom: 0.3rem;
+}
+
+.card code {
+  font-size: 0.8em;
+  overflow-wrap: anywhere;
+}
+
+.stat b {
+  font-family: var(--vz-mono);
+  font-size: 2.4rem;
+  font-weight: 400;
+  line-height: 1.05;
+  letter-spacing: -0.02em;
+  color: var(--vz-primary-dark);
+}
+
+.stat b small {
+  font-size: 1rem;
+}
+
+.stat em {
+  display: block;
+  margin-top: 0.4rem;
+  font-style: normal;
+  font-size: 0.8rem;
+  color: var(--vz-muted);
+}
+
+.todo {
+  color: var(--slidev-theme-primary);
+  font-family: var(--vz-mono);
+  font-size: 0.75rem;
+}
+
+/* Figures stay inside the slide. Slidev scales a fixed 980 by 552 px
+   slide to the window, so limits are in slide pixels, never vh. */
+.slidev-layout img.figure {
+  max-height: 360px;
+  max-width: 100%;
+  width: auto;
+  height: auto;
+  margin: 0.5rem auto 0;
+  display: block;
+}
+
+.slidev-layout table {
+  font-size: 0.85rem;
+}
+
+.slidev-layout td,
+.slidev-layout th {
+  padding: 0.3rem 0.6rem;
+}

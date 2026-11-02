@@ -14,13 +14,14 @@ Kept lightweight on purpose: stdlib HTTP against CMR's public search API
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Optional
+from typing import TYPE_CHECKING, Any, Callable, NamedTuple, Optional
 
 if TYPE_CHECKING:
     from mypy_boto3_sqs.type_defs import SendMessageBatchRequestEntryTypeDef
@@ -36,6 +37,115 @@ DEFAULT_LOOKBACK = timedelta(days=8)
 
 # (concept_id, since_iso, search_after) -> (items, next_search_after)
 FetchPage = Callable[[str, str, Optional[str]], tuple[list[dict], Optional[str]]]
+
+# First publication of a scan older than this is a historical arrival
+# (RETROACTIVE), not a fresh scan: production lag is ~3.5 h (measured
+# by scripts/measure_publish_order.py), so 24 h is a generous margin.
+FRESH_SCAN_WINDOW = timedelta(hours=24)
+
+# Metric identity duplicated from virtualizarr_processor.metrics — the
+# poller image deliberately ships without that package (it would drag in
+# the whole processing stack). tests/test_cmr_poller.py pins the two.
+NAMESPACE = "TempoPipeline"
+DIMENSION_ENV = {"Collection": "TEMPO_COLLECTION", "Stage": "STAGE"}
+
+
+class Arrival(NamedTuple):
+    cls: str  # FRESH | RETROACTIVE | REDELIVERED
+    published: datetime
+    scan_start: datetime | None
+    production: datetime | None
+
+
+def _iso(value: str) -> datetime:
+    parsed = datetime.fromisoformat(value)
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def classify_arrival(item: dict, watermark: datetime, now: datetime) -> Arrival:
+    """Classify one granule the poll returned against the previous poll's watermark.
+
+    Only FRESH arrivals feed the lag metrics. Everything is enqueued; the
+    consumer's routing reports what each granule meant for the store as
+    GranulesRouted, so the poller keeps no counts of its own. A republished
+    fresh scan also looks FRESH here, since CMR keeps only the latest
+    revision's date. The consumer excludes it by emitting VirtualizationLag
+    for APPENDED only.
+    """
+    published = _iso(item["meta"]["revision-date"])
+    if published <= watermark:
+        return Arrival("REDELIVERED", published, None, None)
+    umm = item.get("umm", {})
+    scan_start = _iso(umm["TemporalExtent"]["RangeDateTime"]["BeginningDateTime"])
+    production_raw = umm.get("DataGranule", {}).get("ProductionDateTime")
+    production = _iso(production_raw) if production_raw else None
+    cls = "FRESH" if scan_start >= now - FRESH_SCAN_WINDOW else "RETROACTIVE"
+    return Arrival(cls, published, scan_start, production)
+
+
+def _emit(name: str, value: float, unit: str = "Count") -> None:
+    """Best-effort EMF emission: log and swallow, never fail the poll.
+
+    Mirrors virtualizarr_processor.metrics.emit_metric, which the poller
+    image cannot import.
+    """
+    try:
+        from aws_lambda_powertools.metrics import MetricUnit, single_metric
+
+        dimensions = {
+            key: value_
+            for key, value_ in (
+                (k, os.environ.get(env)) for k, env in DIMENSION_ENV.items()
+            )
+            if value_
+        }
+        with single_metric(
+            name=name,
+            unit=MetricUnit(unit),
+            value=value,
+            namespace=NAMESPACE,
+            default_dimensions=dimensions,
+        ):
+            pass
+    except Exception:
+        logger.warning("Skipping %s emission", name, exc_info=True)
+
+
+def token_expiry(secret: str) -> datetime | None:
+    """The ``exp`` of the Earthdata token in ``secret``, or None if it holds none.
+
+    Accepts the secret shapes the consumer reads (virtualizarr_processor.
+    granule._earthdata_auth): a plain token, or JSON with EARTHDATA_TOKEN.
+    Username/password secrets have no token and so nothing to expire.
+    """
+    try:
+        data = json.loads(secret)
+    except ValueError:
+        data = secret
+    token = data.get("EARTHDATA_TOKEN") if isinstance(data, dict) else str(data)
+    if not token:
+        return None
+    payload = token.strip().split(".")[1]
+    claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+    return datetime.fromtimestamp(claims["exp"], timezone.utc)
+
+
+def _emit_token_time_left(secret_arn: str, now: datetime) -> None:
+    """Emit EarthdataTokenTimeLeft so the token alarms before it expires.
+
+    Best-effort like _emit: a bad secret must not stop the poll. The
+    consumer raises on the expired token anyway (EarthdataAuthErrors).
+    """
+    try:
+        import boto3
+
+        secret = boto3.client("secretsmanager").get_secret_value(SecretId=secret_arn)
+        expiry = token_expiry(secret["SecretString"])
+    except Exception:
+        logger.warning("Skipping EarthdataTokenTimeLeft emission", exc_info=True)
+        return
+    if expiry is not None:
+        _emit("EarthdataTokenTimeLeft", (expiry - now).total_seconds(), "Seconds")
 
 
 def direct_s3_url(umm: dict[str, Any]) -> str | None:
@@ -135,8 +245,8 @@ def _write_bytes(uri: str, data: bytes) -> None:
         Path(uri).write_bytes(data)
 
 
-def enqueue(queue_url: str, urls: list[str]) -> int:
-    """Enqueue every url, or raise.
+def enqueue(queue_url: str, messages: list[dict]) -> int:
+    """Enqueue every message, or raise.
 
     ``send_message_batch`` is not all-or-nothing: entries can fail while
     the call succeeds. Failed entries are retried once; if any still fail,
@@ -148,11 +258,11 @@ def enqueue(queue_url: str, urls: list[str]) -> int:
 
     client = boto3.client("sqs")
     sent = 0
-    for start in range(0, len(urls), 10):
-        batch = urls[start : start + 10]
+    for start in range(0, len(messages), 10):
+        batch = messages[start : start + 10]
         entries: "list[SendMessageBatchRequestEntryTypeDef]" = [
-            {"Id": str(i), "MessageBody": json.dumps({"url": url})}
-            for i, url in enumerate(batch)
+            {"Id": str(i), "MessageBody": json.dumps(message)}
+            for i, message in enumerate(batch)
         ]
         for attempt in range(2):
             failed = client.send_message_batch(QueueUrl=queue_url, Entries=entries).get(
@@ -178,21 +288,33 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     watermark_uri = os.environ["POLL_WATERMARK_URI"]
 
     started = datetime.now(timezone.utc)
+    if secret_arn := os.environ.get("EARTHDATA_SECRET_ARN"):
+        _emit_token_time_left(secret_arn, started)
     watermark = read_watermark(watermark_uri) or initial_watermark(started)
     since = watermark - OVERLAP
 
     items = search_granules(concept_id, since.isoformat())
-    urls = []
+    messages = []
     for item in items:
         url = direct_s3_url(item.get("umm", {}))
-        if url:
-            urls.append(url)
-        else:
+        if not url:
             logger.warning(
                 "Granule without a direct s3 .nc link",
                 extra={"meta": item.get("meta", {})},
             )
-    sent = enqueue(queue_url, urls)
+            continue
+        arrival = classify_arrival(item, watermark, started)
+        message = {"url": url}
+        if arrival.cls == "FRESH":
+            # The consumer turns this into VirtualizationLag at commit.
+            message["published"] = arrival.published.isoformat()
+            if arrival.production and arrival.scan_start:
+                production_lag = arrival.production - arrival.scan_start
+                cmr_lag = arrival.published - arrival.production
+                _emit("ProductionLag", production_lag.total_seconds(), "Seconds")
+                _emit("CmrLag", cmr_lag.total_seconds(), "Seconds")
+        messages.append(message)
+    sent = enqueue(queue_url, messages)
     # The watermark is the poll start time; the overlap window plus the
     # consumer's idempotent routing absorb any boundary imprecision.
     write_watermark(watermark_uri, started)

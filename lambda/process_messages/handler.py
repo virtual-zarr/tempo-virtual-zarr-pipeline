@@ -5,11 +5,13 @@ subscription is ever wired up, from S3 object-created notifications. Each
 batch is pre-sorted by filename timestamp so adjacent scans arriving
 together append in order. A REJECTED granule fails its record (SQS retry,
 then DLQ); DEFERRED (out-of-order, recorded in the pending ledger),
-APPENDED, and OVERWRITTEN are all successful consumption.
+APPENDED, OVERWRITTEN, and UNCHANGED (a redelivery of an unchanged
+source, skipped without a parse or write) are all successful consumption.
 """
 
 import json
 from collections import Counter
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 from aws_lambda_powertools import Logger, Tracer
@@ -38,6 +40,7 @@ batch_processor = BatchProcessor(event_type=EventType.SQS)
 ROUTES = {
     ProcessOutcome.APPENDED: "APPENDED",
     ProcessOutcome.OVERWRITTEN: "OVERWRITTEN",
+    ProcessOutcome.UNCHANGED: "UNCHANGED",
     ProcessOutcome.DEFERRED: "PENDING",
 }
 
@@ -103,6 +106,7 @@ def handler(event: Any, context: LambdaContext) -> PartialItemFailureResponse:
     repo = virtualizarr_processor.open_initialized_repo()
     session = virtualizarr_processor.initialize_session(repo=repo)
     counts: "Counter[ProcessOutcome]" = Counter()
+    published_fresh: list[str] = []
 
     @tracer.capture_method
     def record_handler(record: SQSRecord) -> None:
@@ -136,13 +140,25 @@ def handler(event: Any, context: LambdaContext) -> PartialItemFailureResponse:
             raise RuntimeError(f"granule rejected: {granule_url(message)}")
         if outcome is not None:
             counts[outcome] += 1
+            if outcome is ProcessOutcome.APPENDED and message.get("published"):
+                # Only fresh arrivals carry the field. The poller omits it on
+                # redeliveries and retroactive arrivals, whose lag would
+                # measure poll cadence or backlog. OVERWRITTEN is excluded
+                # too, since a republished scan's revision-date is the
+                # redelivery rather than its first publication.
+                published_fresh.append(str(message["published"]))
 
     with batch_processor(records=records, handler=record_handler) as batch:
         batch.process()
     # Now attempt the commit (also updates the store manifest):
     try:
+        parent_snapshot = session.snapshot_id
         snapshot_id = virtualizarr_processor.commit_processed_files(session=session)
-        logger.info(f"Committed to {snapshot_id}")
+        if snapshot_id == parent_snapshot:
+            # An all-UNCHANGED batch: consumed without a commit, on purpose.
+            logger.info(f"No store changes; snapshot stays {snapshot_id}")
+        else:
+            logger.info(f"Committed to {snapshot_id}")
     except Exception:
         # The pending-ledger write lives in this same session, so a failed
         # commit persists nothing for DEFERRED records either; all records,
@@ -165,6 +181,16 @@ def handler(event: Any, context: LambdaContext) -> PartialItemFailureResponse:
     for outcome, route in ROUTES.items():
         if counts[outcome]:
             emit_metric("GranulesRouted", counts[outcome], Route=route)
+    committed_at = datetime.now(timezone.utc)
+    for published in published_fresh:
+        try:
+            lag = (committed_at - datetime.fromisoformat(published)).total_seconds()
+        except (ValueError, TypeError):
+            logger.warning(
+                "Unparseable published timestamp", extra={"published": published}
+            )
+            continue
+        emit_metric("VirtualizationLag", lag, MetricUnit.Seconds)
     axis_end = virtualizarr_processor.axis_end
     if axis_end is not None:
         emit_metric("AxisEndLag", axis_end_lag(axis_end), MetricUnit.Seconds)

@@ -1,6 +1,7 @@
 """CDK assertions for the forward-processing operational pieces."""
 
 import aws_cdk as cdk
+import pytest
 from aws_cdk.assertions import Match, Template
 from settings import StackSettings
 from stack import VirtualizarrSqsStack
@@ -65,6 +66,27 @@ def test_forward_state_env_reaches_lambdas() -> None:
                     )
                 },
                 "ReservedConcurrentExecutions": 1,
+            }
+        ),
+    )
+
+
+def test_poller_env_carries_metric_identity() -> None:
+    """The poller emits ProductionLag/CmrLag itself, so it needs the
+    {Collection, Stage} dimension env."""
+    _template().has_resource_properties(
+        "AWS::Lambda::Function",
+        Match.object_like(
+            {
+                "Environment": {
+                    "Variables": Match.object_like(
+                        {
+                            "CONCEPT_ID": Match.any_value(),
+                            "TEMPO_COLLECTION": "hcho",
+                            "STAGE": "dev",
+                        }
+                    )
+                }
             }
         ),
     )
@@ -150,12 +172,70 @@ def test_s3_prefix_scopes_state_env_and_run_artifact_lifecycle() -> None:
 
 def test_alarms_cover_dlq_consumer_and_scheduled_jobs() -> None:
     """Failure states are fail-safe but silent; alarms make them visible."""
-    # Forward deployment: DLQ depth, consumer, re-sort, and poller errors,
-    # plus the AxisEndLag staleness alarm.
-    _template().resource_count_is("AWS::CloudWatch::Alarm", 5)
-    # Backfill-only deployment: no scheduled forward jobs and no freshness alarm
-    # (a backfill-only stack has no freshness contract).
-    _template(BACKFILL_ENABLED=True).resource_count_is("AWS::CloudWatch::Alarm", 2)
+    # Forward deployment: DLQ depth, consumer, Earthdata auth, re-sort, and
+    # poller errors, plus the AxisEndLag staleness alarm.
+    _template().resource_count_is("AWS::CloudWatch::Alarm", 6)
+    # Backfill-only deployment: DLQ, consumer and Earthdata auth only. It has
+    # no scheduled forward jobs and no freshness alarm (a backfill-only stack
+    # has no freshness contract).
+    _template(BACKFILL_ENABLED=True).resource_count_is("AWS::CloudWatch::Alarm", 3)
+
+
+def test_token_expiry_alarm_needs_the_earthdata_secret() -> None:
+    """The poller reads the secret for the token's exp and alarms a week
+    before it lapses. Without a secret there is no token to watch."""
+    arn = "arn:aws:secretsmanager:us-west-2:111111111111:secret:tempo-earthdata-abc123"
+    template = _template(EARTHDATA_SECRET_ARN=arn)
+    template.resource_count_is("AWS::CloudWatch::Alarm", 7)
+    template.has_resource_properties(
+        "AWS::CloudWatch::Alarm",
+        {
+            "MetricName": "EarthdataTokenTimeLeft",
+            "ComparisonOperator": "LessThanThreshold",
+            "Threshold": 7 * 86400,
+        },
+    )
+    template.has_resource_properties(
+        "AWS::Lambda::Function",
+        Match.object_like(
+            {
+                "Environment": {
+                    "Variables": Match.object_like(
+                        {"EARTHDATA_SECRET_ARN": arn, "CONCEPT_ID": Match.any_value()}
+                    )
+                }
+            }
+        ),
+    )
+
+
+def test_alarm_notifications_are_readable_and_actionable() -> None:
+    """The SNS email leads with the alarm name and shows only the
+    description beyond raw metric math — the name must be the stack-prefixed
+    construct id (not the CDK physical-ID hash) and every description must
+    say where to look or what to do next."""
+    alarms = _template().find_resources("AWS::CloudWatch::Alarm")
+    assert alarms
+    for alarm in alarms.values():
+        props = alarm["Properties"]
+        assert props["AlarmName"].startswith("virtualizarr-data-pipelines-")
+        description = props["AlarmDescription"]
+        assert "logs" in description or "redrive" in description
+
+
+@pytest.mark.parametrize("alarm", ["ResortErrorsAlarm", "PollerErrorsAlarm"])
+def test_job_alarms_ignore_failures_the_async_retry_heals(alarm: str) -> None:
+    """Scheduled jobs run via async invoke, which retries a failed run twice.
+    A re-sort promote losing the CAS to a consumer commit, or a transient
+    CMR error, heals on retry; only an event that failed every attempt is
+    worth paging for."""
+    alarms = _template().find_resources("AWS::CloudWatch::Alarm")
+    (props,) = [
+        a["Properties"]
+        for a in alarms.values()
+        if a["Properties"]["AlarmName"].endswith(f"-{alarm}")
+    ]
+    assert props["MetricName"] == "AsyncEventsDropped"
 
 
 def test_alarm_email_wires_an_sns_topic() -> None:
@@ -180,3 +260,27 @@ def test_gc_requires_a_vpc() -> None:
 
     with pytest.raises(ValueError, match="VPC_ID"):
         _template(GARBAGE_COLLECTION_FREQUENCY=2)
+
+
+def test_gc_compute_environment_uses_default_x86_instances() -> None:
+    """Batch's deprecated "optimal" type means C4/M4/R4; the default x86
+    classes track current families. x86 because the GC image is amd64."""
+    template = _template(GARBAGE_COLLECTION_FREQUENCY=2, VPC_ID="vpc-12345")
+    template.has_resource_properties(
+        "AWS::Batch::ComputeEnvironment",
+        {"ComputeResources": Match.object_like({"InstanceTypes": ["default_x86_64"]})},
+    )
+
+
+def test_consumer_batches_arrivals_into_fewer_commits() -> None:
+    """Each consumer invocation commits once; the batching window keeps a
+    burst of arrivals from becoming a commit per message."""
+    t = _template()
+    t.has_resource_properties(
+        "AWS::Lambda::EventSourceMapping",
+        {"BatchSize": 10, "MaximumBatchingWindowInSeconds": 300},
+    )
+    t.has_resource_properties(
+        "AWS::SQS::Queue",
+        {"QueueName": Match.string_like_regexp("-queue$"), "VisibilityTimeout": 2100},
+    )

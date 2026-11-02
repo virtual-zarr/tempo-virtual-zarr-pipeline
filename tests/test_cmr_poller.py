@@ -4,7 +4,7 @@ import json
 import pathlib
 import sys
 from collections.abc import Iterator
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -13,8 +13,10 @@ import pytest
 from moto import mock_aws
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lambda"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from cmr_poller import handler as poller  # noqa: E402
+from tempo_fixtures import emf_blobs, emf_value  # noqa: E402
 
 
 def granule_item(name: str, with_s3: bool = True) -> dict:
@@ -27,6 +29,134 @@ def granule_item(name: str, with_s3: bool = True) -> dict:
             }
         )
     return {"meta": {"concept-id": name}, "umm": {"RelatedUrls": urls}}
+
+
+def _cmr_item(
+    name: str = "TEMPO_HCHO_L2_V03_20260917T120000Z_S001G01.nc",
+    revision_date: str = "2026-09-17T15:30:00Z",
+    revision_id: int = 2,
+    scan_start: str = "2026-09-17T12:00:00Z",
+    production: str | None = "2026-09-17T15:00:00Z",
+) -> dict:
+    item = granule_item(name)
+    item["meta"] = {"revision-date": revision_date, "revision-id": revision_id}
+    item["umm"]["TemporalExtent"] = {"RangeDateTime": {"BeginningDateTime": scan_start}}
+    if production:
+        item["umm"]["DataGranule"] = {"ProductionDateTime": production}
+    return item
+
+
+NOW = datetime(2026, 9, 17, 16, 0, tzinfo=timezone.utc)
+WATERMARK = datetime(2026, 9, 17, 15, 0, tzinfo=timezone.utc)
+
+
+def test_classify_arrival_three_classes() -> None:
+    # Only re-seen because of the overlap window: at/below the exact watermark.
+    redelivered = _cmr_item(revision_date="2026-09-17T14:59:00Z")
+    assert poller.classify_arrival(redelivered, WATERMARK, NOW).cls == "REDELIVERED"
+    # Publication of a recent scan; the revision id plays no part.
+    assert poller.classify_arrival(_cmr_item(), WATERMARK, NOW).cls == "FRESH"
+    assert (
+        poller.classify_arrival(_cmr_item(revision_id=4), WATERMARK, NOW).cls == "FRESH"
+    )
+    # Publication of an old scan (historical arrival).
+    retro = _cmr_item(scan_start="2026-08-01T12:00:00Z")
+    assert poller.classify_arrival(retro, WATERMARK, NOW).cls == "RETROACTIVE"
+
+
+def test_classify_arrival_tolerates_missing_production_datetime() -> None:
+    s = poller.classify_arrival(_cmr_item(production=None), WATERMARK, NOW)
+    assert s.cls == "FRESH" and s.production is None
+
+
+def test_metric_identity_matches_shared_module() -> None:
+    """The poller deliberately does not depend on virtualizarr-processor;
+    this pins its duplicated metric identity so the two cannot drift."""
+    from virtualizarr_processor import metrics
+
+    assert poller.NAMESPACE == metrics.NAMESPACE
+    assert poller.DIMENSION_ENV == metrics.DIMENSION_ENV
+
+
+def test_emit_writes_an_emf_blob_with_the_expected_dimensions(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The handler test monkeypatches `_emit` out, so exercise its real EMF
+    path directly."""
+    monkeypatch.setenv("TEMPO_COLLECTION", "hcho")
+    monkeypatch.setenv("STAGE", "dev")
+
+    poller._emit("CmrLag", 1800.0, "Seconds")
+
+    blobs = emf_blobs(capsys.readouterr().out)
+    (blob,) = [b for b in blobs if "CmrLag" in b]
+    (spec,) = blob["_aws"]["CloudWatchMetrics"]
+    assert spec["Namespace"] == poller.NAMESPACE
+    assert sorted(spec["Dimensions"][0]) == ["Collection", "Stage"]
+    assert emf_value(blobs, "CmrLag") == 1800.0
+
+
+def test_handler_emits_fresh_lags_and_tags_published(
+    sqs_queue: str, monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    """One poll over a mixed page: lags for FRESH only, `published` only on
+    FRESH messages, everything enqueued.
+
+    Timestamps are relative to `datetime.now(timezone.utc)`: handler()
+    classifies FRESH against real now(), so fixed dates would go stale.
+    """
+    now = datetime.now(timezone.utc)
+    watermark = now - timedelta(hours=2)
+    scan_start = now - timedelta(hours=1)  # well within the 24h FRESH window
+    production = scan_start + timedelta(hours=3)
+    published_at = production + timedelta(minutes=30)
+
+    items = [
+        _cmr_item(
+            name="fresh.nc",
+            revision_date=published_at.isoformat(),
+            scan_start=scan_start.isoformat(),
+            production=production.isoformat(),
+        ),
+        _cmr_item(
+            name="redelivered.nc",
+            revision_date=(watermark - timedelta(minutes=1)).isoformat(),
+        ),
+        _cmr_item(
+            name="retro.nc",
+            revision_date=(watermark + timedelta(minutes=30)).isoformat(),
+            scan_start=(now - timedelta(days=40)).isoformat(),
+        ),
+    ]
+    emitted: list[tuple] = []
+
+    def record(name: str, value: float, unit: str = "Count") -> None:
+        emitted.append((name, value))
+
+    monkeypatch.setattr(poller, "_emit", record)
+    # Pre-write the watermark file so the exact-watermark comparison runs.
+    watermark_uri = str(tmp_path / "watermark.json")
+    poller.write_watermark(watermark_uri, watermark)
+    monkeypatch.setenv("CONCEPT_ID", "C1")
+    monkeypatch.setenv("QUEUE_URL", sqs_queue)
+    monkeypatch.setenv("POLL_WATERMARK_URI", watermark_uri)
+    monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
+    monkeypatch.setattr(poller, "search_granules", lambda concept_id, since_iso: items)
+
+    poller.handler({}, MagicMock())
+
+    assert dict(emitted) == {"ProductionLag": 3 * 3600.0, "CmrLag": 1800.0}
+    bodies = [
+        json.loads(m["Body"])
+        for m in boto3.client("sqs", region_name="us-east-1").receive_message(
+            QueueUrl=sqs_queue, MaxNumberOfMessages=10
+        )["Messages"]
+    ]
+    published = {b["url"]: b.get("published") for b in bodies}
+    assert len(published) == 3  # redelivered and retroactive are enqueued too
+    fresh_url = next(u for u in published if "fresh" in u)
+    assert published[fresh_url] == published_at.isoformat()
+    assert sum(p is not None for p in published.values()) == 1
 
 
 def test_direct_s3_url_extraction() -> None:
@@ -89,7 +219,7 @@ def test_handler_enqueues_and_advances_watermark(
     ) -> tuple[list[dict], str | None]:
         assert concept_id == "C3685897141-LARC_CLOUD"
         since_seen.append(since)
-        return [granule_item("g1"), granule_item("g2", with_s3=False)], None
+        return [_cmr_item(name="g1"), granule_item("g2", with_s3=False)], None
 
     monkeypatch.setattr(poller, "_http_fetch", fetch)
 
@@ -160,7 +290,7 @@ def test_enqueue_retries_partial_batch_failures(
     stub = _FlakySqs(failures=1)
     monkeypatch.setattr(boto3, "client", lambda service: stub)
 
-    sent = poller.enqueue("queue-url", [f"s3://b/{i}.nc" for i in range(3)])
+    sent = poller.enqueue("queue-url", [{"url": f"s3://b/{i}.nc"} for i in range(3)])
 
     assert sent == 3
     assert stub.calls == [["0", "1", "2"], ["0"]]  # only the failed entry retried
@@ -171,7 +301,7 @@ def test_enqueue_raises_when_failures_persist(
 ) -> None:
     monkeypatch.setattr(boto3, "client", lambda service: _FlakySqs(failures=2))
     with pytest.raises(RuntimeError, match="failed to enqueue"):
-        poller.enqueue("queue-url", ["s3://b/0.nc"])
+        poller.enqueue("queue-url", [{"url": "s3://b/0.nc"}])
 
 
 def test_watermark_not_advanced_when_enqueue_fails(
@@ -183,10 +313,55 @@ def test_watermark_not_advanced_when_enqueue_fails(
     monkeypatch.setenv("CONCEPT_ID", "C")
     monkeypatch.setenv("QUEUE_URL", "queue-url")
     monkeypatch.setenv("POLL_WATERMARK_URI", watermark_uri)
-    monkeypatch.setattr(poller, "_http_fetch", lambda *a: ([granule_item("g1")], None))
+    monkeypatch.setattr(
+        poller, "_http_fetch", lambda *a: ([_cmr_item(name="g1")], None)
+    )
     monkeypatch.setattr(boto3, "client", lambda service: _FlakySqs(failures=2))
 
     with pytest.raises(RuntimeError):
         poller.handler({}, MagicMock())
 
     assert poller.read_watermark(watermark_uri) is None
+
+
+def _jwt(exp: datetime) -> str:
+    """A token shaped like an EDL JWT. Only the payload's exp matters."""
+    import base64
+
+    payload = base64.urlsafe_b64encode(
+        json.dumps({"exp": int(exp.timestamp())}).encode()
+    )
+    return f"header.{payload.decode().rstrip('=')}.signature"
+
+
+def test_token_expiry_reads_every_secret_shape() -> None:
+    exp = datetime(2026, 10, 17, 2, 41, 36, tzinfo=timezone.utc)
+    token = _jwt(exp)
+    assert poller.token_expiry(token) == exp
+    assert poller.token_expiry(token + "\n") == exp
+    assert poller.token_expiry(json.dumps({"EARTHDATA_TOKEN": token})) == exp
+    creds = {"EARTHDATA_USERNAME": "u", "EARTHDATA_PASSWORD": "p"}
+    assert poller.token_expiry(json.dumps(creds)) is None
+
+
+@mock_aws
+def test_poll_emits_token_time_left(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The alarm watches this series, so a secret read must emit it and a
+    broken secret must only skip it, never fail the poll."""
+    monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
+    emitted: list[tuple] = []
+    monkeypatch.setattr(
+        poller, "_emit", lambda name, value, unit="Count": emitted.append((name, value))
+    )
+    sm = boto3.client("secretsmanager")
+    arn = sm.create_secret(
+        Name="edl",
+        SecretString=json.dumps({"EARTHDATA_TOKEN": _jwt(NOW + timedelta(days=3))}),
+    )["ARN"]
+
+    poller._emit_token_time_left(arn, NOW)
+    assert emitted == [("EarthdataTokenTimeLeft", 3 * 86400.0)]
+
+    sm.put_secret_value(SecretId=arn, SecretString="not-a-jwt")
+    poller._emit_token_time_left(arn, NOW)  # logs and returns
+    assert len(emitted) == 1

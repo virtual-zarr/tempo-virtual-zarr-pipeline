@@ -232,26 +232,26 @@ def test_earthdata_auth_from_secrets_manager(no_edl_env: pytest.MonkeyPatch) -> 
 
 
 def test_s3_credential_provider_selection(no_edl_env: pytest.MonkeyPatch) -> None:
-    from virtualizarr_processor.granule import _s3_credential_provider
+    from virtualizarr_processor.granule import s3_credential_provider
 
     # No EDL material: ambient IAM, no provider — even for known buckets.
-    assert _s3_credential_provider("asdc-prod-protected") is None
+    assert s3_credential_provider("asdc-prod-protected") is None
 
-    _s3_credential_provider.cache_clear()
+    s3_credential_provider.cache_clear()
     no_edl_env.setenv("EARTHDATA_TOKEN", "tok")
     from virtualizarr_processor.granule import _earthdata_auth
 
     _earthdata_auth.cache_clear()
     # EDL material + a bucket with a known s3credentials endpoint: provider.
-    assert _s3_credential_provider("asdc-prod-protected") is not None
+    assert s3_credential_provider("asdc-prod-protected") is not None
     # Unknown bucket (tests, staging): ambient IAM.
-    assert _s3_credential_provider("my-staging-bucket") is None
+    assert s3_credential_provider("my-staging-bucket") is None
     # ...unless an endpoint override says otherwise.
     no_edl_env.setenv(
         "EARTHDATA_S3_CREDENTIALS_ENDPOINT", "https://example.test/s3credentials"
     )
-    _s3_credential_provider.cache_clear()
-    assert _s3_credential_provider("my-staging-bucket") is not None
+    s3_credential_provider.cache_clear()
+    assert s3_credential_provider("my-staging-bucket") is not None
 
 
 def test_icechunk_virtual_credentials_without_edl_fall_back_to_env(
@@ -297,7 +297,7 @@ def test_earthdata_fetcher_converts_provider_credentials(
     expires = datetime(2026, 8, 21, 12, tzinfo=timezone.utc)
     no_edl_env.setattr(
         granule,
-        "_s3_credential_provider",
+        "s3_credential_provider",
         lambda bucket: lambda: {
             "access_key_id": "AKID",
             "secret_access_key": "SECRET",

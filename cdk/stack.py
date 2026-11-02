@@ -121,11 +121,16 @@ class VirtualizarrSqsStack(Stack):
             retention_period=Duration.days(14),
         )
 
+        consumer_timeout_minutes = 5
         self.queue = sqs.Queue(
             self,
             f"{settings.STACK_NAME}-queue",
             queue_name=f"{settings.STACK_NAME}-queue",
-            visibility_timeout=Duration.seconds(1800),
+            # AWS guidance: 6x the consumer's timeout plus its batching window.
+            visibility_timeout=Duration.seconds(
+                6 * consumer_timeout_minutes * 60
+                + settings.SQS_MAX_BATCHING_WINDOW_SECONDS
+            ),
             dead_letter_queue=sqs.DeadLetterQueue(
                 max_receive_count=20,
                 queue=self.dlq,
@@ -149,13 +154,27 @@ class VirtualizarrSqsStack(Stack):
             self.dlq.metric_approximate_number_of_messages_visible(
                 period=Duration.minutes(5), statistic="Maximum"
             ),
-            "Granules were rejected to the dead-letter queue",
+            "Granules were rejected to the dead-letter queue after exhausting "
+            "their 20 receives. The store is missing them, SQS never retries "
+            "out of the DLQ, and they expire 14 days after original enqueue. "
+            "Triage the messages in the DLQ and redrive them to the source "
+            "queue.",
         )
 
         # Dashboard top-line tiles: is the store fresh, is the queue moving,
         # is anything dead-lettered, how far behind is the pending ledger.
         for title, metric in (
-            ("Store freshness", self._custom_metric("AxisEndLag")),
+            (
+                # Total scan->store lag: includes ~3.5 h of upstream
+                # production+publication even when the pipeline is instant.
+                # The Lag attribution widget shows the split.
+                # Raw seconds on purpose: the metric's Seconds unit makes
+                # the console humanize the value ("4.2 hr"), while any /3600
+                # math keeps the Seconds unit on the divided number and
+                # captions hours as seconds.
+                "Store lag (scan -> store)",
+                self._custom_metric("AxisEndLag"),
+            ),
             (
                 "Queue oldest message age",
                 self.queue.metric_approximate_age_of_oldest_message(
@@ -235,6 +254,13 @@ class VirtualizarrSqsStack(Stack):
             value = getattr(settings, key)
             if value:
                 self.processor_env[key] = value
+        # Lambdas that emit metrics without the processor package (the
+        # poller) need the same identity.
+        self._metric_env = {
+            key: self.processor_env[key]
+            for key in METRIC_DIMENSION_ENV.values()
+            if key in self.processor_env
+        }
         if settings.VIRTUAL_CHUNK_PREFIX:
             self.processor_env["VIRTUAL_CHUNK_PREFIX"] = settings.VIRTUAL_CHUNK_PREFIX
         if storage_prefix:
@@ -268,7 +294,6 @@ class VirtualizarrSqsStack(Stack):
         self.process_messages_log_group = function_log_group(
             self, "process-messages-logs"
         )
-        consumer_timeout_minutes = 5
         self.process_messages_lambda = _lambda.DockerImageFunction(
             self,
             f"{settings.STACK_NAME}-process_messages_lambda",
@@ -291,7 +316,21 @@ class VirtualizarrSqsStack(Stack):
         self._alarm(
             "ConsumerErrorsAlarm",
             self.process_messages_lambda.metric_errors(period=Duration.minutes(5)),
-            "The forward-processing consumer failed",
+            "The forward-processing consumer errored. SQS retries each "
+            "granule up to 20 times, so a blip self-heals, but sustained "
+            "errors stall the store and end in the dead-letter queue. Check "
+            "the consumer Lambda's CloudWatch logs (the FunctionName "
+            "dimension below) for the traceback.",
+        )
+        self._alarm(
+            "EarthdataAuthErrorsAlarm",
+            self._custom_metric("EarthdataAuthErrors", statistic="Sum"),
+            "The consumer could not get S3 credentials from Earthdata Login: "
+            "the token in the Earthdata secret is expired or revoked, so every "
+            "granule fails. Put a new token in the secret, then redrive the "
+            "dead-letter queue. The consumer re-reads the secret after each "
+            "failure, so the new token takes effect on the next batch. The "
+            "consumer logs show the 401 from the s3credentials endpoint.",
         )
 
         # Dashboard forward-processing section (queue and consumer are
@@ -313,7 +352,13 @@ class VirtualizarrSqsStack(Stack):
                         period=Duration.minutes(30),
                         extra_dimensions={"Route": route},
                     )
-                    for route in ("APPENDED", "OVERWRITTEN", "REJECTED", "PENDING")
+                    for route in (
+                        "APPENDED",
+                        "OVERWRITTEN",
+                        "UNCHANGED",
+                        "REJECTED",
+                        "PENDING",
+                    )
                 ],
             )
         )
@@ -326,12 +371,16 @@ class VirtualizarrSqsStack(Stack):
                     self.process_messages_lambda.metric_duration(statistic=statistic)
                     for statistic in ("p50", "p95", "Maximum")
                 ],
+                # No Throttles here: reserved concurrency 1 makes throttling
+                # the by-design single-writer backpressure, and a benign
+                # 70-count burst auto-scales to the same height as the
+                # timeout annotation, faking timeouts. Queue pressure reads
+                # from the "Queue oldest message age" tile instead.
                 right=[
-                    self.process_messages_lambda.metric_throttles(statistic="Sum"),
                     self._custom_metric("CommitFailures", statistic="Sum"),
                 ],
                 # The 5-min function timeout is what kills an invocation; the
-                # 1800 s SQS visibility timeout is only the redelivery bound.
+                # SQS visibility timeout is only the redelivery bound.
                 left_annotations=[
                     cloudwatch.HorizontalAnnotation(
                         value=consumer_timeout_minutes * 60_000,
@@ -377,6 +426,9 @@ class VirtualizarrSqsStack(Stack):
             lambda_event_sources.SqsEventSource(
                 self.queue,
                 batch_size=settings.SQS_BATCH_SIZE,
+                max_batching_window=Duration.seconds(
+                    settings.SQS_MAX_BATCHING_WINDOW_SECONDS
+                ),
                 report_batch_item_failures=True,
                 # No max_concurrency: Lambda rejects a mapping whose maximum
                 # exceeds the function's reserved concurrency (1, above), and
@@ -389,10 +441,12 @@ class VirtualizarrSqsStack(Stack):
         if settings.FORWARD_QUEUE_ENABLED:
             self._forward_ops(settings)
 
-        # When backfill is enabled, initialize_backfill_store (the Step Functions
-        # Init step) is the sole store bootstrap. Skipping the deploy-time seed
-        # avoids a create_array("foo", ...) collision on `main`.
-        if not settings.BACKFILL_ENABLED:
+        # When backfill is enabled, the Step Functions Init step
+        # (initialize_backfill_store) creates the store. Deploying the initialize
+        # Lambda as well would make both create the same array on `main`.
+        # When STORE_EXISTS is set, the store is already there, so the Lambda
+        # is not needed.
+        if not settings.BACKFILL_ENABLED and not settings.STORE_EXISTS:
             self.initialize_icechunk_lambda = _lambda.DockerImageFunction(
                 self,
                 f"{settings.STACK_NAME}-initialize-icechunk-lambda",
@@ -583,10 +637,20 @@ class VirtualizarrSqsStack(Stack):
                 targets=[targets.LambdaFunction(self.resort_lambda)],
             )
             # A failing re-sort otherwise just lets the pending ledger grow.
+            # Not metric_errors: a promote losing the CAS to a consumer commit
+            # is expected, and Lambda's async retries (2 by default) re-run
+            # against the new tip. AsyncEventsDropped counts only a run that
+            # failed every attempt.
             self._alarm(
                 "ResortErrorsAlarm",
-                self.resort_lambda.metric_errors(period=Duration.hours(1)),
-                "The scheduled re-sort job failed",
+                self.resort_lambda.metric(
+                    "AsyncEventsDropped", statistic="Sum", period=Duration.hours(1)
+                ),
+                "The scheduled re-sort job failed on every retry, so "
+                "out-of-order granules stay parked and the pending ledger "
+                "grows with every poll. "
+                "Check the re-sort Lambda's CloudWatch logs (the FunctionName "
+                "dimension below) around the alarm time.",
             )
             self._widgets.append(
                 cloudwatch.GraphWidget(
@@ -616,13 +680,40 @@ class VirtualizarrSqsStack(Stack):
                 )
             )
 
+            # Errors counts every failed attempt; AsyncEventsDropped only the
+            # runs whose retries all failed (the alarm). The gap between the
+            # two lines is how often the async retry healed a run.
+            self._widgets.append(
+                cloudwatch.GraphWidget(
+                    title="Re-sort failures",
+                    width=12,
+                    height=6,
+                    left=[
+                        self.resort_lambda.metric_errors(
+                            statistic="Sum", label="Failed attempts (incl. healed)"
+                        ),
+                        self.resort_lambda.metric(
+                            "AsyncEventsDropped",
+                            statistic="Sum",
+                            label="Failed after retries",
+                        ),
+                    ],
+                )
+            )
+
         if settings.POLL_SCHEDULE_MINUTES:
             poller_env = {
                 "QUEUE_URL": self.queue.queue_url,
                 "POLL_WATERMARK_URI": self.poll_watermark_uri,
+                # Metric dimension identity for the poller's own EMF
+                # emission (ProductionLag, CmrLag).
+                **self._metric_env,
             }
             if settings.POLL_START_ISO:
                 poller_env["POLL_START_ISO"] = settings.POLL_START_ISO
+            if settings.EARTHDATA_SECRET_ARN:
+                # Read only for the token's exp (EarthdataTokenTimeLeft).
+                poller_env["EARTHDATA_SECRET_ARN"] = settings.EARTHDATA_SECRET_ARN
             if settings.TEMPO_COLLECTION:
                 # Resolved at synth from the collection's declarative TOML so
                 # the lightweight poller image needs no processor package.
@@ -642,6 +733,27 @@ class VirtualizarrSqsStack(Stack):
                 environment=poller_env,
             )
             self.queue.grant_send_messages(self.cmr_poller_lambda)
+            if self.earthdata_secret is not None:
+                self.earthdata_secret.grant_read(self.cmr_poller_lambda)
+                self._alarm(
+                    "EarthdataTokenExpiryAlarm",
+                    self._custom_metric(
+                        "EarthdataTokenTimeLeft",
+                        statistic="Minimum",
+                        period=Duration.hours(1),
+                    ),
+                    "The Earthdata token in the Earthdata secret expires in "
+                    "under 7 days. When it does, every granule fails and "
+                    "dead-letters. Generate a new token in the account's "
+                    "Earthdata profile and put it in the secret. Warm "
+                    "consumers switch to it once the old one is rejected. "
+                    "The poller logs show a skipped emission if the secret "
+                    "cannot be read.",
+                    threshold=7 * 86400,
+                    comparison_operator=(
+                        cloudwatch.ComparisonOperator.LESS_THAN_THRESHOLD
+                    ),
+                )
             # The watermark lives in the icechunk bucket's state prefix,
             # under the store prefix.
             grant_prefixed_read_write(
@@ -660,8 +772,16 @@ class VirtualizarrSqsStack(Stack):
             # A failing poller silently stops feeding the queue.
             self._alarm(
                 "PollerErrorsAlarm",
-                self.cmr_poller_lambda.metric_errors(period=Duration.hours(1)),
-                "The scheduled CMR poller failed",
+                # Same reason as the re-sort alarm: page only when every
+                # async retry failed; the Poller widget shows healed ones.
+                self.cmr_poller_lambda.metric(
+                    "AsyncEventsDropped", statistic="Sum", period=Duration.hours(1)
+                ),
+                "The scheduled CMR poller failed on every retry: nothing is "
+                "feeding the queue, so the store goes stale until it recovers. "
+                "Check the poller Lambda's CloudWatch logs (the FunctionName dimension "
+                "below). The poll watermark only advances on success, so the "
+                "next clean run re-covers the gap by itself.",
             )
             self._widgets.append(
                 cloudwatch.GraphWidget(
@@ -670,7 +790,45 @@ class VirtualizarrSqsStack(Stack):
                     height=6,
                     left=[
                         self.cmr_poller_lambda.metric_invocations(statistic="Sum"),
-                        self.cmr_poller_lambda.metric_errors(statistic="Sum"),
+                        self.cmr_poller_lambda.metric_errors(
+                            statistic="Sum", label="Failed attempts (incl. healed)"
+                        ),
+                        self.cmr_poller_lambda.metric(
+                            "AsyncEventsDropped",
+                            statistic="Sum",
+                            label="Failed after retries",
+                        ),
+                    ],
+                )
+            )
+            self._widgets.append(
+                # Hourly average lag per stage for fresh first publications.
+                # Upstream production (scan -> ProductionDateTime), CMR
+                # (-> revision-date) and virtualization (-> store commit).
+                # The poller and consumer emit from different granule sets
+                # at different times, so the stack approximates total lag
+                # rather than matching the Store lag tile. Raw seconds, as
+                # on that tile, so the console humanizes them.
+                cloudwatch.GraphWidget(
+                    title="Lag attribution",
+                    width=12,
+                    height=6,
+                    stacked=True,
+                    left=[
+                        self._custom_metric(
+                            name,
+                            statistic="Average",
+                            period=Duration.hours(1),
+                            label=label,
+                        )
+                        for name, label in (
+                            ("ProductionLag", "production (scan -> L3 product)"),
+                            ("CmrLag", "CMR (product -> published)"),
+                            (
+                                "VirtualizationLag",
+                                "virtualization (published -> store)",
+                            ),
+                        )
                     ],
                 )
             )
@@ -784,8 +942,9 @@ class VirtualizarrSqsStack(Stack):
 
         The same project also runs ``scripts/verify_store.py`` when started
         with ``run_codebuild.sh -V`` (a ``--buildspec-override`` to
-        ``scripts/verify_buildspec.yml``), which is why it carries the
-        processor env and read access to the store prefix.
+        ``scripts/verify_buildspec.yml``) and ``scripts/record_stamps.py``
+        with ``-R``, which is why it carries the processor env and
+        read/write access to the store prefix.
         """
         collection = settings.TEMPO_COLLECTION or "hcho"
         env = {
@@ -799,6 +958,8 @@ class VirtualizarrSqsStack(Stack):
             # Extra flags for verify runs (scripts/verify_buildspec.yml via
             # --buildspec-override); empty for inventory builds.
             "VERIFY_ARGS": codebuild.BuildEnvironmentVariable(value=""),
+            # Extra flags for record_stamps runs (scripts/record_stamps_buildspec.yml).
+            "RECORD_STAMPS_ARGS": codebuild.BuildEnvironmentVariable(value=""),
         }
         # Verify runs open the store with the same env contract as the
         # Lambdas. setdefault keeps the Secrets-Manager EARTHDATA_TOKEN
@@ -833,12 +994,11 @@ class VirtualizarrSqsStack(Stack):
         self.icechunk_bucket.grant_put(
             self.inventory_build, f"{settings.inventory_prefix}/*"
         )
-        # Verify runs read the store; nothing in this project ever writes it.
-        self.icechunk_bucket.grant_read(
+        # Verify runs read the store; record_stamps runs commit to it.
+        grant_prefixed_read_write(
             self.inventory_build,
-            f"{settings.icechunk_storage_prefix}/*"
-            if settings.icechunk_storage_prefix
-            else "*",
+            self.icechunk_bucket,
+            [settings.icechunk_storage_prefix],
         )
         # Verify runs publish CompletenessDelta via put_metric_data
         # (CodeBuild logs are not EMF-parsed). PutMetricData cannot be
@@ -868,6 +1028,9 @@ class VirtualizarrSqsStack(Stack):
         description: str,
         *,
         threshold: float = 0,
+        comparison_operator: cloudwatch.ComparisonOperator = (
+            cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD
+        ),
         evaluation_periods: int = 1,
         treat_missing_data: cloudwatch.TreatMissingData = (
             cloudwatch.TreatMissingData.NOT_BREACHING
@@ -878,9 +1041,13 @@ class VirtualizarrSqsStack(Stack):
         alarm = cloudwatch.Alarm(
             self,
             construct_id,
+            # Explicit name: the SNS email's subject and body lead with the
+            # alarm name, and the default physical ID is unreadable
+            # (tempo-no2-ResortErrorsAlarm526A8D9F-jdsanKVkTBkf).
+            alarm_name=f"{self.stack_name}-{construct_id}",
             metric=metric,
             threshold=threshold,
-            comparison_operator=(cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD),
+            comparison_operator=comparison_operator,
             evaluation_periods=evaluation_periods,
             treat_missing_data=treat_missing_data,
             alarm_description=description,
@@ -897,6 +1064,7 @@ class VirtualizarrSqsStack(Stack):
         statistic: str = "Maximum",
         period: Duration | None = None,
         extra_dimensions: dict[str, str] | None = None,
+        label: str | None = None,
     ) -> cloudwatch.Metric:
         """A custom metric the pipeline's handlers emit as CloudWatch EMF.
 
@@ -912,6 +1080,7 @@ class VirtualizarrSqsStack(Stack):
             dimensions_map={**self._metric_dimensions, **(extra_dimensions or {})},
             statistic=statistic,
             period=period or Duration.minutes(5),
+            label=label,
         )
 
     def _dashboard(self, settings: StackSettings) -> None:
@@ -932,8 +1101,12 @@ class VirtualizarrSqsStack(Stack):
             self._alarm(
                 "AxisEndLagAlarm",
                 self._custom_metric("AxisEndLag", period=Duration.hours(1)),
-                "The store's time axis is more than 24 h stale, "
-                "or its freshness metric stopped arriving for 24 h",
+                "The store's time axis is more than 24 h stale, or its "
+                "freshness metric stopped arriving for 24 h: the upstream "
+                "product paused, or the poller/consumer/re-sort stalled "
+                "(check the dashboard and their logs). Note a freshly "
+                "deployed stack spends its first day in ALARM "
+                "(pre-creation hours evaluate as missing).",
                 threshold=86400,
                 evaluation_periods=24,
                 treat_missing_data=cloudwatch.TreatMissingData.BREACHING,

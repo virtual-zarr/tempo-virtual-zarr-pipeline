@@ -28,6 +28,14 @@ from virtualizarr_processor.inventory import BackfillInventory, GranuleEntry
 # The manifest's storage representation inside the store itself: two
 # vlen-string arrays on the append dimension, plus two root attributes.
 MANIFEST_ARRAYS: tuple[str, str] = ("granule_ur", "granule_url")
+# A third bookkeeping column, kept out of MANIFEST_ARRAYS because that
+# tuple is indexed positionally and feeds BackfillInventory
+# reconstruction, which has no stamps. Each slot holds
+# the exact ``last_updated_at`` stamp its references were written with
+# (see :func:`stamp_value`), or "" when unknown. Stamps are opaque strings
+# compared for equality only, so a future switch to ETag stamps is a
+# value change, not a schema change.
+STAMP_ARRAY = "granule_stamp"
 STORE_META_ATTRIBUTE = "tempo_store"
 PENDING_LEDGER_ATTRIBUTE = "pending_ledger"
 PIPELINE_STATE_ATTRIBUTES: frozenset[str] = frozenset(
@@ -45,6 +53,57 @@ def axis_end_lag(axis_end: float) -> float:
     """Seconds between now and the store's last time slot — the freshness SLI
     behind the AxisEndLag metric and its staleness alarm."""
     return (datetime.now(timezone.utc) - TEMPO_EPOCH).total_seconds() - axis_end
+
+
+def stamp_value(stamp: datetime) -> str:
+    """The storage form of a ``last_updated_at`` stamp, ISO-8601 UTC."""
+    return stamp.astimezone(timezone.utc).isoformat()
+
+
+class GranuleStamps:
+    """The per-slot ``last_updated_at`` stamps, stored next to the manifest.
+
+    A store predating the array reads as ``None``, every stamp unknown, so
+    the consumer's unchanged-redelivery fast path disables itself and
+    behaves exactly like the pre-stamp pipeline. Unknown ("") stamps
+    self-heal when the slot's next redelivery takes the slow path once and
+    records its stamp.
+    """
+
+    @staticmethod
+    def read(store: Store) -> list[str] | None:
+        """All stamps in axis order, or None if the store has no array."""
+        if STAMP_ARRAY not in zarr.open_group(store, mode="r"):
+            return None
+        return [str(v) for v in np.asarray(zarr.open_array(store, path=STAMP_ARRAY)[:])]
+
+    @staticmethod
+    def write(store: Store, stamps: Sequence[str]) -> None:
+        array = zarr.open_array(store, path=STAMP_ARRAY)
+        array.resize((len(stamps),))
+        if stamps:
+            array[:] = np.array(stamps, dtype=object)
+
+    @classmethod
+    def initialize(
+        cls, store: Store, *, size: int, chunk: int, append_dim: str
+    ) -> None:
+        """Create the array if missing, and leave every stamp "" (unknown).
+
+        Init paths rewrite every slot they describe, so any previously
+        recorded stamps no longer match what will be written.
+        """
+        if STAMP_ARRAY in zarr.open_group(store, mode="r"):
+            cls.write(store, [""] * size)
+            return
+        zarr.create_array(
+            store,
+            name=STAMP_ARRAY,
+            shape=(size,),
+            chunks=(chunk,),
+            dtype="str",
+            dimension_names=(append_dim,),
+        )
 
 
 def storage_prefix() -> str | None:
@@ -144,7 +203,11 @@ class PendingLedger:
     @staticmethod
     def write(store: Store, entries: Iterable[GranuleEntry]) -> None:
         group = zarr.open_group(store, mode="a")
-        group.attrs[PENDING_LEDGER_ATTRIBUTE] = [e.model_dump() for e in entries]
+        # The optional stamp is a datetime and zarr attrs are JSON, hence
+        # mode="json".
+        group.attrs[PENDING_LEDGER_ATTRIBUTE] = [
+            e.model_dump(mode="json") for e in entries
+        ]
 
     @classmethod
     def append(cls, store: Store, entries: Iterable[GranuleEntry]) -> None:
