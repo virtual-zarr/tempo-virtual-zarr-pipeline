@@ -18,6 +18,8 @@ Start here if you want the data.
   from ASDC's bucket. This is the fast path.
 - [Quickstart: from anywhere](examples/quickstart-https.ipynb): read the
   same chunks over HTTPS from a laptop.
+- [Quickstart: the ASDC bucket snapshot](examples/quickstart-asdc.ipynb):
+  read the experimental copy that NASA ASDC hosts in its own bucket.
 
 ## How it works
 

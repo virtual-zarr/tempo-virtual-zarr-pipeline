@@ -19,6 +19,16 @@ last run of [the mirror runbook](runbook-mirror-to-source-coop.md). A zip of
 each copy sits beside it as `v04.zip`. It unpacks to a directory that opens
 with `icechunk.local_filesystem_storage`.
 
+NASA ASDC also hosts an experimental snapshot of each copy in its public
+bucket, under `s3://asdc-prod-public/virtual-icechunk/` as
+`TEMPO_HCHO_L3_V04` and `TEMPO_NO2_L3_V04`. The bucket's keys are also
+served, to anyone, at
+`https://data.asdc.earthdata.nasa.gov/asdc-prod-public/`, so the
+repository opens from anywhere without credentials. Its references are
+absolute `s3://` URLs, from before the relative-reference migration.
+[Quickstart: the ASDC bucket snapshot](../examples/quickstart-asdc.ipynb)
+shows how.
+
 ## Layout and encoding
 
 - Every 3-D variable has per-granule dims `(time, latitude, longitude)` of
